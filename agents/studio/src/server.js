@@ -272,6 +272,15 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
   const _fetch = fetchWithTimeout(fetchImpl || globalThis.fetch, upstreamTimeoutMs || UPSTREAM_TIMEOUT_MS);
   const authHeaders = authHeadersFn || (() => ({ "Content-Type": "application/json" }));
 
+  async function _fetchJSON(url, opts) {
+    const r = await _fetch(url, opts);
+    if (!r.ok) {
+      const text = await r.text().catch(() => "");
+      throw new Error(`${r.status} ${text.slice(0, 200)}`);
+    }
+    return r.json();
+  }
+
   return {
     list_projects: async ({ userId, limit = 20 }) => {
       const ps = await projects.listForUser(userId, { limit });
@@ -441,6 +450,152 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         return { ok: false, error: `distributor_${r.status}`, message: text.slice(0, 200) };
       } catch (e) {
         return { ok: false, error: "distributor_unreachable", message: e.message };
+      }
+    },
+
+    // ---------- W2: Long-form orchestrators ----------
+
+    find_best_moments: async ({ userId, file_path, platform = "tiktok", max_moments = 3 }) => {
+      // Step 1: transcribe
+      let transcript;
+      try {
+        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        transcript = tr.transcript || tr;
+      } catch (e) {
+        return { ok: false, error: `transcribe_failed: ${e.message}` };
+      }
+      if (!transcript?.text) return { ok: false, error: "empty_transcript" };
+      // Step 2: get LLM prompt from video agent
+      let prompt;
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments }),
+        });
+        prompt = resp.prompt;
+      } catch (e) {
+        return { ok: false, error: `moments_prompt_failed: ${e.message}` };
+      }
+      if (!prompt) return { ok: false, error: "no_moments_prompt" };
+      // Step 3: LLM call with the prompt
+      let llmResponse;
+      try {
+        const chatResult = await llm.chat({ messages: [{ role: "user", content: prompt }], maxTokens: 2048 });
+        llmResponse = chatResult.content;
+      } catch (e) {
+        return { ok: false, error: `llm_failed: ${e.message}` };
+      }
+      // Step 4: parse moments
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments, llm_response: llmResponse }),
+        });
+        return { ok: true, moments: resp.moments || [], platform, max_moments };
+      } catch (e) {
+        return { ok: false, error: `moments_parse_failed: ${e.message}` };
+      }
+    },
+
+    generate_chapters: async ({ userId, file_path, max_chapters = 15 }) => {
+      let transcript;
+      try {
+        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        transcript = tr.transcript || tr;
+      } catch (e) {
+        return { ok: false, error: `transcribe_failed: ${e.message}` };
+      }
+      if (!transcript?.text) return { ok: false, error: "empty_transcript" };
+      let prompt;
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/chapters`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, max_chapters }),
+        });
+        prompt = resp.prompt;
+      } catch (e) {
+        return { ok: false, error: `chapters_prompt_failed: ${e.message}` };
+      }
+      if (!prompt) return { ok: false, error: "no_chapters_prompt" };
+      let llmResponse;
+      try {
+        const chatResult = await llm.chat({ messages: [{ role: "user", content: prompt }], maxTokens: 2048 });
+        llmResponse = chatResult.content;
+      } catch (e) {
+        return { ok: false, error: `llm_failed: ${e.message}` };
+      }
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/chapters`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, max_chapters, llm_response: llmResponse }),
+        });
+        return { ok: true, chapters: resp.chapters || [], max_chapters };
+      } catch (e) {
+        return { ok: false, error: `chapters_parse_failed: ${e.message}` };
+      }
+    },
+
+    add_broll: async ({ userId, file_path, style = "auto", count = 5 }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "add_broll", operation_params: { style, count } }),
+        });
+        return { ok: true, job_id: resp.job_id || null, output: resp.output || null };
+      } catch (e) {
+        return { ok: false, error: `broll_failed: ${e.message}` };
+      }
+    },
+
+    apply_hook_style: async ({ userId, file_path, style = "auto" }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "apply_hook_style", operation_params: { style } }),
+        });
+        return { ok: true, job_id: resp.job_id || null, output: resp.output || null };
+      } catch (e) {
+        return { ok: false, error: `hook_failed: ${e.message}` };
+      }
+    },
+
+    generate_thumbnail: async ({ userId, file_path, style = "auto", title }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "generate_thumbnail", operation_params: { style, title } }),
+        });
+        return { ok: true, output: resp.output || null, thumbnail_path: resp.thumbnail_path || null };
+      } catch (e) {
+        return { ok: false, error: `thumbnail_failed: ${e.message}` };
+      }
+    },
+
+    analyze_audio: async ({ userId, file_path }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "analyze_audio", operation_params: {} }),
+        });
+        return { ok: true, audio: resp.audio || resp };
+      } catch (e) {
+        return { ok: false, error: `analyze_audio_failed: ${e.message}` };
       }
     },
   };

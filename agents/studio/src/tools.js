@@ -234,11 +234,110 @@ export const EDIT_TOOLS = [
     function: {
       name: "list_files",
       description:
-        "List the user's uploaded video / audio files. Returns ids, filenames, durations, and upload timestamps. Call this when the user references 'my file' or 'the video' without specifying an id.",
+        "List uploaded and processed video files. Use when the user asks 'what files do I have' or 'show me my videos'.",
       parameters: {
         type: "object",
         properties: {
-          limit: { type: "number", description: "Max number of files to return (default 20).", default: 20 },
+          limit: { type: "number", description: "Max files to return (default 20)." },
+        },
+      },
+    },
+  },
+  // ---------- W2: Long-form tools ----------
+  {
+    type: "function",
+    function: {
+      name: "find_best_moments",
+      description:
+        "Extract the best moments from a video. Use when the user wants to create a highlight reel, find viral clips, extract key moments from a long video (e.g. 'find 5 best moments from this 2h video'). Requires a file_path of a previously transcribed video.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file (from get_video_info or list_files)." },
+          platform: { type: "string", description: "Target platform: 'tiktok', 'youtube', 'instagram_reels', 'default' (default: 'tiktok')." },
+          max_moments: { type: "integer", description: "Max moments to return (default 3, max 10)." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_chapters",
+      description:
+        "Auto-generate YouTube chapters from a video's transcript. Use when the user wants chapters, a table of contents, or 'add chapters to this video'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file." },
+          max_chapters: { type: "integer", description: "Max chapters to generate (default 15)." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_broll",
+      description:
+        "Automatically insert B-roll footage at natural cut points (silence boundaries, topic transitions). Use when the user wants visual variety, B-roll, or 'make it more visually interesting'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file." },
+          style: { type: "string", description: "B-roll style: 'cityscape', 'nature', 'tech', 'abstract', 'food', 'fitness', 'auto' (default: 'auto')." },
+          count: { type: "integer", description: "Number of B-roll clips to insert (default 5)." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_hook_style",
+      description:
+        "Restructure the first 3 seconds of a video for maximum engagement (hook). Use when the user wants a stronger hook, 'make the intro more engaging', or 'fix my opening'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file." },
+          style: { type: "string", description: "Hook style: 'question', 'bold_statement', 'visual_tease', 'auto' (default: 'auto')." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_thumbnail",
+      description:
+        "Generate a thumbnail from the best expressive frame of a video. Use when the user wants a thumbnail, cover image, or 'what's a good thumbnail for this'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file." },
+          style: { type: "string", description: "Thumbnail style: 'mrbeast', 'minimal', 'bold_text', 'auto' (default: 'auto')." },
+          title: { type: "string", description: "Optional text overlay for the thumbnail." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_audio",
+      description:
+        "Analyze audio properties: loudness (LUFS), peak, silence ratio, music detection. Use when the user wants to know 'how's the audio', 'is it too loud/quiet', or 'can you detect the music'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file." },
         },
       },
     },
@@ -397,6 +496,13 @@ export const STUDIO_INPROCESS_TOOL_NAMES = new Set([
   "analyze_style",
   "edit_content",
   "distribute",
+  // W2: long-form orchestrators
+  "find_best_moments",
+  "generate_chapters",
+  "add_broll",
+  "apply_hook_style",
+  "generate_thumbnail",
+  "analyze_audio",
 ]);
 
 // ---------- System prompt ----------
