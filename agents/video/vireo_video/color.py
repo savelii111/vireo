@@ -28,6 +28,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 from typing import Optional
 
 from .ffmpeg_utils import find_ffmpeg, run, escape_filter_path, FFmpegError
@@ -173,10 +174,31 @@ def apply_lut(
 
   The LUT is a 3D color transform — .cube files are free, widely available,
   and produced by tools like DaVinci Resolve, Adobe Premiere, etc.
+
+  Security: the LUT path comes from an HTTP request body. Without an
+  allow-list, a malicious caller could pass ../../etc/passwd and either
+  read a system file or, if ffmpeg accepted a pipe, exfiltrate it via the
+  encoded video. We resolve the path, require the file to live under a
+  configured allow-list directory (env VIREO_LUT_DIR, default ./luts),
+  and require the suffix to be .cube.
   """
-  if not Path(lut_path).is_file():
+  if not lut_path or not isinstance(lut_path, str):
+    raise FFmpegError("lut_path must be a non-empty string", 0)
+  if not lut_path.lower().endswith(".cube"):
+    raise FFmpegError(f"lut_path must end with .cube, got: {lut_path!r}", 0)
+  lut_p = Path(lut_path).expanduser().resolve()
+  if not lut_p.is_file():
     raise FFmpegError(f"LUT file not found: {lut_path}", 0)
-  look = Look(name="custom_lut", description=f"Custom LUT {lut_path}", lut_path=lut_path)
+  # Allow-list check: the resolved path must be inside VIREO_LUT_DIR.
+  # This prevents ../../etc/passwd and similar traversal.
+  allowed_dir = Path(os.environ.get("VIREO_LUT_DIR", "./luts")).expanduser().resolve()
+  try:
+    lut_p.relative_to(allowed_dir)
+  except ValueError as e:
+    raise FFmpegError(
+      f"LUT path escapes allowed directory {allowed_dir}: {lut_p}", 0
+    ) from e
+  look = Look(name="custom_lut", description=f"Custom LUT {lut_path}", lut_path=str(lut_p))
   return apply_look(input_path, output_path, look, ffmpeg=ffmpeg,
                     video_bitrate=video_bitrate, audio_bitrate=audio_bitrate)
 

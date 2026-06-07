@@ -90,6 +90,51 @@ const JWT_SECRET = process.env.VIREO_JWT_SECRET || "";
 const STYLE_LEARNER_URL = process.env.VIREO_STYLE_URL || "http://127.0.0.1:8001";
 const EDITOR_URL = process.env.VIREO_EDITOR_URL || "http://127.0.0.1:8002";
 const DISTRIBUTOR_URL = process.env.VIREO_DISTRIBUTOR_URL || "http://127.0.0.1:8003";
+const VIDEO_URL = process.env.VIREO_VIDEO_URL || "http://127.0.0.1:8004";
+// Allow-list of distribution platforms. The set is intentionally small —
+// every new platform is a real engineering cost (OAuth app, upload limits,
+// aspect-ratio handling, caption timing). Adding a platform should be a
+// conscious decision, not a side effect of a typo.
+const ALLOWED_PLATFORMS = new Set([
+  "youtube",
+  "youtube_shorts",
+  "tiktok",
+  "instagram_reels",
+  "instagram_feed",
+  "twitter_x",
+]);
+/**
+ * Validate and normalize the platforms array passed to distribute.
+ *
+ * Pure function (no I/O, no async) so it can be unit-tested. Returns
+ * `{ platforms, error? }`. If `error` is set, the caller should return a
+ * 400 to the dashboard — the array is invalid (typo, malicious platform,
+ * non-string element, etc).
+ *
+ * Day 2 W1: before this, the platforms array went straight to the
+ * distributor agent, which would 5xx on a typo. Returning a clean 400
+ * here is the difference between "I see my mistake" and "I stare at a
+ * loading spinner until timeout".
+ */
+export function validateDistributePlatforms(platforms) {
+  const defaults = ["youtube", "youtube_shorts", "tiktok"];
+  if (platforms == null) return { platforms: defaults };
+  if (!Array.isArray(platforms) || platforms.length === 0) {
+    return { platforms: defaults };
+  }
+  const invalid = [];
+  for (const p of platforms) {
+    if (typeof p !== "string" || !ALLOWED_PLATFORMS.has(p)) {
+      invalid.push(p);
+    }
+  }
+  if (invalid.length) {
+    return {
+      error: { error: "invalid_platform", invalid, allowed: Array.from(ALLOWED_PLATFORMS) },
+    };
+  }
+  return { platforms };
+}
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 // CORS allow-list. Read fresh on every request (via parseCorsOrigins below)
@@ -359,6 +404,14 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
       return { ok: true, edit_plan: editPlan, style_dna: dna };
     },
     distribute: async ({ userId, edit_plan, style_dna, project_id, platforms }) => {
+      // Validate platforms against the allow-list BEFORE we hit the
+      // distributor agent. Otherwise a typo ("youtube_Shrots") or malicious
+      // platform name silently turns into a 5xx from the distributor, which
+      // is harder to debug than a clean 400 here. Empty/missing → default
+      // set; anything else must be in the allow-list.
+      const validation = validateDistributePlatforms(platforms);
+      if (validation.error) return { ok: false, ...validation.error };
+      const requested = validation.platforms;
       let dna = style_dna;
       if (!dna || !dna.id) {
         const all = await styleDNA.listForUser(userId);
@@ -373,7 +426,7 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         }
         if (!dna || !dna.id) dna = all[0] || { tone: "casual" };
       }
-      const payload = { editPlan: edit_plan, styleDna: dna, platforms: platforms || ["youtube", "youtube_shorts", "tiktok"] };
+      const payload = { editPlan: edit_plan, styleDna: dna, platforms: requested };
       try {
         const r = await _fetch(`${DISTRIBUTOR_URL}/distribute`, {
           method: "POST",

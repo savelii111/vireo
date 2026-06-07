@@ -465,3 +465,61 @@ test("P1-2: chat() falls back to exponential backoff on 429 with garbage Retry-A
   // Garbage value should fall back to 500ms * 2^0 = 500ms, not 1s.
   assert.ok(elapsed < 900, `should use exponential fallback for garbage Retry-After, got ${elapsed}ms`);
 });
+
+// ---------- W1D2: distribute platform validation ----------
+//
+// Day 2 of Week 1. The distribute tool previously accepted any string in
+// `platforms` and forwarded it to the distributor agent, which would 5xx
+// on a typo. We now validate against an allow-list in the Studio layer
+// so the dashboard gets a clean 400 instead of a hung spinner.
+
+test("W1D2: validateDistributePlatforms defaults to [youtube, youtube_shorts, tiktok] when input is null", async () => {
+  const { validateDistributePlatforms } = await import("../src/server.js");
+  const r = validateDistributePlatforms(null);
+  assert.deepEqual(r.platforms, ["youtube", "youtube_shorts", "tiktok"]);
+  assert.equal(r.error, undefined);
+});
+
+test("W1D2: validateDistributePlatforms defaults when input is empty array", async () => {
+  const { validateDistributePlatforms } = await import("../src/server.js");
+  const r = validateDistributePlatforms([]);
+  assert.deepEqual(r.platforms, ["youtube", "youtube_shorts", "tiktok"]);
+});
+
+test("W1D2: validateDistributePlatforms accepts a valid single-platform array", async () => {
+  const { validateDistributePlatforms } = await import("../src/server.js");
+  const r = validateDistributePlatforms(["tiktok"]);
+  assert.deepEqual(r.platforms, ["tiktok"]);
+  assert.equal(r.error, undefined);
+});
+
+test("W1D2: validateDistributePlatforms accepts all six allowed platforms", async () => {
+  const { validateDistributePlatforms } = await import("../src/server.js");
+  const r = validateDistributePlatforms(["youtube", "youtube_shorts", "tiktok", "instagram_reels", "instagram_feed", "twitter_x"]);
+  assert.equal(r.error, undefined);
+  assert.equal(r.platforms.length, 6);
+});
+
+test("W1D2: validateDistributePlatforms rejects typo'd platform with 400-shaped error", async () => {
+  const { validateDistributePlatforms } = await import("../src/server.js");
+  const r = validateDistributePlatforms(["youtube", "yotube_shrots"]);
+  assert.equal(r.error.error, "invalid_platform");
+  assert.deepEqual(r.error.invalid, ["yotube_shrots"]);
+  assert.ok(Array.isArray(r.error.allowed));
+  assert.ok(r.error.allowed.includes("youtube_shorts"));
+  assert.ok(!r.error.allowed.includes("yotube_shrots"));
+});
+
+test("W1D2: validateDistributePlatforms rejects non-string elements", async () => {
+  const { validateDistributePlatforms } = await import("../src/server.js");
+  const r = validateDistributePlatforms(["tiktok", 42, null, "youtube"]);
+  assert.equal(r.error.error, "invalid_platform");
+  assert.deepEqual(r.error.invalid, [42, null]);
+});
+
+test("W1D2: validateDistributePlatforms rejects all-invalid array", async () => {
+  const { validateDistributePlatforms } = await import("../src/server.js");
+  const r = validateDistributePlatforms(["foo", "bar"]);
+  assert.equal(r.error.error, "invalid_platform");
+  assert.equal(r.error.invalid.length, 2);
+});

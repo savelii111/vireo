@@ -161,6 +161,60 @@ def test_apply_lut_missing_file_raises():
     apply_lut("x.mp4", "y.mp4", "C:/nonexistent/lut.cube")
 
 
+def test_apply_lut_empty_path_raises(monkeypatch, tmp_path):
+  """Day 2 W1: empty path must reject before touching the filesystem."""
+  monkeypatch.setenv("VIREO_LUT_DIR", str(tmp_path))
+  with pytest.raises(FFmpegError, match="non-empty string"):
+    apply_lut("x.mp4", "y.mp4", "")
+
+
+def test_apply_lut_non_cube_extension_raises(monkeypatch, tmp_path):
+  """Day 2 W1: only .cube files are accepted — anything else is rejected
+  even if the path resolves. Stops attackers from pointing us at /etc/shadow
+  by abusing ffmpeg's permissive filter graph parser."""
+  monkeypatch.setenv("VIREO_LUT_DIR", str(tmp_path))
+  (tmp_path / "evil.txt").write_text("not a lut")
+  with pytest.raises(FFmpegError, match="must end with .cube"):
+    apply_lut("x.mp4", "y.mp4", str(tmp_path / "evil.txt"))
+
+
+def test_apply_lut_path_traversal_raises(monkeypatch, tmp_path):
+  """Day 2 W1: a real .cube file OUTSIDE VIREO_LUT_DIR must be rejected.
+  This is the CVE we'd otherwise ship — `../../etc/passwd.cube` (or worse,
+  a planted malicious .cube elsewhere on the box) must not be loadable."""
+  monkeypatch.setenv("VIREO_LUT_DIR", str(tmp_path / "luts"))
+  (tmp_path / "luts").mkdir()
+  # Create a sibling directory at tmp_path/../ which will exist after resolve.
+  sibling = tmp_path.parent / (tmp_path.name + "_attacker")
+  sibling.mkdir(exist_ok=True)
+  outside = sibling / "attacker.cube"
+  outside.write_text("LUT_3D_SIZE 2\n0 0 0\n1 1 1\n")
+  # Build a path that resolves to `outside` but traverses the relative
+  # path through tmp_path (NOT through tmp_path/luts, the allowed dir).
+  traversal = str(tmp_path / ".." / (tmp_path.name + "_attacker") / "attacker.cube")
+  try:
+    with pytest.raises(FFmpegError, match="escapes allowed directory"):
+      apply_lut("x.mp4", "y.mp4", traversal)
+  finally:
+    outside.unlink(missing_ok=True)
+    sibling.rmdir()
+
+
+def test_apply_lut_inside_allowed_dir_passes_resolution(monkeypatch, tmp_path):
+  """Day 2 W1: a .cube file inside VIREO_LUT_DIR must resolve cleanly.
+  We don't actually run ffmpeg — we just check the pre-flight validation
+  doesn't reject it. (A real ffmpeg run would need a video fixture.)"""
+  monkeypatch.setenv("VIREO_LUT_DIR", str(tmp_path))
+  good = tmp_path / "ok.cube"
+  good.write_text("LUT_3D_SIZE 2\n0 0 0\n1 1 1\n")
+  # We mock apply_look so we don't need ffmpeg; the point is that the
+  # path-resolution and allow-list checks don't reject this.
+  from vireo_video import color as _color_mod
+  monkeypatch.setattr(_color_mod, "apply_look", lambda *a, **kw: "ok")
+  out = apply_lut("x.mp4", "y.mp4", str(good))
+  assert out == "ok"
+
+
 # ---------- list_looks ----------
 
 def test_list_looks_returns_all():

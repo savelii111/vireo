@@ -52,13 +52,20 @@ def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 def _make_llm_client(req: dict[str, Any]):
     """Pick the LLM client based on request + env.
 
-    Priority: req.use_openai + OPENAI_API_KEY > req.use_mock > mock
+    Priority (was confusing; now explicit):
+      1. req.use_openai is truthy AND OPENAI_API_KEY is set → OpenAI
+      2. OPENAI_API_KEY is set in env (auto-promote) → OpenAI
+         This is the "env propagation" fix: previously, callers had to
+         explicitly send use_openai:true. Now if the env has the key, we
+         use OpenAI automatically. Tests that want mock must send
+         use_mock:true.
+      3. req.use_mock OR default → MockLLMClient
     """
     if req.get("use_openai") and os.environ.get("OPENAI_API_KEY"):
         return OpenAIClient(api_key=os.environ["OPENAI_API_KEY"])
-    if req.get("use_mock", True):
-        return MockLLMClient()
-    if os.environ.get("OPENAI_API_KEY"):
+    # Env propagation: if OPENAI_API_KEY is set, prefer OpenAI over mock
+    # unless the caller explicitly opts into mock with use_mock:true.
+    if os.environ.get("OPENAI_API_KEY") and not req.get("use_mock", False):
         return OpenAIClient(api_key=os.environ["OPENAI_API_KEY"])
     return MockLLMClient()
 
