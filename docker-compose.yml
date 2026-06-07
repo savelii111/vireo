@@ -1,0 +1,322 @@
+# Vireo multi-agent platform + Postgres + Redis + MinIO + Studio.
+# All services share a network, run on host ports for easy dev access.
+#
+# Quickstart:
+#   docker compose up -d postgres redis minio
+#   docker compose up -d studio      # auto-runs migrations on first start
+#   docker compose up -d             # everything else
+#
+# Notes:
+#   - The studio service runs schema migrations on startup (idempotent —
+#     tracked in the vireo_migrations table, safe to restart).
+#   - All credentials below are DEV-ONLY. Change before deploying anywhere
+#     reachable from the public internet.
+#   - Service names (postgres, redis, minio, style-learner, ...) are the
+#     Docker-internal hostnames. From your host machine use localhost.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vireo
+      POSTGRES_PASSWORD: vireo_dev_only
+      POSTGRES_DB: vireo
+    ports:
+      - "5432:5432"
+    volumes:
+      - vireo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vireo -d vireo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - vireo_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: vireo_minio
+      MINIO_ROOT_PASSWORD: vireo_minio_dev_only
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    volumes:
+      - vireo_minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 vireo_minio vireo_minio_dev_only;
+      mc mb --ignore-existing local/vireo;
+      mc anonymous set download local/vireo;
+      echo 'MinIO bucket vireo ready';
+      "
+
+  # ---- Python agents (style-learner, editor, video) ----
+  style-learner:
+    build:
+      context: .
+      dockerfile: agents/style-learner/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: "8001"
+    volumes:
+      - ./agents/style-learner:/app
+    command: ["python", "-m", "vireo_style_learner.server"]
+
+  editor:
+    build:
+      context: .
+      dockerfile: agents/editor/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      PORT: "8002"
+    volumes:
+      - ./agents/editor:/app
+    command: ["python", "-m", "vireo_editor.server"]
+
+  video:
+    build:
+      context: .
+      dockerfile: agents/video/Dockerfile
+    ports:
+      - "8007:8007"
+    environment:
+      PORT: "8007"
+      VIREO_MEDIA_DIR: "/vireo_media"
+    volumes:
+      - ./agents/video:/app
+      - vireo_media:/vireo_media
+    command: ["python", "-m", "vireo_video.server"]
+
+  # ---- Vireo Studio (web UI backend) ----
+  # Talks directly to Postgres for projects, conversations, messages, style DNA.
+  # Schema migrations are applied automatically on startup (idempotent).
+  studio:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8011:8011"
+    environment:
+      PORT: "8011"
+      HOST: "0.0.0.0"
+      VIREO_JWT_SECRET: "${VIREO_JWT_SECRET:-change-me-in-prod}"
+      VIREO_PG_URL: "postgresql://vireo:vireo_dev_only@postgres:5432/vireo"
+      VIREO_STYLE_URL: "http://style-learner:8001"
+      VIREO_EDITOR_URL: "http://editor:8002"
+      VIREO_DISTRIBUTOR_URL: "http://distributor:8003"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+    volumes:
+      - ./agents/studio:/app
+      - ./packages:/packages
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # wget is in busybox which ships with node:alpine; curl is not installed by default.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8011/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  # ---- Node agents ----
+  distributor:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8003:8003"
+    environment:
+      PORT: "8003"
+      VIREO_STORAGE_URL: "postgresql://vireo:vireo_dev_only@postgres:5432/vireo"
+      VIREO_REDIS_URL: "redis://redis:6379"
+      VIREO_PG_URL: "postgresql://vireo:vireo_dev_only@postgres:5432/vireo"
+      VIREO_QUEUE: "postgres"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_BUCKET: "vireo"
+      S3_ACCESS_KEY: "vireo_minio"
+      S3_SECRET_KEY: "vireo_minio_dev_only"
+      S3_REGION: "us-east-1"
+      S3_PUBLIC_BASE_URL: "http://localhost:9000/vireo"
+    volumes:
+      - ./agents/distributor:/app
+      - ./packages:/packages
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  analyst:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8004:8004"
+    environment:
+      PORT: "8004"
+    volumes:
+      - ./agents/analyst:/app
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+
+  auth:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8005:8005"
+    environment:
+      PORT: "8005"
+      VIREO_JWT_SECRET: "change-me-in-prod"
+    volumes:
+      - ./agents/auth:/app
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+
+  billing:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8006:8006"
+    environment:
+      PORT: "8006"
+    volumes:
+      - ./agents/billing:/app
+      - ./agents/auth:/auth
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+
+  oauth:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8008:8008"
+    environment:
+      PORT: "8008"
+    volumes:
+      - ./agents/oauth:/app
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+
+  ingest:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8009:8009"
+    environment:
+      PORT: "8009"
+    volumes:
+      - ./agents/ingest:/app
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+
+  # ---- Orchestrator + Dashboard ----
+  orchestrator:
+    image: node:24-alpine
+    working_dir: /app
+    environment:
+      VIREO_STYLE_URL: "http://style-learner:8001"
+      VIREO_EDITOR_URL: "http://editor:8002"
+      VIREO_DISTRIBUTOR_URL: "http://distributor:8003"
+      VIREO_ANALYST_URL: "http://analyst:8004"
+    volumes:
+      - ./apps/orchestrator:/app
+      - ./agents:/agents
+      - ./packages:/packages
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node index.js"]
+    depends_on:
+      - style-learner
+      - editor
+      - distributor
+      - analyst
+
+  dashboard:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      VIREO_STYLE_URL: "http://style-learner:8001"
+      VIREO_EDITOR_URL: "http://editor:8002"
+      VIREO_DISTRIBUTOR_URL: "http://distributor:8003"
+      VIREO_ANALYST_URL: "http://analyst:8004"
+      VIREO_VIDEO_URL: "http://video:8007"
+      VIREO_OAUTH_URL: "http://oauth:8008"
+      VIREO_INGEST_URL: "http://ingest:8009"
+      VIREO_STUDIO_URL: "http://studio:8011"
+    volumes:
+      - ./apps/dashboard:/app
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node server.js"]
+    depends_on:
+      - style-learner
+      - editor
+      - distributor
+      - analyst
+      - video
+      - studio
+
+  # ---- Monitoring (aggregate healthcheck, metrics, logs) ----
+  monitoring:
+    image: node:24-alpine
+    working_dir: /app
+    ports:
+      - "8010:8010"
+    environment:
+      PORT: "8010"
+      POLL_INTERVAL_MS: "10000"
+      VIREO_STYLE_URL: "http://style-learner:8001"
+      VIREO_EDITOR_URL: "http://editor:8002"
+      VIREO_DISTRIBUTOR_URL: "http://distributor:8003"
+      VIREO_ANALYST_URL: "http://analyst:8004"
+      VIREO_AUTH_URL: "http://auth:8005"
+      VIREO_BILLING_URL: "http://billing:8006"
+      VIREO_VIDEO_URL: "http://video:8007"
+      VIREO_OAUTH_URL: "http://oauth:8008"
+      VIREO_INGEST_URL: "http://ingest:8009"
+      VIREO_STUDIO_URL: "http://studio:8011"
+    volumes:
+      - ./agents/monitoring:/app
+    command: ["sh", "-c", "(test -d node_modules || npm install --omit=dev --no-save --silent --no-audit --no-fund) && exec node src/server.js"]
+    depends_on:
+      - style-learner
+      - editor
+      - distributor
+      - analyst
+      - auth
+      - billing
+      - video
+      - oauth
+      - ingest
+      - studio
+
+volumes:
+  vireo_pgdata:
+  vireo_media:
+  vireo_redis:
+  vireo_minio:

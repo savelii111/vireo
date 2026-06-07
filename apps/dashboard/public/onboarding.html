@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Set up Vireo</title>
+  <link rel="stylesheet" href="/onboarding.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="onboarding-container">
+    <a href="/" class="auth-brand">
+      <div class="logo">V</div>
+      <span>Vireo</span>
+    </a>
+
+    <!-- Stepper -->
+    <div class="stepper" id="stepper">
+      <div class="step-dot active" data-step="1">1</div>
+      <div class="step-line"></div>
+      <div class="step-dot" data-step="2">2</div>
+      <div class="step-line"></div>
+      <div class="step-dot" data-step="3">3</div>
+    </div>
+
+    <!-- Step 1: Niche -->
+    <div class="step-panel active" id="step-1">
+      <div class="step-eyebrow">Step 1 of 3</div>
+      <h1>What's your niche?</h1>
+      <p class="step-sub">This helps Vireo pick the right style templates and platform defaults.</p>
+      <div class="niche-grid" id="niche-grid">
+        <button class="niche-card" data-niche="tech">
+          <div class="niche-icon">💻</div>
+          <div class="niche-name">Tech &amp; Coding</div>
+        </button>
+        <button class="niche-card" data-niche="education">
+          <div class="niche-icon">📚</div>
+          <div class="niche-name">Education</div>
+        </button>
+        <button class="niche-card" data-niche="fitness">
+          <div class="niche-icon">💪</div>
+          <div class="niche-name">Fitness &amp; Health</div>
+        </button>
+        <button class="niche-card" data-niche="business">
+          <div class="niche-icon">💼</div>
+          <div class="niche-name">Business &amp; Finance</div>
+        </button>
+        <button class="niche-card" data-niche="gaming">
+          <div class="niche-icon">🎮</div>
+          <div class="niche-name">Gaming</div>
+        </button>
+        <button class="niche-card" data-niche="lifestyle">
+          <div class="niche-icon">🌿</div>
+          <div class="niche-name">Lifestyle &amp; Vlog</div>
+        </button>
+        <button class="niche-card" data-niche="food">
+          <div class="niche-icon">🍳</div>
+          <div class="niche-name">Food &amp; Cooking</div>
+        </button>
+        <button class="niche-card" data-niche="travel">
+          <div class="niche-icon">✈️</div>
+          <div class="niche-name">Travel</div>
+        </button>
+        <button class="niche-card" data-niche="art">
+          <div class="niche-icon">🎨</div>
+          <div class="niche-name">Art &amp; Design</div>
+        </button>
+        <button class="niche-card" data-niche="music">
+          <div class="niche-icon">🎵</div>
+          <div class="niche-name">Music</div>
+        </button>
+        <button class="niche-card" data-niche="comedy">
+          <div class="niche-icon">😄</div>
+          <div class="niche-name">Comedy &amp; Entertainment</div>
+        </button>
+        <button class="niche-card" data-niche="other">
+          <div class="niche-icon">✨</div>
+          <div class="niche-name">Other</div>
+        </button>
+      </div>
+      <div class="step-actions">
+        <button class="btn btn-ghost" id="step-1-skip">Skip for now</button>
+        <button class="btn btn-primary" id="step-1-next" disabled>Next →</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Style -->
+    <div class="step-panel" id="step-2">
+      <div class="step-eyebrow">Step 2 of 3</div>
+      <h1>Pick your vibe</h1>
+      <p class="step-sub">Vireo will start with these defaults. You can fine-tune later from Style DNA.</p>
+
+      <div class="style-section">
+        <h3>Tone</h3>
+        <div class="option-row" data-group="tone">
+          <button class="option-card" data-value="energetic">⚡ Energetic</button>
+          <button class="option-card" data-value="calm">🧘 Calm</button>
+          <button class="option-card" data-value="funny">😂 Funny</button>
+          <button class="option-card" data-value="serious">🎯 Serious</button>
+          <button class="option-card" data-value="inspirational">🌟 Inspirational</button>
+        </div>
+      </div>
+
+      <div class="style-section">
+        <h3>Pacing</h3>
+        <div class="option-row" data-group="pacing">
+          <button class="option-card" data-value="fast">⚡⚡ Fast cuts</button>
+          <button class="option-card" data-value="medium">⚡ Medium</button>
+          <button class="option-card" data-value="slow">🐢 Slow &amp; thoughtful</button>
+        </div>
+      </div>
+
+      <div class="style-section">
+        <h3>Length</h3>
+        <div class="option-row" data-group="length">
+          <button class="option-card" data-value="30">30s (Shorts/TikTok)</button>
+          <button class="option-card" data-value="60">60s (Reels default)</button>
+          <button class="option-card" data-value="180">3 min (YouTube short)</button>
+          <button class="option-card" data-value="600">10 min (Long-form)</button>
+        </div>
+      </div>
+
+      <div class="style-section">
+        <h3>Platforms to publish to</h3>
+        <div class="platform-toggles">
+          <label class="platform-toggle">
+            <input type="checkbox" value="youtube" checked> YouTube
+          </label>
+          <label class="platform-toggle">
+            <input type="checkbox" value="tiktok" checked> TikTok
+          </label>
+          <label class="platform-toggle">
+            <input type="checkbox" value="instagram"> Instagram
+          </label>
+          <label class="platform-toggle">
+            <input type="checkbox" value="linkedin"> LinkedIn
+          </label>
+          <label class="platform-toggle">
+            <input type="checkbox" value="x"> X / Twitter
+          </label>
+          <label class="platform-toggle">
+            <input type="checkbox" value="pinterest"> Pinterest
+          </label>
+        </div>
+      </div>
+
+      <div class="step-actions">
+        <button class="btn btn-ghost" id="step-2-back">← Back</button>
+        <button class="btn btn-primary" id="step-2-next">Next →</button>
+      </div>
+    </div>
+
+    <!-- Step 3: First video -->
+    <div class="step-panel" id="step-3">
+      <div class="step-eyebrow">Step 3 of 3</div>
+      <h1>Upload your first video</h1>
+      <p class="step-sub">Drop a video and Vireo will generate your first clip. Skip and explore the dashboard first.</p>
+
+      <div class="upload-zone" id="upload-zone">
+        <div class="upload-icon">↑</div>
+        <div class="upload-text">Drag &amp; drop your video here<br><span class="muted">or click to select</span></div>
+        <input type="file" id="video-input" accept="video/*,audio/*" hidden>
+      </div>
+      <div class="upload-progress" id="upload-progress" style="display:none">
+        <div class="progress-label" id="progress-label">Uploading...</div>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+      </div>
+      <div class="upload-result" id="upload-result" style="display:none"></div>
+
+      <div class="step-actions">
+        <button class="btn btn-ghost" id="step-3-back">← Back</button>
+        <button class="btn btn-ghost" id="step-3-skip">Skip — go to dashboard</button>
+        <button class="btn btn-primary" id="step-3-dashboard">Go to dashboard →</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/onboarding.js"></script>
+</body>
+</html>

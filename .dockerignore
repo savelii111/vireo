@@ -1,0 +1,80 @@
+# .dockerignore — keep Docker build context small and predictable.
+# Without this, `docker build` copies every byte of the repo
+# (including node_modules, .git, .venv, .pytest_cache) into the
+# builder, which inflates context size and slows the build.
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+
+# VCS
+.git/
+.gitignore
+.github/
+
+# CI
+coverage/
+.nyc_output/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node
+node_modules/
+.npm/
+.eslintcache
+.stylelintcache
+.parcel-cache
+.next/
+dist/
+build/
+coverage/
+
+# Python (3 services in agents/{style-learner,editor,video})
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.mm/
+
+# Test artifacts
+tests/_artifacts/
+tests/fixtures/large/
+.cache/
+.turbo/
+.vireo/
+*.test.mp4
+*.test.wav
+*.test.json
+
+# Docker self-references
+Dockerfile
+Dockerfile.*
+docker-compose*.yml
+.dockerignore
+
+# Secrets / local config
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/

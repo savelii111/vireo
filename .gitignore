@@ -1,0 +1,97 @@
+# Vireo Studio — gitignore
+# Based on the .dockerignore baseline (already comprehensive), with a few
+# additions for non-Docker artifacts and a few removals (we DO want
+# Dockerfile, docker-compose.yml, package-lock.json, requirements*.txt in git).
+
+# ---- OS / editor cruft ----
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+*~
+
+# ---- VCS ----
+# .git/ is implicit (git ignores it), but explicitly listing makes intent clear.
+# Keep .gitignore itself tracked.
+
+# ---- CI / logs ----
+coverage/
+.nyc_output/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+junit-*.xml
+
+# ---- Node ----
+node_modules/
+.npm/
+.eslintcache
+.stylelintcache
+.parcel-cache
+.next/
+dist/
+build/
+coverage/
+
+# ---- Python (3 services: style-learner, editor, video; plus oauth and shared) ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# ---- Test artifacts ----
+# JUnit XML output (regenerated on every `node tests/run-all.mjs --junit=...`)
+tests/results/
+# Cached pytest benchmarks
+.benchmarks/
+# Test fixture temp dirs (populated at runtime, never source)
+tests/_artifacts/
+tests/fixtures/large/
+.cache/
+.turbo/
+
+# ---- Vireo runtime artifacts ----
+# Chunks produced by the Video agent at runtime
+_vireo_chunks/
+# Audit phase pytest output captures (e.g. .video_baseline.txt, .video_after_p0.txt)
+agents/video/.video_*.txt
+# Temp B-roll / ffmpeg scratch dirs (runtime, never source)
+/tmp_broll/
+agents/video/tmp_broll/
+tests/tmp_broll/
+# All tmp_* dirs are test fixture scratch space, generated at test runtime.
+# 13 of them under agents/video/tests/, plus the 3 above. None hold source.
+/tmp_*/
+agents/**/tmp_*/
+tests/tmp_*/
+# Media outputs (videos, images, uploads)
+vireo_media/
+# MISC generated clips from agent tests
+*.test.mp4
+*.test.wav
+*.test.json
+
+# ---- Secrets / local config ----
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/

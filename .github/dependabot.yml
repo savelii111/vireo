@@ -1,0 +1,81 @@
+version: 2
+
+# Vireo — dependabot config
+# ----------------------------
+# Keeps pinned action SHAs, npm versions, and pip deps in lock-step.
+# Weekly digest is plenty for a 12-service monorepo — daily PRs would
+# flood the queue. Bump to daily for the first 4 weeks after a launch.
+
+updates:
+  # ---------------------------------------------------------------------------
+  # 1. GitHub Actions: bump SHA-pinned actions, raise PR with the new SHA.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/.github/workflows"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Moscow"
+    open-pull-requests-limit: 5
+    groups:
+      actions-major:
+        patterns: ["*"]
+        update-types: ["major"]
+    commit-message:
+      prefix: "ci(actions)"
+    labels:
+      - "dependencies"
+      - "ci"
+    # Ignore workflow files outside .github/workflows (none exist today).
+
+  # ---------------------------------------------------------------------------
+  # 2. npm (Node agents + apps + root workspaces).
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:00"
+      timezone: "Europe/Moscow"
+    open-pull-requests-limit: 8
+    groups:
+      npm-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    commit-message:
+      prefix: "deps(npm)"
+    labels:
+      - "dependencies"
+      - "node"
+    # Ignore generated lock churn on dev-only deps.
+    ignore:
+      - dependency-name: "eslint*"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "prettier*"
+        update-types: ["version-update:semver-minor"]
+
+  # ---------------------------------------------------------------------------
+  # 3. pip (Python agents + shared).
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      time: "06:00"
+      timezone: "Europe/Moscow"
+    open-pull-requests-limit: 5
+    groups:
+      pip-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    commit-message:
+      prefix: "deps(pip)"
+    labels:
+      - "dependencies"
+      - "python"
+    # Pip config note: dependabot will scan all pyproject.toml files
+    # at the repo root by default. If you add a top-level setup.py or
+    # requirements.txt later, list its directory here.

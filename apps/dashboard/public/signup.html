@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign up — Vireo</title>
+  <link rel="stylesheet" href="/auth.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="auth-container">
+    <a href="/" class="auth-brand">
+      <div class="logo">V</div>
+      <span>Vireo</span>
+    </a>
+    <div class="auth-card">
+      <h1>Create your account</h1>
+      <p class="auth-sub">Start free. No credit card required.</p>
+
+      <form id="signup-form">
+        <label>
+          <span>Name</span>
+          <input type="text" name="name" required placeholder="Alex Creator" autocomplete="name">
+        </label>
+        <label>
+          <span>Email</span>
+          <input type="email" name="email" required placeholder="you@example.com" autocomplete="email">
+        </label>
+        <label>
+          <span>Password</span>
+          <input type="password" name="password" required minlength="8" placeholder="At least 8 characters" autocomplete="new-password">
+        </label>
+        <div class="form-error" id="form-error" style="display:none"></div>
+        <button type="submit" class="btn btn-primary btn-full" id="submit-btn">Create account →</button>
+      </form>
+
+      <div class="auth-divider">or</div>
+      <p class="auth-alt">Already have an account? <a href="/login.html">Log in</a></p>
+    </div>
+    <p class="auth-foot">By signing up, you agree to be cloned. (Just kidding, the ToS.)</p>
+  </div>
+  <script src="/auth.js"></script>
+</body>
+</html>

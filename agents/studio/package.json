@@ -1,0 +1,15 @@
+{
+  "name": "@vireo/studio",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "@vireo/auth-middleware": "file:../../../packages/auth-middleware",
+    "@vireo/shared": "file:../../../packages/shared",
+    "@vireo/storage": "file:../../storage"
+  }
+}

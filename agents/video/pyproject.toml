@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vireo-video"
+version = "0.1.0"
+description = "Vireo video editor — FFmpeg + Whisper + LLM-powered cuts for AI creators."
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-benchmark>=5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vireo_video*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]

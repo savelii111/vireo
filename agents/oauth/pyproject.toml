@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vireo-oauth"
+version = "0.1.0"
+description = "Vireo OAuth — multi-platform OAuth + token management"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vireo_oauth*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

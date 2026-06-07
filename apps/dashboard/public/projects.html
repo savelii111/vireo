@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vireo — Projects</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/chat.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    .projects-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+      padding: 32px;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    .project-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .project-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .project-card h3 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    .project-card .meta { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+    .project-card .desc { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; min-height: 40px; }
+    .project-card .platforms { display: flex; flex-wrap: wrap; gap: 4px; }
+    .project-card .platform-tag {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .new-project-card {
+      background: transparent;
+      border: 2px dashed var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 140px;
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 14px;
+    }
+    .new-project-card:hover { border-color: var(--accent); color: var(--accent); }
+    .new-project-card .icon { font-size: 32px; }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      width: 100%;
+      max-width: 480px;
+    }
+    .modal h2 { font-size: 18px; margin-bottom: 16px; }
+    .form-row { margin-bottom: 12px; }
+    .form-row label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+    .form-row input, .form-row textarea, .form-row select {
+      width: 100%;
+      background: var(--bg-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 14px;
+    }
+    .form-row textarea { min-height: 60px; resize: vertical; }
+    .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  </style>
+</head>
+<body class="chat-page">
+  <header class="header">
+    <a href="/dashboard/" class="brand">
+      <div class="logo">V</div>
+      <div>
+        <h1>Vireo</h1>
+        <p class="tagline">Your AI Creative Director</p>
+      </div>
+    </a>
+    <div class="header-actions">
+      <a href="/chat.html" class="nav-link">Chat</a>
+      <a href="/dashboard/" class="nav-link">Dashboard</a>
+      <span class="status-pill" id="status-pill">
+        <span class="status-dot"></span>
+        <span id="status-text">Ready</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="chat-main" style="grid-template-columns: 1fr;">
+    <section class="chat-panel">
+      <div class="chat-header">
+        <div>
+          <div class="chat-title">Your projects</div>
+          <div class="chat-sub" id="projects-sub">Loading…</div>
+        </div>
+      </div>
+
+      <div class="projects-grid" id="projects-grid">
+        <div class="empty">Loading…</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- New project modal -->
+  <div class="modal-backdrop" id="modal-backdrop" style="display:none">
+    <div class="modal">
+      <h2>New project</h2>
+      <div class="form-row">
+        <label>Name *</label>
+        <input id="np-name" placeholder="e.g. YouTube Channel">
+      </div>
+      <div class="form-row">
+        <label>Niche</label>
+        <input id="np-niche" placeholder="e.g. tech, fitness, comedy">
+      </div>
+      <div class="form-row">
+        <label>Description</label>
+        <textarea id="np-desc" placeholder="What's this project for?"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Target platforms</label>
+        <select id="np-platforms" multiple size="5">
+          <option value="youtube" selected>youtube</option>
+          <option value="youtube_shorts" selected>youtube_shorts</option>
+          <option value="tiktok" selected>tiktok</option>
+          <option value="instagram_reels">instagram_reels</option>
+          <option value="x">x</option>
+          <option value="linkedin">linkedin</option>
+          <option value="threads">threads</option>
+          <option value="telegram">telegram</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-ghost" id="np-cancel">Cancel</button>
+        <button class="btn btn-primary" id="np-create">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/auth.js"></script>
+  <script src="/projects.js"></script>
+</body>
+</html>

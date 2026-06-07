@@ -1,0 +1,32 @@
+# CODEOWNERS — Vireo
+# GitHub auto-assigns reviewers on PRs that touch these paths.
+# Add your team handle here. The last matching rule wins (per GitHub docs),
+# so list more specific paths FIRST.
+#
+# Example: replace `vireo/maintainers` with your team or personal handle
+# (e.g. @username or @org/team-name). Until a team is set, every PR is
+# unassigned (still requires manual review to merge — branch protection rule).
+
+# --- Default: maintainers own everything else ---
+/*                                             @vireo/maintainers
+
+# --- AI agent code (Style Learner, Editor, Video) — owner: ML/AI team ---
+/agents/style-learner/                        @vireo/maintainers
+/agents/editor/                               @vireo/maintainers
+/agents/video/                                @vireo/maintainers
+
+# --- Shared library code (any language change ripples everywhere) ---
+/packages/                                    @vireo/maintainers
+
+# --- CI/CD (workflow + dependabot + CODEOWNERS itself) ---
+/.github/workflows/                           @vireo/maintainers
+/.github/dependabot.yml                       @vireo/maintainers
+/.github/CODEOWNERS                           @vireo/maintainers
+
+# --- Infrastructure (Docker, compose, bake) ---
+/docker/                                      @vireo/maintainers
+/docker-bake.hcl                              @vireo/maintainers
+/docker-compose.yml                           @vireo/maintainers
+
+# --- Tests and test-runner glue (lock down the test contract) ---
+/tests/                                       @vireo/maintainers

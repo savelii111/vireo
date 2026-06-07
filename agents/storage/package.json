@@ -1,0 +1,14 @@
+{
+  "name": "@vireo/storage",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "@vireo/shared": "file:../../../packages/shared"
+  }
+}

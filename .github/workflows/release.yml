@@ -1,0 +1,273 @@
+name: Vireo Release
+
+# Trigger on version tags: v0.1.0, v1.2.3, v2.0.0-rc.1, etc.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0). Defaults to the trigger ref or "dev-<sha>".'
+        required: false
+        default: ''
+
+# Releases are heavy — don't cancel in progress.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Release needs to push to ghcr.io; needs contents: write to create GH release.
+permissions:
+  contents: read   # checkout, action secrets
+  packages: write  # push images to GHCR
+# Removed in P1-2: id-token (was for sigstore/cosign keyless signing — not used yet),
+#                   attestations: write (was for SLSA build provenance — not used yet).
+# Re-add when sigstore/attestations jobs are introduced.
+  pull-requests: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: vireo
+  NODE_VERSION: '20'
+
+# DRY: image matrix defined once, reused by scan + summary.
+# Adding a new service? Add one line here and the rest of the workflow
+# (scan + summary) picks it up automatically.
+.x-images: &x-images
+  # 9 Node images
+  - { image: auth,         dockerfile: docker/node.Dockerfile,         port: '8005' }
+  - { image: billing,      dockerfile: docker/node.Dockerfile,         port: '8006' }
+  - { image: oauth,        dockerfile: docker/node.Dockerfile,         port: '8008' }
+  - { image: ingest,       dockerfile: docker/node.Dockerfile,         port: '8009' }
+  - { image: dashboard,    dockerfile: docker/node.Dockerfile,         port: '3000' }
+  - { image: studio,       dockerfile: docker/node.Dockerfile,         port: '8011' }
+  - { image: monitoring,   dockerfile: docker/node.Dockerfile,         port: '8010' }
+  - { image: distributor,  dockerfile: docker/node.Dockerfile,         port: '8003' }
+  - { image: analyst,      dockerfile: docker/node.Dockerfile,         port: '8004' }
+  # 3 Python images
+  - { image: style-learner, dockerfile: agents/style-learner/Dockerfile, port: '8001' }
+  - { image: editor,        dockerfile: agents/editor/Dockerfile,        port: '8002' }
+  - { image: video,         dockerfile: agents/video/Dockerfile,         port: '8007' }
+
+# ---------------------------------------------------------------------------
+# All bake targets defined in docker-bake.hcl (target count: see file).
+# Pushed to: ghcr.io/vireo/<agent>:${{ github.ref_name }} and :latest
+# Trivy scans every image; HIGH/CRITICAL blocks the release.
+# ---------------------------------------------------------------------------
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Build + push all 12 service images
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build & push 12 images
+    runs-on: ubuntu-latest
+    # Expose the resolved image tag for downstream scan + summary jobs.
+    outputs:
+      image-tag: ${{ steps.export.outputs.image-tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@5927c834f5b4fdf503fca6f4c7eccda82949e1ee # v3.1.0
+        with:
+          # amd64 only — arm64 doubles the build time and most clients
+          # run x86 in production. Re-add 'linux/arm64' when you actually
+          # have a deployment target (Pi, Graviton, etc.).
+          platforms: linux/amd64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+        with:
+          driver-opts: image=moby/buildkit:v0.13.0
+          install: true
+          use: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@e92390c5fb421da1463c202d546fed0ec5c39f20 # v3.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Resolve the image tag once for the whole job:
+      #   tag push (v0.1.0): use github.ref_name
+      #   manual dispatch:   use inputs.tag if non-empty, else "dev-<short-sha>"
+      - name: Resolve image tag
+        id: tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ] && [ -z "$INPUT_TAG" ]; then
+            echo "value=$REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "▶ Resolved image tag from push event: $REF_NAME"
+          elif [ -n "$INPUT_TAG" ]; then
+            echo "value=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            echo "▶ Resolved image tag from manual dispatch input: $INPUT_TAG"
+          else
+            SHORT="${SHA::7}"
+            echo "value=dev-${SHORT}" >> "$GITHUB_OUTPUT"
+            echo "▶ Resolved image tag from commit SHA: dev-${SHORT}"
+          fi
+          echo "image-tag=$(cat "$GITHUB_OUTPUT" | grep '^value=' | head -1 | cut -d= -f2)" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # Compute tag list once, then bake-action will use it for all 12 targets.
+      # Uses ${{ steps.tag.outputs.value }} (resolved above) for the primary tag.
+      - name: Extract metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5.5.1
+        with:
+          images: |
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/auth
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/billing
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/oauth
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/ingest
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/dashboard
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/studio
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/monitoring
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/distributor
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/analyst
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/style-learner
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/editor
+            name=${{ env.REGISTRY }}/${{ env.OWNER }}/video
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.value }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=Vireo
+            org.opencontainers.image.description=Multi-agent Vireo platform service
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=Proprietary
+            org.opencontainers.image.vendor=vireo
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+          bake-target: all
+
+      - name: Build & push (docker buildx bake, all 12)
+        id: bake
+        uses: docker/bake-action@dbdf67d511c64f5af9363b359bf1c3c94a92fcfd # v5.3.0
+        with:
+          source: .
+          files: |
+            ./docker-bake.hcl
+            ${{ steps.meta.outputs.bake-file }}
+          targets: all
+          push: true
+          set: |
+            *.cache-from=
+            *.cache-from=type=gha
+            *.cache-from=type=gha,scope=buildx-${{ github.run_id }}
+            *.cache-to=type=gha,mode=max,scope=buildx-${{ github.run_id }}
+            *.platforms=linux/amd64
+            *.provenance=mode=max
+            *.attest=type=provenance,mode=max
+
+      - name: Show bake summary
+        if: always()
+        run: |
+          echo "## bake digest summary" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ toJSON(steps.bake.outputs) }}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Expose the resolved image tag to downstream jobs (scan, summary).
+      - name: Export image tag
+        id: export
+        run: echo "image-tag=${{ steps.tag.outputs.value }}" >> "$GITHUB_OUTPUT"
+
+  # -----------------------------------------------------------------------
+  # 2) Trivy vulnerability scan — runs after build, blocks on HIGH/CRITICAL
+  # -----------------------------------------------------------------------
+  scan:
+    name: Trivy scan (${{ matrix.image }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: *x-images
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@e92390c5fb421da1463c202d546fed0ec5c39f20 # v3.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:${{ needs.build.outputs.image-tag }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          # Cache the trivy DB between runs.
+          skip-dbscan: false
+        env:
+          TRIVY_CACHE_DIR: .trivycache
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: trivy-report-${{ matrix.image }}
+          path: trivy-*.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # 3) Summarise the release on the workflow run page.
+  #    Service list is read from docker-bake.hcl (skipping internal _common /
+  #    *-base targets) so the summary table never drifts from the bake config.
+  # ---------------------------------------------------------------------------
+  summary:
+    name: Release summary
+    needs: [build, scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Build summary
+        if: always()
+        env:
+          RESOLVED_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          {
+            echo "## Vireo release \`${RESOLVED_TAG}\`"
+            echo ""
+            echo "| Service | Image |"
+            echo "|---------|-------|"
+            # Single source of truth: docker-bake.hcl. Skips internal _common / *-base.
+            while IFS= read -r svc; do
+              echo "| \`$svc\` | \`${{ env.REGISTRY }}/${{ env.OWNER }}/$svc:${RESOLVED_TAG}\` |"
+            done < <(python3 -c "
+          import re
+          with open('docker-bake.hcl') as f:
+              targets = re.findall(r'^target \"([^\"]+)\"', f.read(), re.MULTILINE)
+          # Filter out non-service targets (_common, node-base, python-base)
+          print('\n'.join(t for t in targets if not t.startswith('_') and not t.endswith('-base')))
+          ")
+            echo ""
+            echo "_Latest tag also pushed as \`:latest\` on default-branch tags._"
+            echo ""
+            echo "### Build / scan result"
+            echo "build: ${{ needs.build.result }}  scan: ${{ needs.scan.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"

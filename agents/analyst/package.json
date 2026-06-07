@@ -1,0 +1,14 @@
+{
+  "name": "@vireo/analyst",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "@vireo/shared": "file:../../packages/shared"
+  }
+}

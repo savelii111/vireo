@@ -1,0 +1,290 @@
+name: Vireo CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch / PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal token scope; dorny/test-reporter needs read for checks.
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+# ---------------------------------------------------------------------------
+# Monorepo test matrix (counts in docker-bake.hcl / tests/run-all.mjs):
+#   - 9 Node agents  + 2 apps     (Node 20)
+#   - 3 Python agents + 1 shared  (Python 3.13)
+# Cache partitions by package to maximize hit rate on incremental PRs.
+# ---------------------------------------------------------------------------
+env:
+  NODE_VERSION: '20'
+  PYTHON_VERSION: '3.13'
+  RESULTS_DIR: tests/results
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_AUDIT: 'false'
+jobs:
+  # -----------------------------------------------------------------------
+  # 1) Lint: node --check on every .mjs under tests/
+  # -----------------------------------------------------------------------
+  lint:
+    name: Lint (node --check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Find .mjs files under tests/
+        id: discover
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find tests -type f -name '*.mjs' | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No .mjs files found under tests/"
+            exit 1
+          fi
+          {
+            echo "files<<__EOF__"
+            for f in "${files[@]}"; do
+              echo "$f"
+            done
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "Discovered ${#files[@]} .mjs file(s)"
+
+      - name: node --check (syntax)
+        env:
+          FILE_LIST: ${{ steps.discover.outputs.files }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            echo "::group::node --check $f"
+            node --check "$f"
+            echo "::endgroup::"
+          done <<< "$FILE_LIST"
+
+  # -----------------------------------------------------------------------
+  # 2) Node 20 — full test suite via tests/run-all.mjs (all 25 suites).
+  #    Single job (not a matrix): the test command is identical for every
+  #    agent, so a 9-way matrix would just duplicate the same 1194-test run
+  #    9 times in parallel. Cache is partitioned per agent below so that a
+  #    single agent's package.json change only busts its own slice.
+  # -----------------------------------------------------------------------
+  test-node:
+    name: Node 20 — full suite (25 suites, 1194+ tests)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # Cache the npm download dir (in addition to node_modules below) so that
+      # even cold cache hits avoid network re-fetching.
+      - name: Cache npm
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ env.NODE_VERSION }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-${{ env.NODE_VERSION }}-
+
+      # One cache key per agent so changing one agent's deps only busts its
+      # slice. Keyed on each agent's manifest + root lock.
+      - name: Cache per-agent node_modules
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            node_modules
+            agents/auth/node_modules
+            agents/billing/node_modules
+            agents/oauth/node_modules
+            agents/ingest/node_modules
+            agents/studio/node_modules
+            agents/monitoring/node_modules
+            agents/distributor/node_modules
+            agents/analyst/node_modules
+            agents/storage/node_modules
+            apps/dashboard/node_modules
+            apps/orchestrator/node_modules
+            packages/storage/node_modules
+            packages/shared/node_modules
+          key: ${{ runner.os }}-v1-${{ env.NODE_VERSION }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-v1-${{ env.NODE_VERSION }}-
+
+      - name: Install root + workspace deps
+        run: npm ci --no-audit --no-fund
+
+      # Storage is not a workspace but has its own package.json + tests; install
+      # it explicitly so `node --test agents/storage/tests/*.js` resolves `pg`
+      # and `@vireo/shared` from a local node_modules.
+      - name: Install storage agent deps
+        run: |
+          set -euo pipefail
+          if [ -f agents/storage/package.json ]; then
+            echo "::group::npm install agents/storage (no-save, isolated)"
+            (cd agents/storage && npm install --no-audit --no-fund --ignore-scripts --no-save)
+            echo "::endgroup::"
+          fi
+
+      - name: Run full test suite (Node + JUnit XML)
+        env:
+          CI: 'true'
+        run: |
+          mkdir -p "${{ env.RESULTS_DIR }}"
+          # run-all.mjs fans out across all 25 suites and (with --junit) writes
+          # a JUnit XML file that dorny/test-reporter parses for the PR
+          # comment summary. Plain log is also captured for debugging.
+          node tests/run-all.mjs \
+            --junit="${{ env.RESULTS_DIR }}/node-junit.xml" \
+            2>&1 | tee "${{ env.RESULTS_DIR }}/node-run-all.log"
+        # 20 min covers cold-cache full suite (25 suites, ~12s each in worst case);
+        # bump again if you add more agents.
+        timeout-minutes: 20
+
+      - name: Upload Node JUnit XML
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: node-junit
+          path: ${{ env.RESULTS_DIR }}/node-junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Node log
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: node-log
+          path: ${{ env.RESULTS_DIR }}/node-run-all.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  # -----------------------------------------------------------------------
+  # 3) Python 3.13 — pytest on the 3 Python agents + shared package
+  # -----------------------------------------------------------------------
+  test-python:
+    name: Python ${{ env.PYTHON_VERSION }} — pytest
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 5 Python suites: 3 agent packages + oauth server tests + shared JWT tests
+        include:
+          - agent: style-learner
+            workdir: agents/style-learner
+            install: agents/style-learner
+            pytest_path: tests/
+          - agent: editor
+            workdir: agents/editor
+            install: agents/editor
+            pytest_path: tests/
+          - agent: video
+            workdir: agents/video
+            install: agents/video
+            pytest_path: tests/
+          - agent: oauth
+            workdir: agents/oauth
+            install: agents/oauth
+            pytest_path: tests/test_oauth.py
+          - agent: shared-python
+            workdir: packages/shared/python
+            install: packages/shared/python
+            pytest_path: tests/test_jwt_auth.py
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            agents/style-learner/pyproject.toml
+            agents/editor/pyproject.toml
+            agents/video/pyproject.toml
+            agents/oauth/pyproject.toml
+            packages/shared/python/pyproject.toml
+
+      - name: Install base test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements-ci.txt
+
+      - name: Install shared Python package
+        run: pip install --no-cache-dir -e packages/shared/python
+
+      - name: Install agent package (${{ matrix.agent }})
+        run: pip install --no-cache-dir -e ${{ matrix.install }}
+
+      - name: Run pytest (${{ matrix.agent }})
+        working-directory: ${{ matrix.workdir }}
+        run: |
+          mkdir -p "../../${{ env.RESULTS_DIR }}"
+          pytest ${{ matrix.pytest_path }} \
+            --junitxml="../../${{ env.RESULTS_DIR }}/${{ matrix.agent }}-junit.xml" \
+            -v --tb=short --durations=10
+        timeout-minutes: 10
+
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: pytest-junit-${{ matrix.agent }}
+          path: ${{ env.RESULTS_DIR }}/${{ matrix.agent }}-junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # -----------------------------------------------------------------------
+  # 4) Aggregate report: downloads all artifacts and runs dorny/test-reporter
+  #    so the PR conversation shows a single consolidated JUnit summary.
+  # -----------------------------------------------------------------------
+  report:
+    name: Consolidated Test Report
+    needs: [test-node, test-python]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Download all test artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List collected artifacts
+        if: always()
+        run: |
+          echo "--- tree ---"
+          find artifacts -maxdepth 3 -print | sort
+
+      - name: Publish JUnit test report (Node + Python)
+        if: always()
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        with:
+          name: Vireo Test Report
+          path: 'artifacts/**/*-junit.xml'
+          reporter: junit
+          fail-on-error: true
+          require-pass: false
