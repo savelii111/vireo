@@ -689,11 +689,163 @@ def make_handler(pipeline: VideoPipeline, jobs: JobStore,
             "revised_prompt": result.get("revised_prompt", ""),
           })
 
+        # ---- W1D2: wire 4 unwired modules into HTTP ----
+        # Day 2 of Week 1 — modules existed as imports but had no route.
+        # Without a route, the only way to reach them was via the LLM.
+        # With these routes, the Studio can call each one directly via
+        # fetch (also unlocks caching, retries, and Studio-level
+        # parallelism).
+
+        if path == "/chapters":
+          # Build chapter markers from a transcript. Pure function on
+          # the transcript the caller already has. Returns prompt +
+          # parsed/validated chapters.
+          body = _read_json_body(self)
+          transcript = body.get("transcript", {})
+          if not transcript.get("text"):
+            return _json_response(self, 400, {"error": "missing_transcript"})
+          from .chapters import build_chapter_prompt, parse_chapters_response, validate_chapters
+          from .transcriber import Transcript
+          tr = Transcript(
+            text=transcript.get("text", ""),
+            segments=transcript.get("segments") or [],
+            language=transcript.get("language", "en"),
+            duration=transcript.get("duration", 0.0),
+          )
+          prompt = build_chapter_prompt(tr)
+          raw_response = body.get("llm_response") or _extract_inline_chapters(tr.text)
+          total = tr.duration or 0.0
+          parsed = parse_chapters_response(raw_response, total_duration=total)
+          validated = validate_chapters(parsed, total)
+          return _json_response(self, 200, {
+            "chapters": [c.to_dict() for c in validated],
+            "prompt": prompt,
+            "prompt_chars": len(prompt),
+          })
+
+        if path == "/hooks-style":
+          # Classify the opening seconds into a hook style. Deterministic
+          # — no LLM needed. Returns style + confidence + a suggested
+          # rewrite the caller can use as a caption.
+          body = _read_json_body(self)
+          transcript = body.get("transcript", {})
+          from .hooks_style import classify_hook, apply_hook_to_text
+          from .transcriber import Transcript
+          tr = Transcript(
+            text=transcript.get("text", ""),
+            segments=transcript.get("segments") or [],
+            language=transcript.get("language", "en"),
+            duration=transcript.get("duration", 0.0),
+          )
+          window = float(body.get("window_sec", 8.0))
+          hook = classify_hook(tr, window_sec=window)
+          # apply_hook_to_text wants a HookStyle (it reads .template).
+          # Build a one-off instance with the right template for the
+          # detected style.
+          from .hooks_style import HOOK_TEMPLATES, HookStyle
+          style_obj = HookStyle(
+            name=hook.name,
+            description=hook.description,
+            confidence=hook.confidence,
+            evidence=hook.evidence,
+            template=HOOK_TEMPLATES.get(hook.name, ""),
+          )
+          suggested = apply_hook_to_text(
+            opening_text=_first_words(tr.text, 12),
+            hook_style=style_obj,
+            topic=body.get("topic", "[your topic]"),
+          )
+          return _json_response(self, 200, {
+            "style": hook.name,
+            "confidence": hook.confidence,
+            "reason": hook.description,
+            "evidence": hook.evidence,
+            "suggested_rewrite": suggested,
+          })
+
+        if path == "/moments":
+          # Build prompt + parse response for "viral moments" extraction.
+          # Returns the prompt the Studio hands to its own LLM, and
+          # also parses the response if the caller already has one
+          # (caching: same transcript + same response → same moments).
+          body = _read_json_body(self)
+          transcript = body.get("transcript", {})
+          if not transcript.get("text"):
+            return _json_response(self, 400, {"error": "missing_transcript"})
+          platform = body.get("platform", "tiktok")
+          max_moments = int(body.get("max_moments", 3))
+          from .moments import build_prompt, parse_moments_response
+          from .transcriber import Transcript
+          tr = Transcript(
+            text=transcript.get("text", ""),
+            segments=transcript.get("segments") or [],
+            language=transcript.get("language", "en"),
+            duration=transcript.get("duration", 0.0),
+          )
+          prompt = build_prompt(platform, tr, max_moments=max_moments)
+          moments = []
+          if body.get("llm_response"):
+            moments = [m.to_dict() for m in parse_moments_response(
+              body["llm_response"], max_moments=max_moments)]
+          return _json_response(self, 200, {
+            "prompt": prompt,
+            "prompt_chars": len(prompt),
+            "moments": moments,
+            "platform": platform,
+            "max_moments": max_moments,
+          })
+
+        if path == "/broll":
+          # Build a broll search-query list for a transcript. Returns
+          # short search queries the caller feeds to a stock-footage
+          # service. No LLM needed — pure pattern matching.
+          body = _read_json_body(self)
+          text = body.get("text") or body.get("transcript", {}).get("text", "")
+          if not text:
+            return _json_response(self, 400, {"error": "missing_text"})
+          max_words = int(body.get("max_query_words", 3))
+          max_queries = int(body.get("max_queries", 5))
+          from .broll import extract_query
+          import re
+          sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+          queries = []
+          for s in sentences:
+            q = extract_query(s, max_words=max_words)
+            if q and q not in queries:
+              queries.append(q)
+            if len(queries) >= max_queries:
+              break
+          return _json_response(self, 200, {
+            "queries": queries,
+            "count": len(queries),
+            "source_sentences": min(len(sentences), max_queries),
+          })
+
         return _json_response(self, 404, {"error": "not_found", "path": path})
       except Exception as e:
         return _json_response(self, 500, {"error": "server_error", "message": str(e)})
 
   return VireoVideoHandler
+
+
+def _extract_inline_chapters(text: str) -> str:
+  """Pull `### Title` markers out of a transcript. Used when the caller
+  doesn't have a real LLM response (offline / dev). Returns the original
+  text wrapped so parse_chapters_response can find a single empty
+  chapter — caller can detect "no chapters" and skip rendering."""
+  if "###" in text:
+    return text
+  return ""  # no inline chapters → empty parse → empty list
+
+
+def _first_words(text: str, n: int) -> str:
+  """Return the first N words of a text, for hook-style rewrites."""
+  if not text:
+    return ""
+  words = text.split()
+  if len(words) <= n:
+    return text
+  return " ".join(words[:n])
 
 
 def build_server(
