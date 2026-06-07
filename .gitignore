@@ -95,3 +95,4 @@ vireo_media/
 *.pem
 *.key
 secrets/
+.tmp/

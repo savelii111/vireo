@@ -154,16 +154,23 @@ export class LLMClient {
    * @returns {AsyncGenerator<{delta: string, finish_reason?: string, usage?: object}>}
    */
   async *streamChat(opts) {
+    const { system, messages = [], tools = null, toolChoice = "auto", temperature = 0.7, maxTokens = 1024, signal = null } = opts;
     if (this.isMock()) {
       const r = await this._mockChat(opts);
       yield { delta: r.content || "", finish_reason: "stop", usage: r.usage };
       return;
     }
-    const { system, messages = [], tools = null, toolChoice = "auto", temperature = 0.7, maxTokens = 1024 } = opts;
     const body = { model: this.model, messages: this._buildMessages(system, messages), temperature, max_tokens: maxTokens, stream: true, stream_options: { include_usage: true } };
     if (tools && tools.length > 0) { body.tools = tools; body.tool_choice = toolChoice; }
 
+    // Combine the caller's external signal (from P0-2 AbortController) with
+    // our internal timeout. Whichever fires first cancels the fetch.
     const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort();
+    if (signal) {
+      if (signal.aborted) ctrl.abort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
     const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
     let r;
     try {
@@ -175,16 +182,19 @@ export class LLMClient {
       });
     } catch (e) {
       clearTimeout(t);
-      if (e.name === "AbortError") throw new LLMError("LLM stream timed out", "timeout");
+      if (signal) signal.removeEventListener("abort", onAbort);
+      if (e.name === "AbortError") throw new LLMError("LLM stream aborted", "aborted");
       throw new LLMError(e.message, "network");
     }
     if (!r.ok) {
       clearTimeout(t);
+      if (signal) signal.removeEventListener("abort", onAbort);
       const errText = await r.text();
       throw new LLMError(`OpenAI ${r.status}: ${errText.slice(0, 300)}`, `http_${r.status}`);
     }
     if (!r.body || !r.body.getReader) {
       clearTimeout(t);
+      if (signal) signal.removeEventListener("abort", onAbort);
       throw new LLMError("Streaming not supported in this environment", "no_stream");
     }
     const reader = r.body.getReader();
@@ -192,8 +202,10 @@ export class LLMClient {
     let buffer = "";
     let usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
     let streamFinished = false;
+    let externalAbort = false;
     try {
       while (true) {
+        if (signal?.aborted) { externalAbort = true; break; }
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -232,14 +244,19 @@ export class LLMClient {
       }
     } finally {
       clearTimeout(t);
+      if (signal) signal.removeEventListener("abort", onAbort);
       try { reader.releaseLock(); } catch {}
       // Always record usage so a [DONE] early-out (or stream error) still
       // gets accounted. This was the silent cost-tracking bug: previously
       // the [DONE] branch returned before the usage block ran.
-      this.usage.input_tokens += usage.input_tokens;
-      this.usage.output_tokens += usage.output_tokens;
-      this.usage.request_count++;
-      this.usage.total_cost_usd += this.costUsd(this.model, usage.input_tokens, usage.output_tokens);
+      // But don't double-count on external abort: the user paid for nothing
+      // if they cancelled before any usage chunk arrived.
+      if (!externalAbort) {
+        this.usage.input_tokens += usage.input_tokens;
+        this.usage.output_tokens += usage.output_tokens;
+        this.usage.request_count++;
+        this.usage.total_cost_usd += this.costUsd(this.model, usage.input_tokens, usage.output_tokens);
+      }
     }
   }
 

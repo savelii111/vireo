@@ -494,17 +494,34 @@ function buildProjectContextBlock(proj) {
 
 /**
  * Run a chat turn with up to N tool-calling rounds.
- * Returns { reply, messages, usage, costUsd, toolCalls }.
+ *
+ * Two-pass design (P0-1):
+ *   Pass 1 — tool-calling rounds. Non-streaming `llm.chat()` for fast planning
+ *            and reliable tool-call parsing.
+ *   Pass 2 — final user-visible reply. If the LLM is real (not mock) and has
+ *            `streamChat`, we re-issue the final turn as a streaming call so
+ *            deltas reach the user in real time. The non-streamed reply from
+ *            pass 1 is replaced in the message history with the streamed one.
+ *            If the LLM is mock or doesn't support streamChat, we use the
+ *            pass-1 reply as-is (mock mode is just one big chunk anyway).
+ *
+ * Returns { reply, messages, usage, costUsd, toolCalls, error, streamed }.
+ *   streamed: true when the reply came from a real streamChat pass.
  */
-async function runChatTurn({ llm, system, history, userMsg, tools, deps, userId, maxRounds = 6 }) {
+async function runChatTurn({ llm, system, history, userMsg, tools, deps, userId, maxRounds = 6, onTextDelta = null, signal = null }) {
   const messages = [...history, { role: "user", content: userMsg }];
   const allToolCalls = [];
   const allToolResults = [];
   let lastUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
   let cost = 0;
   let rounds = 0;
+  let error = null;
 
   while (rounds < maxRounds) {
+    if (signal?.aborted) {
+      error = "aborted";
+      break;
+    }
     rounds++;
     let resp;
     try {
@@ -525,9 +542,30 @@ async function runChatTurn({ llm, system, history, userMsg, tools, deps, userId,
     }
     messages.push(assistantTurn);
 
-    // If no tool calls, we're done
+    // If no tool calls, this is the final reply. Try to stream it for
+    // real-time UX. Skip when the LLM is mock (one-shot chunk, no benefit)
+    // or when no callback is provided (e.g. the non-streaming /api/chat path).
     if (!resp.tool_calls || resp.tool_calls.length === 0) {
-      return { reply: resp.content || "", messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls };
+      if (onTextDelta && typeof llm.streamChat === "function" && !llm.isMock?.()) {
+        const streamed = await _streamFinalReply({ llm, system, messages, onTextDelta, signal });
+        if (streamed) {
+          // Replace the last assistant turn in the trajectory with the streamed one
+          // so the persisted message history matches what the user saw.
+          const lastIdx = messages.findLastIndex((m) => m.role === "assistant");
+          if (lastIdx !== -1) {
+            messages[lastIdx] = { ...messages[lastIdx], content: streamed.reply };
+          }
+          lastUsage = {
+            input_tokens: lastUsage.input_tokens + streamed.usage.input_tokens,
+            output_tokens: lastUsage.output_tokens + streamed.usage.output_tokens,
+            total_tokens: lastUsage.total_tokens + streamed.usage.total_tokens,
+          };
+          cost += streamed.cost;
+          return { reply: streamed.reply, messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, streamed: true };
+        }
+        // Stream failed — fall through to non-streamed reply.
+      }
+      return { reply: resp.content || "", messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, streamed: false };
     }
 
     // Execute each tool call in parallel
@@ -544,7 +582,54 @@ async function runChatTurn({ llm, system, history, userMsg, tools, deps, userId,
   }
 
   // Hit max rounds — return whatever we have
+  if (error === "aborted") {
+    return { reply: "", messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, error: "aborted" };
+  }
   return { reply: messages[messages.length - 1]?.content || "(no reply — max tool rounds reached)", messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, error: "max_rounds" };
+}
+
+/**
+ * Issue a streamChat call to produce the final user-visible reply in real time.
+ * Returns { reply, usage, cost } on success, or null on failure (caller falls
+ * back to the non-streamed reply from pass 1).
+ *
+ * The stream is issued with tools=null so the LLM can't try to call tools
+ * during the streaming phase — by the time we reach this code, all tool
+ * planning is done. We still keep the full message trajectory (including the
+ * pass-1 assistant turn and tool results) so the LLM has full context.
+ */
+async function _streamFinalReply({ llm, system, messages, onTextDelta, signal }) {
+  let reply = "";
+  let usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  try {
+    for await (const ev of llm.streamChat({
+      system,
+      messages,
+      tools: null,
+      toolChoice: "none",
+      temperature: 0.7,
+      maxTokens: 1024,
+      signal,  // passed through; LLMClient honors it for the underlying fetch
+    })) {
+      if (signal?.aborted) break;
+      if (ev.delta) {
+        reply += ev.delta;
+        try { onTextDelta(ev.delta); } catch (e) { console.warn("[studio] onTextDelta threw:", e?.message || e); }
+      }
+      if (ev.usage) {
+        usage = {
+          input_tokens: ev.usage.prompt_tokens || ev.usage.input_tokens || 0,
+          output_tokens: ev.usage.completion_tokens || ev.usage.output_tokens || 0,
+          total_tokens: ev.usage.total_tokens || 0,
+        };
+      }
+    }
+    const cost = llm.costUsd(llm.model, usage.input_tokens, usage.output_tokens);
+    return { reply, usage, cost };
+  } catch (e) {
+    console.warn("[studio] _streamFinalReply failed, falling back to non-streamed reply:", e?.message || e);
+    return null;
+  }
 }
 
 export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret = JWT_SECRET, pool, llm, fetchImpl, upstreamTimeoutMs } = {}) {
@@ -1067,23 +1152,57 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           "Connection": "keep-alive",
           "X-Accel-Buffering": "no",
         });
-        const send = (event, data) => { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+        const send = (event, data) => {
+          // Guard against writes after the client closed the connection.
+          // Without this, an aborted request can throw ERR_STREAM_DESTROYED
+          // and surface as a 500 to the orchestrator even though the user
+          // got their answer.
+          if (!res.writable || res.writableEnded) return;
+          try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* ignore */ }
+        };
         send("meta", { conversation_id: conversationId });
 
+        // P0-2: AbortController wired to client disconnect. When the user
+        // closes the tab, the in-flight LLM call should cancel so we don't
+        // burn tokens generating a reply nobody will see.
+        const abortCtrl = new AbortController();
         let aborted = false;
-        req.on("close", () => { aborted = true; });
+        req.on("close", () => { aborted = true; abortCtrl.abort(); });
+        // Heartbeat every 15s so proxies don't kill the connection.
+        // Tracked so we can clear it on the way out.
+        const heartbeat = setInterval(() => {
+          if (aborted || res.writableEnded) return;
+          try { res.write(": heartbeat\n\n"); } catch { /* ignore */ }
+        }, 15_000);
 
-        // Tool-calling phase: use non-streaming chat so we can execute tools.
-        const pre = await runChatTurn({
-          llm: llmClient,
-          system,
-          history: hist,
-          userMsg: body.message,
-          tools: EDIT_TOOLS,
-          deps,
-          userId,
-          maxRounds: 6,
-        });
+        // P0-1: real-time text streaming. Each delta from the LLM is forwarded
+        // to the client as an SSE event, not synthesized after the fact.
+        const onTextDelta = (delta) => {
+          if (aborted) return;
+          send("delta", { text: delta });
+        };
+
+        let pre;
+        try {
+          pre = await runChatTurn({
+            llm: llmClient,
+            system,
+            history: hist,
+            userMsg: body.message,
+            tools: EDIT_TOOLS,
+            deps,
+            userId,
+            maxRounds: 6,
+            onTextDelta,
+            signal: abortCtrl.signal,
+          });
+        } catch (e) {
+          clearInterval(heartbeat);
+          send("error", { error: "stream_failed", message: e?.message || String(e) });
+          try { res.end(); } catch {}
+          return;
+        }
+        clearInterval(heartbeat);
         if (aborted) { try { res.end(); } catch {} return; }
 
         // Persist the tool-call exchange
@@ -1121,22 +1240,11 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           }
         }
 
-        // If the LLM already produced a final reply (no tools left, or after tools),
-        // stream it as deltas. We stream the final text from the last assistant
-        // message in pre.messages so the user sees character-by-character output.
+        // P0-1: real streaming — the final reply's deltas were already sent
+        // to the client in real time by the onTextDelta callback above.
+        // No more fake 12ms token-by-token synthesis: the user sees text
+        // appear as fast as the LLM produces it.
         const finalReply = pre.reply || "";
-        if (finalReply && !aborted) {
-          // If we already have it, just stream it word-by-word to give the
-          // streaming feel (mock mode). For real LLM, use streamChat on a
-          // follow-up turn — but that needs another LLM call. For now we
-          // stream the existing reply in chunks for consistent UX.
-          const tokens = finalReply.match(/\S+\s*|\s+/g) || [finalReply];
-          for (const tok of tokens) {
-            if (aborted) break;
-            send("delta", { text: tok });
-            await new Promise((r) => setTimeout(r, 12));
-          }
-        }
 
         await conversations.touch(conversationId);
         if (!aborted) {

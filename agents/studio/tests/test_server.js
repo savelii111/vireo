@@ -547,9 +547,14 @@ test("chat: LLM error -> user-friendly error response (not 500 crash)", async ()
   await close();
 });
 
-// ---- P0 #15: streaming endpoint smoke test ----
+// =====================================================================
+// P0 — streaming endpoint
+// =====================================================================
 
-test("stream: /api/chat/stream returns SSE with meta+tool+delta+done events", async () => {
+test("stream: /api/chat/stream returns SSE with meta+tool+done events (mock LLM, no delta)", async () => {
+  // With a mock LLM (no streamChat), we still emit meta/tool/done but no
+  // delta events — the mock returns the full reply in one shot. P0-1 removed
+  // the previous fake 12ms-per-token splitting.
   const { server } = buildServer({ secret: "s", llm: makeMockLLMWithTool() });
   const { port, close } = await listen(server);
   const token = await getToken("s");
@@ -562,9 +567,118 @@ test("stream: /api/chat/stream returns SSE with meta+tool+delta+done events", as
   assert.equal(r.headers.get("content-type"), "text/event-stream; charset=utf-8");
   const text = await r.text();
   assert.ok(text.includes("event: meta"), "should emit meta event");
+  assert.ok(text.includes("event: tool"), "should emit tool event");
   assert.ok(text.includes("event: done"), "should emit done event");
-  assert.ok(text.includes("event: delta"), "should emit at least one delta");
   assert.ok(text.includes("conversation_id"), "meta should include conversation_id");
+  await close();
+});
+
+test("stream: real LLM with streamChat emits real-time delta events", async () => {
+  // P0-1: deltas come from the LLM's streamChat, not from a fake 12ms splitter.
+  const realLLM = {
+    model: "real-mock", isMock: () => false, costUsd: () => 0,
+    chat: async ({ messages }) => {
+      const last = messages[messages.length - 1];
+      if (last?.role === "tool") return { content: "Done! Project created.", tool_calls: null, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } };
+      const t = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+      if (/create.*project/.test(t.toLowerCase())) {
+        return {
+          content: "",
+          tool_calls: [{ id: "c1", type: "function", function: { name: "create_project", arguments: JSON.stringify({ name: "Demo" }) } }],
+          usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 },
+        };
+      }
+      return { content: "ok", tool_calls: null, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } };
+    },
+    streamChat: async function* ({ messages }) {
+      const last = messages[messages.length - 1];
+      if (last?.role === "tool") {
+        const text = "Done! Project created.";
+        for (const part of ["Done!", " Project", " created."]) {
+          yield { delta: part, finish_reason: null };
+        }
+        yield { delta: "", finish_reason: "stop", usage: { prompt_tokens: 15, completion_tokens: 8, total_tokens: 23 } };
+        return;
+      }
+      const text = "regular reply";
+      for (const ch of text.split("")) yield { delta: ch, finish_reason: null };
+      yield { delta: "", finish_reason: "stop", usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } };
+    },
+    getUsage: () => ({ input_tokens: 0, output_tokens: 0, request_count: 0, error_count: 0, retry_count: 0, total_cost_usd: 0 }),
+  };
+  const { server } = buildServer({ secret: "s", llm: realLLM });
+  const { port, close } = await listen(server);
+  const token = await getToken("s");
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+
+  const r = await fetch(`http://127.0.0.1:${port}/api/chat/stream`, {
+    method: "POST", headers, body: JSON.stringify({ message: "create a project" }),
+  });
+  assert.equal(r.status, 200);
+  const text = await r.text();
+
+  // Parse SSE events
+  const events = text.split("\n\n").filter(Boolean).map((block) => {
+    const lines = block.split("\n");
+    const ev = {};
+    for (const l of lines) {
+      if (l.startsWith("event: ")) ev.event = l.slice(7).trim();
+      else if (l.startsWith("data: ")) ev.data = l.slice(6);
+    }
+    return ev;
+  });
+
+  // Should have: meta, tool, delta (multiple from real LLM), done
+  const eventNames = events.map((e) => e.event);
+  assert.ok(eventNames.includes("meta"));
+  assert.ok(eventNames.includes("tool"));
+  assert.ok(eventNames.includes("delta"));
+  assert.ok(eventNames.includes("done"));
+
+  // Deltas should be the actual streamed text "Done! Project created."
+  const deltaEvents = events.filter((e) => e.event === "delta");
+  assert.ok(deltaEvents.length >= 2, `should have multiple deltas, got ${deltaEvents.length}`);
+  const fullDelta = deltaEvents.map((e) => JSON.parse(e.data).text).join("");
+  assert.equal(fullDelta, "Done! Project created.", `delta should be the streamed text, got: "${fullDelta}"`);
+
+  // done event should have the full reply
+  const done = events.find((e) => e.event === "done");
+  const doneData = JSON.parse(done.data);
+  assert.equal(doneData.reply, "Done! Project created.");
+  await close();
+});
+
+test("stream: first delta arrives within 200ms (no fake 12ms splitting)", async () => {
+  // P0-1: deltas come as fast as the LLM produces them, not on a 12ms timer.
+  // The old code would take at least 12ms per token; the new code returns
+  // the LLM's delta as soon as it arrives.
+  const realLLM = {
+    model: "real-mock", isMock: () => false, costUsd: () => 0,
+    chat: async ({ messages }) => {
+      const last = messages[messages.length - 1];
+      if (last?.role === "tool") return { content: "Done!", tool_calls: null, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+      return { content: "ok", tool_calls: null, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+    },
+    streamChat: async function* () {
+      yield { delta: "Done!", finish_reason: null };
+      yield { delta: "", finish_reason: "stop", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+    },
+    getUsage: () => ({}),
+  };
+  const { server } = buildServer({ secret: "s", llm: realLLM });
+  const { port, close } = await listen(server);
+  const token = await getToken("s");
+  const start = Date.now();
+  const r = await fetch(`http://127.0.0.1:${port}/api/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ message: "hi" }),
+  });
+  const text = await r.text();
+  const elapsed = Date.now() - start;
+  // Real streaming should complete in well under 1 second for a tiny reply.
+  assert.ok(elapsed < 1000, `streaming should be fast, took ${elapsed}ms`);
+  assert.ok(text.includes("event: delta"), "has delta events");
   await close();
 });
 
