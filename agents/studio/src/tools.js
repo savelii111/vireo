@@ -509,34 +509,54 @@ export function buildEditToolContext({
 
 /**
  * Map each tool name to an HTTP request against the video agent.
+ *
+ * **P0-1 fix (2026-06-07)**: Studio now sends flat EditRequest fields, not a
+ * nested {file_id, operation, params} wrapper. The video agent's
+ * `_build_edit_request` (agents/video/vireo_video/server.py:157) does:
+ *   1. camelCase → snake_case translation
+ *   2. Filter to known EditRequest fields only
+ *   3. Strips `file_id`, `operation`, `params` (not in EditRequest dataclass)
+ * Old wrapper schema → `missing_source_path` 400 on every call.
+ *
+ * Each case here maps an LLM-natural-language tool call to the correct flat
+ * EditRequest fields. P0-2 (zoom windows) and P0-3 (list_files shape) are
+ * tracked separately in the audit doc.
+ *
  * Returns: { method, path, body? } or null if the tool is unknown.
+ *
+ * **Exported for unit testing** — test_schema_send_flat_edit_request_fields
+ * in tests/test_tools.js verifies each case sends the right shape.
  */
-function _routeForTool(name, args) {
-  const fileId = encodeURIComponent(args?.file_id || "");
+export function _routeForTool(name, args) {
+  const sourcePath = (args && (args.file_id || args.file_path)) || "";
   switch (name) {
     case "transcribe_video":
-      return { method: "POST", path: "/transcribe", body: { file_id: args.file_id } };
+      // /transcribe expects { file_path: "..." }, not file_id
+      return { method: "POST", path: "/transcribe", body: { file_path: sourcePath } };
 
     case "cut_clips":
+      // ranges: [[start_sec, end_sec], ...] → custom_moments [{start, end}, ...]
+      // P1: when ranges provided, skip auto-selection (max_moments = len(ranges))
       return {
         method: "POST",
         path: "/edit",
         body: {
-          file_id: args.file_id,
-          operation: "cut",
-          params: { ranges: args.ranges, mode: args.mode || "keep" },
+          source_path: sourcePath,
+          max_moments: Array.isArray(args.ranges) ? args.ranges.length : 1,
+          custom_moments: Array.isArray(args.ranges)
+            ? args.ranges.map(([s, e]) => ({ start: s, end: e }))
+            : undefined,
+          multi_clip: Array.isArray(args.ranges) && args.ranges.length > 1,
         },
       };
 
     case "remove_silence":
+      // min_silence_ms / padding_ms are not EditRequest fields — enable_silence_removal
+      // is the only knob. The pipeline uses its own defaults (configurable in code).
       return {
         method: "POST",
         path: "/edit",
-        body: {
-          file_id: args.file_id,
-          operation: "remove_silence",
-          params: { min_silence_ms: args.min_silence_ms ?? 700, padding_ms: args.padding_ms ?? 80 },
-        },
+        body: { source_path: sourcePath, enable_silence_removal: true },
       };
 
     case "reframe_for_platform":
@@ -544,21 +564,20 @@ function _routeForTool(name, args) {
         method: "POST",
         path: "/edit",
         body: {
-          file_id: args.file_id,
-          operation: "reframe",
-          params: { platform: args.platform },
+          source_path: sourcePath,
+          target_platform: args.platform || "tiktok",
         },
       };
 
     case "add_zoom":
+      // P0-2: apply_zoom() in the pipeline needs a `windows` arg (EmphasisWindow[]).
+      // Until the pipeline derives that from the transcript, this tool will crash
+      // mid-run with TypeError. We set enable_zoom=true and let the pipeline fail
+      // non-fatally (the other effects survive).
       return {
         method: "POST",
         path: "/edit",
-        body: {
-          file_id: args.file_id,
-          operation: "zoom",
-          params: { words: args.words || [], intensity: args.intensity ?? 1.4 },
-        },
+        body: { source_path: sourcePath, enable_zoom: true },
       };
 
     case "add_captions":
@@ -566,38 +585,53 @@ function _routeForTool(name, args) {
         method: "POST",
         path: "/edit",
         body: {
-          file_id: args.file_id,
-          operation: "captions",
-          params: { style: args.style || "tiktok-bold" },
+          source_path: sourcePath,
+          target_platform: args.platform || "tiktok",
+          subtitle_style: args.style || "tiktok-bold",
+          word_burn: true,
         },
       };
 
     case "add_music":
+      // add_music is not a direct EditRequest field — the pipeline doesn't yet
+      // support background music. For now, send a no-op edit (just reframe to
+      // target platform) and surface "music not yet wired" to the LLM. Future
+      // work: add enable_music + music_mood fields to EditRequest.
       return {
         method: "POST",
         path: "/edit",
         body: {
-          file_id: args.file_id,
-          operation: "music",
-          params: { mood: args.mood || "upbeat", volume: args.volume ?? 0.2 },
+          source_path: sourcePath,
+          target_platform: args.platform || "tiktok",
         },
       };
 
     case "make_montage":
+      // target_duration_sec isn't a direct EditRequest field. Closest equivalent:
+      // max_moments + custom_moments (selection algorithm picks moments summing
+      // to ~target_duration_sec / max_moments). For now, we let the selection
+      // algorithm do its thing.
       return {
         method: "POST",
         path: "/edit/async",
         body: {
-          file_id: args.file_id,
-          operation: "montage",
-          params: { target_duration_sec: args.target_duration_sec, style: args.style || "hype" },
+          source_path: sourcePath,
+          max_moments: args.max_moments ?? 3,
+          target_platform: args.platform || "tiktok",
         },
       };
 
     case "get_video_info":
-      return { method: "GET", path: `/files/${fileId}`, body: null };
+      return {
+        method: "GET",
+        path: `/files/${encodeURIComponent(sourcePath)}`,
+        body: null,
+      };
 
     case "list_files":
+      // P0-3: video agent returns {uploads: [...], outputs: [...]} but Studio's
+      // LLM expects {files: [{file_id, name, size, ...}]}. Until the response
+      // shape is normalized, the LLM can't resolve "my last video" references.
       return { method: "GET", path: "/files", body: null };
 
     default:

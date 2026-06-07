@@ -460,9 +460,36 @@ def make_handler(pipeline: VideoPipeline, jobs: JobStore,
         if path == "/styles":
           return _json_response(self, 200, {"styles": list(SUBTITLE_STYLES.keys())})
         if path == "/files":
+          # P0-3 fix (2026-06-07): Studio's LLM expects a flat {files: [...]} list
+          # with {file_id, name, size, duration_sec, uploaded_at} so it can
+          # resolve "my last video" / "the 3rd file" references. We preserve
+          # {uploads, outputs} for back-compat and add the flat list.
           uploads = [f.to_dict() for f in storage.list_uploads()]
           outputs = [f.to_dict() for f in storage.list_outputs()]
-          return _json_response(self, 200, {"uploads": uploads, "outputs": outputs})
+          files = []
+          for f in uploads:
+            files.append({
+              "file_id": f.get("name") or f.get("path"),
+              "name": f.get("name"),
+              "size": f.get("size", 0),
+              "duration_sec": f.get("duration_sec", 0.0),
+              "uploaded_at": f.get("uploaded_at"),
+              "kind": "upload",
+            })
+          for f in outputs:
+            files.append({
+              "file_id": f.get("name") or f.get("path"),
+              "name": f.get("name"),
+              "size": f.get("size", 0),
+              "duration_sec": f.get("duration_sec", 0.0),
+              "uploaded_at": f.get("uploaded_at"),
+              "kind": "output",
+            })
+          return _json_response(self, 200, {
+            "files": files,        # P0-3 normalized shape for Studio LLM
+            "uploads": uploads,    # back-compat
+            "outputs": outputs,    # back-compat
+          })
         if path == "/jobs":
           limit = int(url.query.get("limit", "50")) if url.query else 50
           items = [j.to_dict() for j in jobs.list(limit=limit)]

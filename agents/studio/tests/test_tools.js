@@ -16,6 +16,7 @@ import {
   parseToolCalls,
   executeToolCall,
   buildEditToolContext,
+  _routeForTool,
 } from "../src/tools.js";
 
 // ---------- test_tools_schema_valid ----------
@@ -206,4 +207,123 @@ test("test_execute_tool_call_timeout: tool with 100ms timeout fails gracefully",
   assert.ok(elapsed < 2_000, `should fail fast, took ${elapsed}ms`);
   // And it should have actually been near the 100ms mark, not a connection refusal.
   assert.ok(elapsed >= 80, `should honour the 100ms timeout, returned in ${elapsed}ms`);
+});
+
+// ---------- P0-1 regression: _routeForTool sends flat EditRequest fields ----------
+
+test("P0-1: _routeForTool never sends file_id/operation/params wrapper (flat EditRequest only)", () => {
+  // The video agent's _build_edit_request strips unknown fields. Old wrapper
+  // {file_id, operation, params:{...}} → source_path missing → 400.
+  const cases = [
+    "transcribe_video", "cut_clips", "remove_silence", "reframe_for_platform",
+    "add_zoom", "add_captions", "add_music", "make_montage",
+  ];
+  for (const name of cases) {
+    const route = _routeForTool(name, { file_id: "/tmp/v.mp4" });
+    assert.ok(route, `route for ${name} should not be null`);
+    if (route.body && typeof route.body === "object") {
+      assert.ok(
+        !("file_id" in route.body),
+        `${name}: body must NOT contain file_id (got ${JSON.stringify(route.body)})`,
+      );
+      assert.ok(
+        !("operation" in route.body),
+        `${name}: body must NOT contain operation (got ${JSON.stringify(route.body)})`,
+      );
+      assert.ok(
+        !("params" in route.body),
+        `${name}: body must NOT contain params (got ${JSON.stringify(route.body)})`,
+      );
+    }
+  }
+});
+
+test("P0-1: transcribe_video sends file_path (not file_id) to /transcribe", () => {
+  const route = _routeForTool("transcribe_video", { file_id: "/tmp/v.mp4" });
+  assert.equal(route.method, "POST");
+  assert.equal(route.path, "/transcribe");
+  assert.deepEqual(route.body, { file_path: "/tmp/v.mp4" });
+});
+
+test("P0-1: cut_clips sends source_path + custom_moments + multi_clip", () => {
+  const route = _routeForTool("cut_clips", {
+    file_id: "/tmp/v.mp4",
+    ranges: [[0, 5], [10, 15]],
+  });
+  assert.equal(route.method, "POST");
+  assert.equal(route.path, "/edit");
+  assert.equal(route.body.source_path, "/tmp/v.mp4");
+  assert.equal(route.body.max_moments, 2);
+  assert.deepEqual(route.body.custom_moments, [{ start: 0, end: 5 }, { start: 10, end: 15 }]);
+  assert.equal(route.body.multi_clip, true);
+});
+
+test("P0-1: remove_silence sends source_path + enable_silence_removal=true", () => {
+  const route = _routeForTool("remove_silence", { file_id: "/tmp/v.mp4" });
+  assert.equal(route.body.source_path, "/tmp/v.mp4");
+  assert.equal(route.body.enable_silence_removal, true);
+  // min_silence_ms / padding_ms are NOT EditRequest fields — pipeline uses
+  // its own defaults. We must NOT pass them through.
+  assert.ok(!("min_silence_ms" in route.body));
+  assert.ok(!("padding_ms" in route.body));
+});
+
+test("P0-1: reframe_for_platform sends target_platform", () => {
+  const route = _routeForTool("reframe_for_platform", { file_id: "/tmp/v.mp4", platform: "tiktok" });
+  assert.equal(route.body.source_path, "/tmp/v.mp4");
+  assert.equal(route.body.target_platform, "tiktok");
+});
+
+test("P0-1: add_zoom sends enable_zoom=true (P0-2 windows derived in pipeline)", () => {
+  const route = _routeForTool("add_zoom", { file_id: "/tmp/v.mp4" });
+  assert.equal(route.body.source_path, "/tmp/v.mp4");
+  assert.equal(route.body.enable_zoom, true);
+});
+
+test("P0-1: add_captions sends subtitle_style + word_burn + target_platform", () => {
+  const route = _routeForTool("add_captions", { file_id: "/tmp/v.mp4", style: "mrbeast-yellow" });
+  assert.equal(route.body.source_path, "/tmp/v.mp4");
+  assert.equal(route.body.subtitle_style, "mrbeast-yellow");
+  assert.equal(route.body.word_burn, true);
+  assert.equal(route.body.target_platform, "tiktok"); // default
+});
+
+test("P0-1: make_montage goes to /edit/async with max_moments", () => {
+  const route = _routeForTool("make_montage", { file_id: "/tmp/v.mp4", max_moments: 5 });
+  assert.equal(route.method, "POST");
+  assert.equal(route.path, "/edit/async");
+  assert.equal(route.body.source_path, "/tmp/v.mp4");
+  assert.equal(route.body.max_moments, 5);
+  assert.equal(route.body.target_platform, "tiktok"); // default
+});
+
+test("P0-1: get_video_info uses URL-encoded source path", () => {
+  const route = _routeForTool("get_video_info", { file_id: "C:\\path\\with space.mp4" });
+  assert.equal(route.method, "GET");
+  // path separators encoded as %5C, space as %20
+  assert.match(route.path, /^\/files\//);
+  assert.ok(route.path.includes("path"));
+  assert.ok(route.path.includes("with"));
+  // body should be null for GET
+  assert.equal(route.body, null);
+});
+
+test("P0-1: list_files routes to GET /files (P0-3 response shape is server-side)", () => {
+  const route = _routeForTool("list_files", {});
+  assert.equal(route.method, "GET");
+  assert.equal(route.path, "/files");
+  assert.equal(route.body, null);
+});
+
+test("P0-1: unknown tool returns null (so executeToolCall surfaces unknown_tool)", () => {
+  const route = _routeForTool("nonexistent_tool", { file_id: "/tmp/v.mp4" });
+  assert.equal(route, null);
+});
+
+test("P0-1: source_path accepts both file_id and file_path (LLM may use either)", () => {
+  // LLM might say file_id OR file_path. Both should resolve to source_path.
+  const r1 = _routeForTool("transcribe_video", { file_id: "A" });
+  const r2 = _routeForTool("transcribe_video", { file_path: "B" });
+  assert.equal(r1.body.file_path, "A");
+  assert.equal(r2.body.file_path, "B");
 });

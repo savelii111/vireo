@@ -439,15 +439,31 @@ class VideoPipeline:
     # Auto-zoom on emphasis words
     if request.enable_zoom:
       try:
-        from .zoom import apply_zoom
+        from .zoom import apply_zoom, detect_emphasis_windows
+        # P0-2 fix (2026-06-07): pass windows arg. If we have a transcript,
+        # derive emphasis windows from it. Otherwise, fall back to an empty
+        # list (zoom is a no-op) and mark non-fatal so other effects survive.
+        windows: list = []
+        if getattr(result, "transcript", None) and result.transcript.get("words"):
+          try:
+            windows = detect_emphasis_windows(
+              result.transcript.get("words", []),
+              result.transcript.get("duration_sec", 0.0),
+            )
+          except Exception as detect_err:
+            # Detection failure should not kill the whole edit
+            _record_step(result, "effects.zoom.detect", time.time(),
+                         error=str(detect_err), fatal=False)
         tmp = self._tmp_path(request.output_path, suffix="zoomed")
-        apply_zoom(current, str(tmp))
+        apply_zoom(current, str(tmp), windows)
         current = str(tmp)
         applied.append("zoom")
       except Exception as e:
-        # V-16 fix: surface zoom failure (was silently swallowed)
-        _record_step(result, "effects.zoom", t0, error=str(e), fatal=True)
-        raise
+        # P0-2 fix: zoom failure is NOT fatal — color/reframe/subtitle must
+        # still complete. Mark fatal=False so the pipeline continues.
+        _record_step(result, "effects.zoom", t0, error=str(e), fatal=False)
+        if not hasattr(result, "_zoom_warned"):
+          result._zoom_warned = True
 
     # Color grading
     if request.enable_color:
