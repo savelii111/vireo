@@ -138,7 +138,7 @@ export function validateDistributePlatforms(platforms) {
 }
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const LLM_PROVIDER = process.env.VIREO_LLM_PROVIDER || "openai";
+const LLM_PROVIDER = process.env.VIREO_LLM_PROVIDER || "gemini";
 const LLM_CHEAP_MODEL = process.env.VIREO_LLM_CHEAP_MODEL || "";
 const LLM_EXPENSIVE_MODEL = process.env.VIREO_LLM_EXPENSIVE_MODEL || "";
 // CORS allow-list. Read fresh on every request (via parseCorsOrigins below)

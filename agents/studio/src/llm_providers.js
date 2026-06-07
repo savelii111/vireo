@@ -152,7 +152,7 @@ class AnthropicClient extends LLMClient {
 
 // ─── Gemini client (generateContent API) ─────────────────────────
 class GeminiClient extends LLMClient {
-  constructor({ apiKey, model = "gemini-1.5-flash", ...rest } = {}) {
+  constructor({ apiKey, model = "gemini-2.5-flash", ...rest } = {}) {
     const key = apiKey || process.env.GEMINI_API_KEY || "";
     super({ apiKey: "placeholder", baseUrl: "https://generativelanguage.googleapis.com", model, ...rest });
     this.apiKey = key;
@@ -232,7 +232,7 @@ class GeminiClient extends LLMClient {
 
 // ─── Provider registry ────────────────────────────────────────────
 const ANTHROPIC_DEFAULTS = { baseUrl: "https://api.anthropic.com", apiKeyEnv: "ANTHROPIC_API_KEY", defaultModel: "claude-sonnet-4-20250514" };
-const GEMINI_DEFAULTS = { baseUrl: "https://generativelanguage.googleapis.com", apiKeyEnv: "GEMINI_API_KEY", defaultModel: "gemini-1.5-flash" };
+const GEMINI_DEFAULTS = { baseUrl: "https://generativelanguage.googleapis.com", apiKeyEnv: "GEMINI_API_KEY", defaultModel: "gemini-2.5-flash" };
 
 export const PROVIDER_DEFAULTS = {
   ...OPENAI_COMPATIBLE,
