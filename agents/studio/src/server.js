@@ -29,6 +29,7 @@ import { ProjectStore, ContentPieceStorePg, ConversationStore, MessageStore } fr
 import { PostgresStyleDNAStore } from "../../storage/src/extended.js";
 import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrations.js";
 import { LLMClient, LLMError } from "./llm_client.js";
+import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
 import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } from "./tools.js";
 import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
 
@@ -137,6 +138,9 @@ export function validateDistributePlatforms(platforms) {
 }
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const LLM_PROVIDER = process.env.VIREO_LLM_PROVIDER || "openai";
+const LLM_CHEAP_MODEL = process.env.VIREO_LLM_CHEAP_MODEL || "";
+const LLM_EXPENSIVE_MODEL = process.env.VIREO_LLM_EXPENSIVE_MODEL || "";
 // CORS allow-list. Read fresh on every request (via parseCorsOrigins below)
 // so a runtime env change is picked up without a server restart.
 // Comma-separated origins; "*" echoes the request origin (so credentialled
@@ -1174,7 +1178,18 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
   const rlMax = Number(process.env.VIREO_RATE_LIMIT_MAX || 60);
   const rlWindow = Number(process.env.VIREO_RATE_LIMIT_WINDOW_MS || 60_000);
   const rateLimiter = new RateLimiter({ windowMs: rlWindow, max: rlMax });
-  const llmClient = llm || new LLMClient({ apiKey: OPENAI_API_KEY, model: OPENAI_MODEL, fetchImpl });
+  let resolvedLlm;
+  if (llm) {
+    resolvedLlm = llm;
+  } else if (LLM_CHEAP_MODEL && LLM_EXPENSIVE_MODEL) {
+    // Smart router: cheap model for tool selection, expensive for generation
+    const cheap = createLLMClient({ provider: LLM_PROVIDER, model: LLM_CHEAP_MODEL, fetchImpl });
+    const expensive = createLLMClient({ provider: LLM_PROVIDER, model: LLM_EXPENSIVE_MODEL, fetchImpl });
+    resolvedLlm = new SmartRouter({ cheapClient: cheap, expensiveClient: expensive });
+  } else {
+    resolvedLlm = createLLMClient({ provider: LLM_PROVIDER, model: OPENAI_MODEL, apiKey: OPENAI_API_KEY, fetchImpl });
+  }
+  const llmClient = resolvedLlm;
 
   // Stores (require pool if Postgres, otherwise in-memory)
   const projects = pool ? new ProjectStore(pool) : new InMemoryProjectStore();
@@ -2059,7 +2074,8 @@ export async function start(opts = {}) {
     // the optional chain short-circuited on `opts.llm === undefined` and
     // the server claimed to be "real" even when running on the mock.
     const resolvedLlm = opts.llm || llmClient;
-    console.log(`[studio] llm: ${resolvedLlm?.isMock() ? "MOCK" : "real"} model=${resolvedLlm?.model || OPENAI_MODEL}`);
+    const isSmart = resolvedLlm instanceof SmartRouter;
+    console.log(`[studio] llm: ${resolvedLlm?.isMock() ? "MOCK" : "real"} provider=${LLM_PROVIDER} model=${resolvedLlm?.model || OPENAI_MODEL}${isSmart ? " (smart router)" : ""}`);
     console.log(`[studio] postgres: ${pool ? "connected" : "in-memory"}`);
   });
 
