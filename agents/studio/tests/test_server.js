@@ -343,24 +343,17 @@ test("chat: save_content tool creates a content piece", async () => {
   await close();
 });
 
-test("chat: edit_content tool requires real piece_id (no silent all[0] fallback)", async () => {
-  // Create two pieces
-  const { server } = buildServer({ secret: "s", llm: makeMockLLM() });
-  const { port, close } = await listen(server);
-  const token = await getToken("s");
-  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+// ---- P0 #16: edit_content tool coverage ----
+//
+// Note: the edit_content tool schema (in src/tools.js) accepts
+// { text, target_sec, project_id } — there is no piece_id argument.
+// The LLM is expected to fetch a piece's text via list_content /
+// get_style_dna first and pass the text directly. This test asserts
+// that the edit plan reflects the LLM's *requested* text, not a
+// silent `pieces.listForUser()[0]` fallback.
 
-  const r1 = await fetch(`http://127.0.0.1:${port}/api/content-pieces`, {
-    method: "POST", headers, body: JSON.stringify({ text: "First draft text" }),
-  });
-  const p1 = (await r1.json()).piece;
-  const r2 = await fetch(`http://127.0.0.1:${port}/api/content-pieces`, {
-    method: "POST", headers, body: JSON.stringify({ text: "Second draft text" }),
-  });
-  const p2 = (await r2.json()).piece;
-  await close();
-
-  // Now run chat with edit_content pointing at p1
+test("chat: edit_content tool reflects the requested text (no silent all[0] fallback)", async () => {
+  const requestedText = "Make this paragraph punchier and tighten the hook line";
   const editMock = {
     model: "mock", isMock: () => true, costUsd: () => 0, getUsage: () => ({}),
     chat: async ({ messages }) => {
@@ -368,50 +361,45 @@ test("chat: edit_content tool requires real piece_id (no silent all[0] fallback)
       if (last?.role === "tool") return { content: "Edited!", tool_calls: null, usage: { input_tokens: 30, output_tokens: 10, total_tokens: 40 } };
       return {
         content: "",
-        tool_calls: [{ id: "t-e", type: "function", function: { name: "edit_content", arguments: JSON.stringify({ piece_id: p1.id, changes: "tighten the opening" }) } }],
+        tool_calls: [{ id: "t-e", type: "function", function: { name: "edit_content", arguments: JSON.stringify({ text: requestedText, target_sec: 30 }) } }],
         usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 },
       };
     },
   };
-  const { server: s2, close: c2 } = await (async () => ({ server: buildServer({ secret: "s", llm: editMock }).server, close: () => {} }))();
-  // We can't share state across servers, so do it in one server.
-  // Skip the second server pattern; rebuild test below.
-});
+  // Disable the editor upstream so the server falls back to makeFallbackPlan,
+  // whose cut text we then assert contains the LLM's requested text. (If the
+  // editor were live, the test would need a stubbed fetchImpl — overkill.)
+  process.env.VIREO_EDITOR_URL = "http://127.0.0.1:1";
+  try {
+    const { server } = buildServer({ secret: "s", llm: editMock });
+    const { port, close } = await listen(server);
+    const token = await getToken("s");
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
-test("chat: edit_content targets the right piece by id (no all[0] leak)", async () => {
-  const editMock = {
-    model: "mock", isMock: () => true, costUsd: () => 0, getUsage: () => ({}),
-    chat: async ({ messages }) => {
-      const last = messages[messages.length - 1];
-      if (last?.role === "tool") return { content: "Edited!", tool_calls: null, usage: { input_tokens: 30, output_tokens: 10, total_tokens: 40 } };
-      return {
-        content: "",
-        tool_calls: [{ id: "t-e", type: "function", function: { name: "edit_content", arguments: JSON.stringify({ piece_id: "TGT", changes: "tighten" }) } }],
-        usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 },
-      };
-    },
-  };
-  const { server } = buildServer({ secret: "s", llm: editMock });
-  const { port, close } = await listen(server);
-  const token = await getToken("s");
-  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+    // Two unrelated pieces — if the dep silently used all[0] instead of
+    // the LLM's requested text, we'd see this decoy text in the cut.
+    await fetch(`http://127.0.0.1:${port}/api/content-pieces`, { method: "POST", headers, body: JSON.stringify({ text: "DECOY piece that should not appear in the cut plan" }) });
+    await fetch(`http://127.0.0.1:${port}/api/content-pieces`, { method: "POST", headers, body: JSON.stringify({ text: "Another decoy" }) });
 
-  // Create a target piece and a decoy
-  const target = (await (await fetch(`http://127.0.0.1:${port}/api/content-pieces`, { method: "POST", headers, body: JSON.stringify({ text: "target" }) })).json()).piece;
-  const decoy = (await (await fetch(`http://127.0.0.1:${port}/api/content-pieces`, { method: "POST", headers, body: JSON.stringify({ text: "decoy" }) })).json()).piece;
-  // Sanity: target was created first, decoy second. all[0] would pick target either way.
-  // But the bug was the tool used a hardcoded piece. We renamed the target to TGT via
-  // the mock's args, then call edit_content which should target "TGT" specifically.
-  // The mock passes piece_id="TGT" which doesn't exist — edit_content should NOT
-  // silently fall back to all[0] (the target). It should report an error.
-  const r = await fetch(`http://127.0.0.1:${port}/api/chat`, {
-    method: "POST", headers, body: JSON.stringify({ message: "edit TGT" }),
-  });
-  const body = await r.json();
-  // The reply should not claim success on a non-existent piece
-  assert.ok(body.tool_calls?.[0]?.name === "edit_content");
-  // The "TGT" id doesn't exist, so tool result should reflect that
-  await close();
+    const r = await fetch(`http://127.0.0.1:${port}/api/chat`, { method: "POST", headers, body: JSON.stringify({ message: "edit this" }) });
+    const body = await r.json();
+    assert.equal(body.tool_calls?.[0]?.name, "edit_content");
+    // The LLM tool result (sent back as a 'tool' message in the conversation)
+    // should reference the requested text, not the decoy.
+    const conv = await (await fetch(`http://127.0.0.1:${port}/api/conversations/${body.conversation_id}`, { headers })).json();
+    const toolMsg = conv.messages.find((m) => m.role === "tool");
+    assert.ok(toolMsg, "should have a tool result message in the conversation");
+    const parsed = JSON.parse(toolMsg.content);
+    assert.equal(parsed.ok, true, `tool should succeed, got: ${toolMsg.content}`);
+    // The fallback plan serializes the requested text into cuts — assert at
+    // least one cut carries the requested content, and none carry the decoy.
+    const cutsText = JSON.stringify(parsed.edit_plan);
+    assert.ok(cutsText.includes("punchier"), `cut plan should reflect the requested text, got: ${cutsText.slice(0, 200)}`);
+    assert.ok(!cutsText.includes("DECOY"), `cut plan must not silently fall back to a saved piece: ${cutsText.slice(0, 200)}`);
+    await close();
+  } finally {
+    delete process.env.VIREO_EDITOR_URL;
+  }
 });
 
 // ---- P0 #17: analyze_style with project_id and content_piece --project linkage ----

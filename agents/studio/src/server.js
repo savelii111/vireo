@@ -1351,7 +1351,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
 }
 
 export async function start(opts = {}) {
-  const { server, port, host, pool } = buildServer(opts);
+  const { server, port, host, pool, llm: llmClient } = buildServer(opts);
 
   // If we're running with Postgres, make sure the schema is up to date BEFORE
   // we start accepting requests. This is idempotent — migrations track their
@@ -1371,7 +1371,12 @@ export async function start(opts = {}) {
 
   server.listen(port, host, () => {
     console.log(`[studio] listening on http://${host}:${port}`);
-    console.log(`[studio] llm: ${opts.llm?.isMock() ? "MOCK" : "real"} model=${opts.llm?.model || OPENAI_MODEL}`);
+    // Use the resolved llm client (not opts.llm) so we report mock/real
+    // correctly even when the operator didn't pass one in. Without this,
+    // the optional chain short-circuited on `opts.llm === undefined` and
+    // the server claimed to be "real" even when running on the mock.
+    const resolvedLlm = opts.llm || llmClient;
+    console.log(`[studio] llm: ${resolvedLlm?.isMock() ? "MOCK" : "real"} model=${resolvedLlm?.model || OPENAI_MODEL}`);
     console.log(`[studio] postgres: ${pool ? "connected" : "in-memory"}`);
   });
 

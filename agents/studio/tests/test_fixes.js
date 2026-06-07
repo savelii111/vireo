@@ -392,3 +392,76 @@ test("P2-1: module imports cleanly with the renamed fileURLToPath", async () => 
   const m = await import("../src/server.js");
   assert.equal(typeof m.buildServer, "function");
 });
+
+// ---------- P1-2: chat() respects Retry-After on 429 ----------
+
+test("P1-2: chat() honors Retry-After header on 429 (waits per server hint)", async () => {
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts++;
+    if (attempts === 1) {
+      // 429 with Retry-After: 1 → must wait ~1s, not the 500ms default.
+      return new Response("rate limited", { status: 429, headers: { "retry-after": "1" } });
+    }
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: "ok", tool_calls: null } }],
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const llm = new LLMClient({ apiKey: "sk-fake", model: "gpt-4o-mini", fetchImpl, maxRetries: 1, timeoutMs: 5000 });
+  const t0 = Date.now();
+  const r = await llm.chat({ system: "s", messages: [{ role: "user", content: "hi" }] });
+  const elapsed = Date.now() - t0;
+  assert.equal(r.content, "ok");
+  // We must have waited at least ~900ms (allow scheduler slack under 1s hint).
+  assert.ok(elapsed >= 900, `should wait ~1s for Retry-After, got ${elapsed}ms`);
+  // And well under the 60s cap (would mean we accepted a runaway hint).
+  assert.ok(elapsed < 5000, `should not hit cap, got ${elapsed}ms`);
+  assert.ok(llm.getUsage().retry_count >= 1, "retry_count should reflect the 429 retry");
+});
+
+test("P1-2: chat() caps Retry-After at maxRetryAfterMs (refuses runaway headers)", async () => {
+  // If the upstream sends Retry-After: 999999, we must NOT sleep for days.
+  // The cap is configurable — production default 60s. We pass a 1s cap
+  // here so the test runs in ~1s, not 60s.
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts++;
+    if (attempts === 1) {
+      return new Response("rate limited", { status: 429, headers: { "retry-after": "999999" } });
+    }
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: "ok", tool_calls: null } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const llm = new LLMClient({ apiKey: "sk-fake", model: "gpt-4o-mini", fetchImpl, maxRetries: 1, timeoutMs: 5000, maxRetryAfterMs: 1000 });
+  const t0 = Date.now();
+  const r = await llm.chat({ system: "s", messages: [{ role: "user", content: "hi" }] });
+  const elapsed = Date.now() - t0;
+  assert.equal(r.content, "ok");
+  // Cap of 1000ms means we wait ~1s, not 999s. Allow a generous upper
+  // bound (3000ms) to absorb scheduler slack on busy CI.
+  assert.ok(elapsed < 3000, `should cap Retry-After at maxRetryAfterMs, got ${elapsed}ms`);
+  assert.ok(elapsed >= 900, `should still wait the cap, got ${elapsed}ms`);
+});
+
+test("P1-2: chat() falls back to exponential backoff on 429 with garbage Retry-After", async () => {
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts++;
+    if (attempts === 1) {
+      return new Response("rate limited", { status: 429, headers: { "retry-after": "not-a-number" } });
+    }
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: "ok", tool_calls: null } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const llm = new LLMClient({ apiKey: "sk-fake", model: "gpt-4o-mini", fetchImpl, maxRetries: 1, timeoutMs: 5000 });
+  const t0 = Date.now();
+  await llm.chat({ system: "s", messages: [{ role: "user", content: "hi" }] });
+  const elapsed = Date.now() - t0;
+  // Garbage value should fall back to 500ms * 2^0 = 500ms, not 1s.
+  assert.ok(elapsed < 900, `should use exponential fallback for garbage Retry-After, got ${elapsed}ms`);
+});

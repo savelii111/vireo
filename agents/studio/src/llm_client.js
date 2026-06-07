@@ -26,13 +26,14 @@ export class LLMError extends Error {
 }
 
 export class LLMClient {
-  constructor({ apiKey, model = "gpt-4o-mini", baseUrl = "https://api.openai.com/v1", maxRetries = 2, fetchImpl, timeoutMs = 60_000 } = {}) {
+  constructor({ apiKey, model = "gpt-4o-mini", baseUrl = "https://api.openai.com/v1", maxRetries = 2, fetchImpl, timeoutMs = 60_000, maxRetryAfterMs = 60_000 } = {}) {
     this.apiKey = apiKey || process.env.OPENAI_API_KEY || "";
     this.model = model;
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.maxRetries = maxRetries;
     this.fetchImpl = fetchImpl || globalThis.fetch;
     this.timeoutMs = timeoutMs;
+    this.maxRetryAfterMs = maxRetryAfterMs;
     this.usage = { input_tokens: 0, output_tokens: 0, request_count: 0, error_count: 0, retry_count: 0, total_cost_usd: 0 };
   }
 
@@ -81,7 +82,26 @@ export class LLMClient {
         if (r.status === 429 || r.status >= 500) {
           this.usage.retry_count++;
           if (attempt < this.maxRetries) {
-            const wait = 500 * Math.pow(2, attempt);
+            // Respect Retry-After on 429. OpenAI sends seconds; the RFC
+            // also allows an HTTP-date, but real-world LLM providers use
+            // seconds only, so we parse that and cap at 60s to avoid
+            // being held hostage by a bad header. For 5xx (or 429 with
+            // a missing/garbage header) we fall back to exponential
+            // backoff. Without this we were hammering rate-limited APIs
+            // every 500ms instead of waiting the requested second count.
+            let wait;
+            const ra = r.headers?.get?.("retry-after");
+            if (r.status === 429 && ra) {
+              const secs = Number(ra);
+              // Cap is configurable so tests can verify the behaviour with
+              // a 1s cap instead of waiting 60s of real time. Default 60s
+              // matches what a polite upstream would ever ask for.
+              wait = Number.isFinite(secs) && secs > 0
+                ? Math.min(secs * 1000, this.maxRetryAfterMs)
+                : 500 * Math.pow(2, attempt);
+            } else {
+              wait = 500 * Math.pow(2, attempt);
+            }
             await new Promise((res) => setTimeout(res, wait));
             continue;
           }
@@ -197,7 +217,12 @@ export class LLMClient {
           if (!choice) continue;
           const delta = choice.delta?.content || "";
           if (delta) {
-            this.usage.output_tokens += 1; // rough counter
+            // Don't bump output_tokens here — the `finally` block at the
+            // bottom of this method increments from the authoritative
+            // `parsed.usage` chunk that OpenAI sends in the trailing SSE
+            // event. Counting per-delta and again from usage was a real
+            // double-count that inflated streaming cost dashboards by
+            // roughly N_chunks per request.
             yield { delta, finish_reason: choice.finish_reason || null };
           } else if (choice.finish_reason) {
             yield { delta: "", finish_reason: choice.finish_reason };
