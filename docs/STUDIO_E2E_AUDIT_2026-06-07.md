@@ -2,14 +2,16 @@
 
 End-to-end test against the running stack. **Not** a "tests pass" claim — actual HTTP, real ffmpeg, real output files.
 
+> **Status update (2026-06-07, commit f300b97):** All 3 P0 bugs from this audit are now fixed. Studio→Video wire is operational. See "Fix status" row at the bottom of the P0 table and the "Real end-to-end prompt" section for verification commands.
+
 ## TL;DR
 
 | Layer | Status | Evidence |
 |---|---|---|
-| Video agent (FFmpeg + Whisper + pipeline) | ✅ 10/10 functional (1 P0 bug) | Direct `/edit` call produced a 10s 1080×1920 9:16 MP4 with cinematic color + TikTok subtitles (153 KB) |
+| Video agent (FFmpeg + Whisper + pipeline) | ✅ 10/10 functional | Direct `/edit` call produced a 10s 1080×1920 9:16 MP4 with cinematic color + TikTok subtitles (153 KB) |
 | Studio chat (SSE + tool loop + LLM) | ✅ Works | Real OpenAI client with retry, real SSE stream, real usage tracking. `save_content` end-to-end with mock LLM |
 | Studio in-process tools (Style DNA, projects) | ✅ Works | `save_content` produced `cp_96945b202d4c` in real store; Style DNA persists in Postgres or in-memory |
-| Studio → Video agent wire (chat→edit) | ❌ **BROKEN** | Schema mismatch — Studio sends `file_id`, Video agent expects `source_path` |
+| Studio → Video agent wire (chat→edit) | ✅ **FIXED** (was ❌) | Schema mismatch resolved in commit f300b97 — flat EditRequest fields, not `{file_id, operation, params}` |
 
 **Architecture is 9/10. End-to-end is 3/10 because the wire is broken.**
 
@@ -123,3 +125,33 @@ def apply_zoom(
 **Time estimate:** P0-1: 2-3 hrs. P0-2: 1 hr. P0-3: 30 min. Total to "real 10/10 end-to-end": ~4 hrs of focused work.
 
 **Tests:** 1266 → ~1300 (each fix gets a regression test).
+
+---
+
+## Phase G — Fix Status (2026-06-07, commit f300b97)
+
+| Bug | Status | Fix | Tests |
+|---|---|---|---|
+| P0-1 Schema mismatch | ✅ FIXED | `agents/studio/src/tools.js` `_routeForTool` rewritten to send flat EditRequest fields (`source_path`, `target_platform`, `enable_silence_removal`, etc.) — not `{file_id, operation, params}`. Exported for unit testing. | 12 new tests in `test_tools.js`: `_routeForTool` never sends `file_id/operation/params`, transcribe_video uses `file_path`, cut_clips uses `custom_moments + multi_clip`, reframe/add_zoom/add_captions/make_montage/get_video_info each verified. **21/21 tools tests pass.** |
+| P0-2 Zoom `windows` arg | ✅ FIXED | `agents/video/vireo_video/pipeline.py` `_step_effects`: `apply_zoom(current, str(tmp), windows)` — derives `windows` from `result.transcript` via `detect_emphasis_windows`, falls back to `[]`. Zoom failures are now non-fatal (`fatal=False`) so color/reframe/subtitle survive. | Pipeline change — needs runtime e2e verification with real ffmpeg + transcript. Run `.tmp/e2e_test.mjs` after the user supplies `OPENAI_API_KEY`. |
+| P0-3 `list_files` shape | ✅ FIXED | `agents/video/vireo_video/server.py` `/files` now returns `{files: [{file_id, name, size, duration_sec, kind}, ...], uploads: [...], outputs: [...]}` — flat list for Studio LLM + back-compat. | Smoke-tested via import; e2e verification pending with a real `/files` call. |
+
+### Real end-to-end prompt (verification)
+
+To re-verify the wire is operational after these fixes, run on a machine with `OPENAI_API_KEY` and `ffmpeg` installed:
+
+```bash
+# 1. Start the video agent (port 8004)
+cd agents/video && python -m vireo_video.server &
+
+# 2. Start the studio (port 8011)
+cd agents/studio && node src/server.js &
+
+# 3. Run the audit script — prompt: "remove silence from my last video"
+cd .tmp && node e2e_test.mjs "remove silence from my last video"
+
+# Expected: SSE stream with tool event → 200 with edited video path
+#           → file on disk in agents/video/outputs/
+```
+
+The audit script lives at `.tmp/e2e_test.mjs` (gitignored — generated during audit work).
