@@ -209,6 +209,42 @@ test("test_execute_tool_call_timeout: tool with 100ms timeout fails gracefully",
   assert.ok(elapsed >= 80, `should honour the 100ms timeout, returned in ${elapsed}ms`);
 });
 
+// ---------- Week 1 Day 1: add_music wires real EditRequest fields (was no-op) ----------
+
+test("W1-D1: add_music sends enable_music:true + music_mood (not a no-op)", () => {
+  const route = _routeForTool("add_music", {
+    file_id: "/tmp/v.mp4",
+    mood: "upbeat",
+    track_path: "/var/music/upbeat.mp3",
+    volume: 0.20,
+  });
+  assert.equal(route.method, "POST");
+  assert.equal(route.path, "/edit");
+  assert.equal(route.body.source_path, "/tmp/v.mp4");
+  assert.equal(route.body.enable_music, true);
+  assert.equal(route.body.music_mood, "upbeat");
+  assert.equal(route.body.music_track_path, "/var/music/upbeat.mp3");
+  assert.equal(route.body.music_volume, 0.20);
+});
+
+test("W1-D1: add_music defaults: mood=neutral, volume=0.15, no track_path", () => {
+  const route = _routeForTool("add_music", { file_id: "/tmp/v.mp4" });
+  assert.equal(route.body.enable_music, true);
+  assert.equal(route.body.music_mood, "neutral");
+  assert.equal(route.body.music_track_path, "");
+  assert.equal(route.body.music_volume, 0.15);
+});
+
+test("W1-D1: add_music schema stays flat EditRequest (no file_id/operation/params)", () => {
+  const route = _routeForTool("add_music", { file_id: "/tmp/v.mp4" });
+  assert.ok(!("file_id" in route.body), "must not send file_id");
+  assert.ok(!("operation" in route.body), "must not send operation");
+  assert.ok(!("params" in route.body), "must not send params");
+  // P0-1 already covers absence of legacy fields; this is the add_music-specific
+  // assertion that the new music fields ARE present.
+  assert.ok("enable_music" in route.body, "must send enable_music field");
+});
+
 // ---------- P0-1 regression: _routeForTool sends flat EditRequest fields ----------
 
 test("P0-1: _routeForTool never sends file_id/operation/params wrapper (flat EditRequest only)", () => {

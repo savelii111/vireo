@@ -593,16 +593,20 @@ export function _routeForTool(name, args) {
       };
 
     case "add_music":
-      // add_music is not a direct EditRequest field — the pipeline doesn't yet
-      // support background music. For now, send a no-op edit (just reframe to
-      // target platform) and surface "music not yet wired" to the LLM. Future
-      // work: add enable_music + music_mood fields to EditRequest.
+      // Week 1 Day 1 fix (2026-06-07): add_music is now a real edit step,
+      // not a no-op. The pipeline reads enable_music + music_mood +
+      // music_track_path and calls music.add_background_music() with
+      // auto-ducking. If no track is available, the step is a non-fatal
+      // skip — the edit still completes, just without music.
       return {
         method: "POST",
         path: "/edit",
         body: {
           source_path: sourcePath,
-          target_platform: args.platform || "tiktok",
+          enable_music: true,
+          music_mood: args.mood || "neutral",
+          music_track_path: args.track_path || "",
+          music_volume: typeof args.volume === "number" ? args.volume : 0.15,
         },
       };
 

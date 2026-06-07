@@ -63,6 +63,15 @@ class EditRequest:
   enable_color: bool = False         # color grading
   color_look: str = "natural"        # natural, cinematic, warm, cool, vintage, bw, high_contrast, soft
   enable_silence_removal: bool = False  # remove silent pauses
+  # Background music (Week 1 Day 1 fix: was a no-op in Studio)
+  # When enable_music=True and music_track_path points to a real file, the
+  # pipeline calls music.add_background_music(..., duck_config) which mixes
+  # the track under the source audio with auto-ducking. When the track is
+  # missing or empty, the step is a no-op (logged as "skipped_no_track").
+  enable_music: bool = False
+  music_mood: str = "neutral"        # neutral, upbeat, lofi, dramatic, sad, epic, calm
+  music_track_path: str = ""         # absolute path to mp3/wav; empty = pick default for mood
+  music_volume: float = 0.15         # 0.0-1.0, base music volume when speaker is silent
   # Multi-clip: when True, produce one file per moment
   multi_clip: bool = False
 
@@ -435,6 +444,39 @@ class VideoPipeline:
         # V-16 fix: surface the failure to the caller (was silently swallowed)
         _record_step(result, "effects.silence", t0, error=str(e), fatal=True)
         raise
+
+    # Background music (Week 1 Day 1: was a no-op; now real mix with auto-duck)
+    if request.enable_music:
+      t_music = time.time()
+      try:
+        from .music import add_background_music, DuckConfig
+        from pathlib import Path
+        track = request.music_track_path
+        # Resolve track: if empty, look for a default library file matching
+        # the requested mood. The default library lives in
+        #   $VIREO_MUSIC_LIBRARY (env) or "<project>/vireo_media/music"
+        # and contains files named "<mood>.mp3" (e.g. upbeat.mp3, lofi.mp3).
+        if not track:
+          lib_root = os.environ.get("VIREO_MUSIC_LIBRARY") or str(
+            Path(__file__).resolve().parents[3].parent / "vireo_media" / "music"
+          )
+          candidate = Path(lib_root) / f"{request.music_mood}.mp3"
+          if candidate.is_file():
+            track = str(candidate)
+        if not track or not Path(track).is_file():
+          _record_step(result, "effects.music", t_music,
+                       error="no_music_track_for_mood", fatal=False,
+                       detail=f"mood={request.music_mood!r} lib=$VIREO_MUSIC_LIBRARY")
+        else:
+          tmp = self._tmp_path(request.output_path, suffix="musiced")
+          duck = DuckConfig(base_volume=float(request.music_volume))
+          add_background_music(track, current, str(tmp), duck_config=duck)
+          current = str(tmp)
+          applied.append("music")
+      except Exception as e:
+        # Music failure is non-fatal — the edit still produces a video, just
+        # without background music. Logged for observability.
+        _record_step(result, "effects.music", t_music, error=str(e), fatal=False)
 
     # Auto-zoom on emphasis words
     if request.enable_zoom:

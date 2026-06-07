@@ -21,7 +21,7 @@
 //   DELETE /api/conversations/:id         — delete
 //   POST   /api/chat                      — send a chat message (multi-turn w/ tool calls)
 
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
 import { authMiddleware, corsHeaders, readJsonBody, RateLimiter } from "../../../packages/auth-middleware/index.js";
 import { MessageFeedbackStore, WelcomeAnswersStore, UserPreferencesStore } from "../../storage/src/feedback_store.js";
@@ -30,6 +30,7 @@ import { PostgresStyleDNAStore } from "../../storage/src/extended.js";
 import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrations.js";
 import { LLMClient, LLMError } from "./llm_client.js";
 import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } from "./tools.js";
+import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
 
 // Wrap PostgresStyleDNAStore to use the API we expect: { pool } constructor + id-based methods.
 class StyleDNAStorePg {
@@ -145,6 +146,13 @@ function corsAllowOrigin(req) {
   }
   return allowed.includes(origin) ? origin : allowed[0];
 }
+
+/**
+ * V-? fix: TUS 1.0 protocol proxy moved to tus_proxy.js (testable module).
+ * This file imports the function and wires the routes. The actual forward
+ * logic (streaming body, propagating headers, client-disconnect abort) lives
+ * in tus_proxy.js where unit tests can import it without spinning up Studio.
+ */
 
 /**
  * Wrap fetch with a per-call AbortController timeout. Without this, a
@@ -929,6 +937,51 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         if (!c || c.user_id !== userId) return err(res, 404, "not_found");
         const msgs = await messages.listForConversation(cid, { limit: Number(u.searchParams.get("limit") || 200) });
         return json(res, 200, { ok: true, messages: msgs });
+      }
+
+      // ---- TUS resumable upload proxy (Week 1 Day 1) ----
+      // The video agent already implements TUS 1.0 at /upload/resumable.
+      // We proxy Studio's /api/upload/resumable so the dashboard can upload
+      // multi-GB videos through the chat-agent port (no CORS, no double-auth).
+      // For PATCH we MUST stream the request body — chunks are 8 MB and
+      // buffering them in memory would OOM the studio process.
+      const tusPath = url.match(/^\/api\/upload\/resumable(?:\/([^/]+))?$/);
+      if (tusPath) {
+        if (req.method === "OPTIONS") {
+          // TUS preflight — let the video agent handle the protocol-level
+          // headers, but we need to echo CORS here or the browser refuses.
+          const origin = req.headers.origin;
+          res.writeHead(204, {
+            ...(origin ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true" } : {}),
+            "Access-Control-Allow-Methods": "POST, HEAD, PATCH, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": req.headers["access-control-request-headers"] || "Authorization, Content-Type, Upload-Length, Upload-Offset, Upload-Metadata, Content-Range, Tus-Resumable",
+            "Access-Control-Max-Age": "86400",
+            "Tus-Resumable": "1.0.0",
+            "Tus-Version": "1.0.0",
+            "Tus-Max-Size": String(8 * 1024 * 1024),
+            "Tus-Extension": "creation,creation-with-upload,termination",
+          });
+          return res.end();
+        }
+        if (!["POST", "HEAD", "PATCH", "DELETE"].includes(req.method)) {
+          return err(res, 405, "method_not_allowed");
+        }
+        // Auth: every upload is per-user; if we have a user, forward it as
+        // a TUS metadata key so the video agent can attribute ownership.
+        // (The chat-agent's authMiddleware already verified the Bearer token
+        //  above, so by the time we get here req.userId is trustworthy.)
+        const passthroughHeaders = {};
+        for (const k of TUS_PASSTHROUGH_HEADERS) {
+          if (req.headers[k]) passthroughHeaders[k] = req.headers[k];
+        }
+        // Stamp ownership into TUS metadata (base64-keyed per TUS spec).
+        if (userId && req.method === "POST" && passthroughHeaders["upload-metadata"]) {
+          passthroughHeaders["upload-metadata"] = stampUserIdInMetadata(
+            passthroughHeaders["upload-metadata"], userId
+          );
+        }
+        const upstreamPath = `/upload/resumable${tusPath[1] ? "/" + encodeURIComponent(decodeURIComponent(tusPath[1])) : ""}`;
+        return proxyTusRequest(req, res, passthroughHeaders, tusPath[1] ? decodeURIComponent(tusPath[1]) : null, userId);
       }
 
       // ---- chat (the main endpoint) ----
