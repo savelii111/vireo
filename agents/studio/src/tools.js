@@ -343,6 +343,163 @@ export const EDIT_TOOLS = [
     },
   },
 
+  // ---------- W3: Multi-output & transcript tools ----------
+  {
+    type: "function",
+    function: {
+      name: "create_versions",
+      description:
+        "Create multiple platform-optimized versions from one source video. Use when the user wants 'a TikTok + IG Reel + YouTube from this' or 'make versions for all platforms'. Transcribes, finds best moments per platform, clips, adds captions.",
+      parameters: {
+        type: "object",
+        required: ["file_path", "platforms"],
+        properties: {
+          file_path: { type: "string", description: "Path to the source video." },
+          platforms: {
+            type: "array",
+            items: { type: "string", enum: ["tiktok", "youtube_shorts", "youtube", "instagram_reels", "instagram_feed"] },
+            description: "Target platforms. Each gets a version with platform-native style (aspect ratio, duration, captions).",
+          },
+          styles: { type: "object", description: "Optional per-platform style overrides, e.g. {\"tiktok\": {\"caption_style\": \"bold\", \"music_mood\": \"upbeat\"}}." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_short_from_long",
+      description:
+        "Create a short clip (15-60s) from a long video by auto-picking the best moment. Use when the user wants 'make a short from this', 'find a clip', or 'make a TikTok from this long video'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the source video." },
+          target_duration: { type: "integer", description: "Target duration in seconds (default 60, max 180)." },
+          platform: { type: "string", description: "Target platform for style (default: 'tiktok')." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_compilation",
+      description:
+        "Create a 'best of' compilation from multiple moments in a long video. Use when the user wants 'best of' or 'highlight reel' or 'compilation of the funniest parts'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the source video." },
+          target_duration: { type: "integer", description: "Target total duration in seconds (default 600 = 10 min)." },
+          max_moments: { type: "integer", description: "Max moments to include (default 10)." },
+          platform: { type: "string", description: "Target platform (default: 'youtube')." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_summary",
+      description:
+        "Create a short summary video from a long source. Use when the user wants 'summarize this video', 'give me the TL;DR', or 'make a 3-minute summary of this 1-hour video'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the source video." },
+          target_duration: { type: "integer", description: "Target duration in seconds (default 180 = 3 min)." },
+          platform: { type: "string", description: "Target platform (default: 'youtube')." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_trailer",
+      description:
+        "Create a 15-30s trailer/teaser from a long video. Use when the user wants 'make a trailer', 'teaser', or '30-second preview of this'.",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", description: "Path to the source video." },
+          target_duration: { type: "integer", description: "Target duration in seconds (default 30)." },
+          platform: { type: "string", description: "Target platform (default: 'tiktok')." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_transcript",
+      description:
+        "Search a video's transcript for specific text, topics, or quotes. Use when the user asks 'find all times I said X', 'where did I mention Y', or 'show me the transcript around Z'.",
+      parameters: {
+        type: "object",
+        required: ["file_path", "query"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file." },
+          query: { type: "string", description: "Search query (text to find in transcript)." },
+          context_seconds: { type: "integer", description: "Seconds of context around each match (default 30)." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_transcript_section",
+      description:
+        "Get a transcript section with timestamps. Use when the user wants 'show me the transcript from 0:23:00 to 0:25:30' or 'what did I say at 15:00'.",
+      parameters: {
+        type: "object",
+        required: ["file_path", "start_sec", "end_sec"],
+        properties: {
+          file_path: { type: "string", description: "Path to the video file." },
+          start_sec: { type: "number", description: "Start time in seconds." },
+          end_sec: { type: "number", description: "End time in seconds." },
+          format: { type: "string", description: "Output format: 'text', 'srt', 'vtt' (default: 'text')." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_job_status",
+      description:
+        "Check the status of a video processing job. Use when the user asks 'how's my edit going', 'is my video done', or 'what's the status of job X'.",
+      parameters: {
+        type: "object",
+        required: ["job_id"],
+        properties: {
+          job_id: { type: "string", description: "The job ID returned from a previous edit operation." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_job",
+      description:
+        "Cancel a running video processing job. Use when the user wants to stop a processing job ('cancel my edit', 'stop the video processing').",
+      parameters: {
+        type: "object",
+        required: ["job_id"],
+        properties: {
+          job_id: { type: "string", description: "The job ID to cancel." },
+        },
+      },
+    },
+  },
+
   // ---------- Studio in-process tools (P0 #9) ----------
   // These talk to the studio's own Postgres/in-memory stores via buildToolDeps()
   // in server.js, not to the separate video agent. Listed here so the LLM sees
@@ -503,6 +660,16 @@ export const STUDIO_INPROCESS_TOOL_NAMES = new Set([
   "apply_hook_style",
   "generate_thumbnail",
   "analyze_audio",
+  // W3: multi-output + transcript + job
+  "create_versions",
+  "create_short_from_long",
+  "create_compilation",
+  "create_summary",
+  "create_trailer",
+  "search_transcript",
+  "get_transcript_section",
+  "get_job_status",
+  "cancel_job",
 ]);
 
 // ---------- System prompt ----------

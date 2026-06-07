@@ -264,8 +264,16 @@ function capMetadata(meta) {
   return meta;
 }
 
+function _secToSRT(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const ms = Math.round((sec - Math.floor(sec)) * 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
 /**
- * Build the tool executor map. Each function gets { userId, ...args } and
+ * Builds a set of "in-process" tool handlers that don't need a separate service but
  * talks to the underlying stores / services.
  */
 function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, llm, fetchImpl, authHeadersFn, upstreamTimeoutMs }) {
@@ -596,6 +604,312 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         return { ok: true, audio: resp.audio || resp };
       } catch (e) {
         return { ok: false, error: `analyze_audio_failed: ${e.message}` };
+      }
+    },
+
+    // ---------- W3: Multi-output orchestrators ----------
+
+    create_versions: async ({ userId, file_path, platforms, styles = {} }) => {
+      // Step 1: transcribe once
+      let transcript;
+      try {
+        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        transcript = tr.transcript || tr;
+      } catch (e) {
+        return { ok: false, error: `transcribe_failed: ${e.message}` };
+      }
+      if (!transcript?.text) return { ok: false, error: "empty_transcript" };
+
+      // Step 2: find best moments for each platform
+      const results = {};
+      for (const platform of platforms) {
+        const maxMoments = platform === "youtube" ? 5 : (platform.includes("shorts") || platform === "tiktok") ? 1 : 3;
+        let moments = [];
+        try {
+          const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+            method: "POST",
+            headers: authHeaders({ "X-Vireo-User-Id": userId }),
+            body: JSON.stringify({ transcript, platform, max_moments: maxMoments }),
+          });
+          // LLM call with the prompt
+          const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 2048 });
+          const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+            method: "POST",
+            headers: authHeaders({ "X-Vireo-User-Id": userId }),
+            body: JSON.stringify({ transcript, platform, max_moments: maxMoments, llm_response: chatResult.content }),
+          });
+          moments = parsed.moments || [];
+        } catch (e) {
+          console.warn(`[studio] moments failed for ${platform}: ${e.message}`);
+        }
+
+        // Step 3: create version via video agent
+        try {
+          const styleOverrides = styles[platform] || {};
+          const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+            method: "POST",
+            headers: authHeaders({ "X-Vireo-User-Id": userId }),
+            body: JSON.stringify({
+              file_path,
+              operation: "render_montage",
+              operation_params: {
+                moments,
+                platform,
+                target_duration: platform === "youtube" ? 720 : (platform.includes("shorts") || platform === "tiktok") ? 60 : 90,
+                ...styleOverrides,
+              },
+            }),
+          });
+          results[platform] = { ok: true, moments: moments.length, job_id: resp.job_id || null, output: resp.output || null };
+        } catch (e) {
+          results[platform] = { ok: false, error: e.message };
+        }
+      }
+      return { ok: true, versions: results, total_platforms: platforms.length };
+    },
+
+    create_short_from_long: async ({ userId, file_path, target_duration = 60, platform = "tiktok" }) => {
+      // Find best moment
+      let transcript;
+      try {
+        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        transcript = tr.transcript || tr;
+      } catch (e) {
+        return { ok: false, error: `transcribe_failed: ${e.message}` };
+      }
+      let moments = [];
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments: 1 }),
+        });
+        const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 1024 });
+        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments: 1, llm_response: chatResult.content }),
+        });
+        moments = parsed.moments || [];
+      } catch (e) {
+        return { ok: false, error: `moments_failed: ${e.message}` };
+      }
+      if (!moments.length) return { ok: false, error: "no_moments_found" };
+
+      // Render short
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
+        });
+        return { ok: true, moments: moments.length, job_id: resp.job_id || null, output: resp.output || null };
+      } catch (e) {
+        return { ok: false, error: `render_failed: ${e.message}` };
+      }
+    },
+
+    create_compilation: async ({ userId, file_path, target_duration = 600, max_moments = 10, platform = "youtube" }) => {
+      let transcript;
+      try {
+        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        transcript = tr.transcript || tr;
+      } catch (e) {
+        return { ok: false, error: `transcribe_failed: ${e.message}` };
+      }
+      let moments = [];
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments }),
+        });
+        const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 2048 });
+        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments, llm_response: chatResult.content }),
+        });
+        moments = parsed.moments || [];
+      } catch (e) {
+        return { ok: false, error: `moments_failed: ${e.message}` };
+      }
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
+        });
+        return { ok: true, moments: moments.length, job_id: resp.job_id || null, output: resp.output || null };
+      } catch (e) {
+        return { ok: false, error: `render_failed: ${e.message}` };
+      }
+    },
+
+    create_summary: async ({ userId, file_path, target_duration = 180, platform = "youtube" }) => {
+      let transcript;
+      try {
+        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        transcript = tr.transcript || tr;
+      } catch (e) {
+        return { ok: false, error: `transcribe_failed: ${e.message}` };
+      }
+      let moments = [];
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments: 5 }),
+        });
+        const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 1024 });
+        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments: 5, llm_response: chatResult.content }),
+        });
+        moments = parsed.moments || [];
+      } catch (e) {
+        return { ok: false, error: `moments_failed: ${e.message}` };
+      }
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
+        });
+        return { ok: true, moments: moments.length, job_id: resp.job_id || null, output: resp.output || null };
+      } catch (e) {
+        return { ok: false, error: `render_failed: ${e.message}` };
+      }
+    },
+
+    create_trailer: async ({ userId, file_path, target_duration = 30, platform = "tiktok" }) => {
+      let transcript;
+      try {
+        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        transcript = tr.transcript || tr;
+      } catch (e) {
+        return { ok: false, error: `transcribe_failed: ${e.message}` };
+      }
+      let moments = [];
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments: 1 }),
+        });
+        const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 512 });
+        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ transcript, platform, max_moments: 1, llm_response: chatResult.content }),
+        });
+        moments = parsed.moments || [];
+      } catch (e) {
+        return { ok: false, error: `moments_failed: ${e.message}` };
+      }
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
+        });
+        return { ok: true, moments: moments.length, job_id: resp.job_id || null, output: resp.output || null };
+      } catch (e) {
+        return { ok: false, error: `render_failed: ${e.message}` };
+      }
+    },
+
+    search_transcript: async ({ userId, file_path, query, context_seconds = 30 }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        const segments = resp.transcript?.segments || resp.segments || [];
+        const queryLower = query.toLowerCase();
+        const matches = segments
+          .filter((s) => (s.text || "").toLowerCase().includes(queryLower))
+          .map((s) => ({
+            start: s.start,
+            end: s.end,
+            text: s.text,
+            context_start: Math.max(0, s.start - context_seconds),
+            context_end: s.end + context_seconds,
+          }));
+        return { ok: true, query, matches: matches.slice(0, 20), total_matches: matches.length };
+      } catch (e) {
+        return { ok: false, error: `search_transcript_failed: ${e.message}` };
+      }
+    },
+
+    get_transcript_section: async ({ userId, file_path, start_sec, end_sec, format = "text" }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+          body: JSON.stringify({ file_path, language: "en" }),
+        });
+        const segments = resp.transcript?.segments || resp.segments || [];
+        const filtered = segments.filter((s) => s.start >= start_sec && s.start <= end_sec);
+
+        if (format === "text") {
+          return { ok: true, section: filtered.map((s) => `[${s.start.toFixed(1)}s] ${s.text}`).join("\n"), start_sec, end_sec };
+        }
+        // SRT/VTT format
+        const lines = filtered.map((s, i) => {
+          const start = _secToSRT(s.start);
+          const end = _secToSRT(s.end);
+          return `${i + 1}\n${start} --> ${end}\n${s.text}\n`;
+        });
+        return { ok: true, section: lines.join("\n"), format, start_sec, end_sec };
+      } catch (e) {
+        return { ok: false, error: `transcript_section_failed: ${e.message}` };
+      }
+    },
+
+    get_job_status: async ({ userId, job_id }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/jobs/${job_id}`, {
+          method: "GET",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+        });
+        return { ok: true, job: resp };
+      } catch (e) {
+        return { ok: false, error: `job_status_failed: ${e.message}` };
+      }
+    },
+
+    cancel_job: async ({ userId, job_id }) => {
+      try {
+        const resp = await _fetchJSON(`${VIDEO_URL}/jobs/${job_id}/cancel`, {
+          method: "POST",
+          headers: authHeaders({ "X-Vireo-User-Id": userId }),
+        });
+        return { ok: true, cancelled: true, job: resp };
+      } catch (e) {
+        return { ok: false, error: `cancel_job_failed: ${e.message}` };
       }
     },
   };
