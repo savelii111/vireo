@@ -2,6 +2,8 @@
 
 > *Your AI co-pilot that learns your style, edits your content, and publishes everywhere — 24/7.*
 
+[![CI](https://github.com/.../actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml) ![Tests: 1936 passing](https://img.shields.io/badge/tests-1936%20passing-brightgreen) ![Node + Python](https://img.shields.io/badge/stack-Node%2020%20%2B%20Python%203.13-blue)
+
 ## Vision
 
 Vireo turns a solo creator into a media company of one. Not a tool, not a scheduler — a **creative director in your pocket** that knows you better than you know yourself.
@@ -40,8 +42,9 @@ pip install -e agents/style-learner agents/editor
 # Run all agents
 npm run agents
 
-# Run E2E test
-npm test
+# Run all tests — 1936 passing (1264 Node + 672 Python)
+npm test                  # Node master: 1264 / 26 suites
+pytest                    # Python master: 672 / 5 packages
 ```
 
 ## Studio Agent — local dev
@@ -62,7 +65,7 @@ node server.js
 # 3. Open http://127.0.0.1:3000/chat
 # Mock-LLM replies are returned immediately, no API key needed.
 
-# 4. Run the studio test suite (34 tests, ~0.6s)
+# 4. Run the studio test suite (70 tests, ~1.0s)
 cd agents/studio
 node --test tests/test_server.js
 ```

@@ -1,10 +1,18 @@
 # 🏆 VIREO — ОТЧЁТ О СОСТОЯНИИ
 
 > **Multi-agent платформа для AI-креаторов.**
-> 12 production-агентов, 1264 теста, 26 suites, EU AI Act compliance.
+> 12 production-агентов, **1936 тестов** (1264 Node + 672 Python), 26 suites, EU AI Act compliance.
 > Обновлено: 2026-06-07.
 
-## 📊 РЕЗУЛЬТАТЫ ТЕСТОВ
+## 📊 РЕЗУЛЬТАТЫ ТЕСТОВ — GRAND TOTAL: 1936 passing, 0 failed
+
+```
+═══════════════════════════════════════════════════════════════════════════
+  TOTAL: 1936 passed, 0 failed  (Node 1264 + Python 672, 26 suites + 4 py)
+═══════════════════════════════════════════════════════════════════════════
+```
+
+### Node.js suite (`npm test` — 1264 tests, 26 suites)
 
 ```
 ✓ PASS   Style Learner (Python)                 85 passed,  0 failed  (7455ms)
@@ -37,6 +45,21 @@
   TOTAL: 1264 passed, 0 failed across 26 suites
 ═══════════════════════════════════════════════════════════════════════════
 ```
+
+### Python suite (`pytest` — 672 tests, 4 packages)
+
+```
+✓ PASS   Video (Python)               471 passed,  0 failed  (123s)
+✓ PASS   Style-Learner (Python)         85 passed,  0 failed  (5.8s)
+✓ PASS   OAuth (Python)                 48 passed,  0 failed  (2.6s)
+✓ PASS   Editor (Python)                40 passed,  0 failed  (0.9s)
+✓ PASS   shared/python (jwt_auth)       28 passed,  0 failed  (0.1s)
+─────────────────────────────────────────────────────────────
+  TOTAL: 672 passed, 0 failed
+```
+
+Python CI matrix in `.github/workflows/ci.yml` (test-python job) covers
+all 4 packages and runs the same suite on every PR.
 
 ## 🤖 ЧТО ПОСТРОЕНО — 12 АГЕНТОВ + 2 ПРИЛОЖЕНИЯ
 
@@ -127,10 +150,10 @@ vireo/
 ## 🚀 ЗАПУСК
 
 ```bash
-# Все тесты (1264 / 26 suites)
-node tests/run-all.mjs
-
-# С JUnit XML для CI
+# Все тесты — 1936 passing (1264 Node + 672 Python)
+npm test                              # Node master: 1264 / 26 suites
+pytest                                # Python master: 672 / 5 packages
+# Или с JUnit XML для CI
 node tests/run-all.mjs --junit=tests/results/junit.xml
 
 # Агентов локально (все параллельно)
