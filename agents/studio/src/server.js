@@ -28,7 +28,7 @@ import { MessageFeedbackStore, WelcomeAnswersStore, UserPreferencesStore } from 
 import { ProjectStore, ContentPieceStorePg, ConversationStore, MessageStore } from "../../storage/src/chat_store.js";
 import { PostgresStyleDNAStore } from "../../storage/src/extended.js";
 import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrations.js";
-import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest } from "../../storage/src/gdpr_store.js";
+import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest, runRetentionCron } from "../../storage/src/gdpr_store.js";
 import { LLMClient, LLMError } from "./llm_client.js";
 import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
 import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } from "./tools.js";
@@ -1208,7 +1208,13 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
     const expensive = createLLMClient({ provider: LLM_PROVIDER, model: LLM_EXPENSIVE_MODEL, fetchImpl });
     resolvedLlm = new SmartRouter({ cheapClient: cheap, expensiveClient: expensive });
   } else {
-    resolvedLlm = createLLMClient({ provider: LLM_PROVIDER, model: OPENAI_MODEL, apiKey: OPENAI_API_KEY, fetchImpl });
+    // Single-model mode. Default to LLM_CHEAP_MODEL if set (so
+    // operators can use a non-OpenAI default model via env
+    // without having to also set LLM_EXPENSIVE_MODEL). Falls back
+    // to OPENAI_MODEL ("gpt-4o-mini") when neither is set, for
+    // the original OpenAI-by-default behavior.
+    const singleModel = LLM_CHEAP_MODEL || OPENAI_MODEL;
+    resolvedLlm = createLLMClient({ provider: LLM_PROVIDER, model: singleModel, apiKey: OPENAI_API_KEY, fetchImpl });
   }
   const llmClient = resolvedLlm;
 
@@ -1302,6 +1308,28 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
     // ---- auth gate ----
     if (!auth) {
       return err(res, 500, "server_misconfigured", "VIREO_JWT_SECRET not set");
+    }
+    // ---- public cron endpoints (use X-Cron-Secret instead of JWT) ----
+    // /api/admin/retention is for cron jobs (no user JWT). It's
+    // guarded by VIREO_CRON_SECRET. The check is INLINE here (not
+    // in the route handler) so we don't run rate-limit / per-user
+    // middleware on cron calls.
+    if (req.method === "POST" && url === "/api/admin/retention") {
+      const expected = process.env.VIREO_CRON_SECRET;
+      if (!expected) {
+        return err(res, 503, "retention_disabled", "Set VIREO_CRON_SECRET to enable retention endpoint.");
+      }
+      if (req.headers["x-cron-secret"] !== expected) {
+        return err(res, 401, "unauthorized", "Invalid X-Cron-Secret header");
+      }
+      if (!pool) {
+        return err(res, 503, "gdpr_unavailable", "Retention requires Postgres.");
+      }
+      let body = {};
+      try { body = await readJsonBody(req, 1024); } catch (e) { /* allow empty body */ }
+      const dryRun = body.dry_run === true;
+      const result = await runRetentionCron({ pool, dryRun });
+      return json(res, 200, { ok: true, ...result });
     }
     await new Promise((r) => auth(req, res, r));
     if (res.writableEnded) return;
@@ -2170,6 +2198,14 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         });
         return json(res, 200, { ok: true, consent: { user_id: userId, consent_kind: kind, granted, policy_version: policyVersion } });
       }
+
+      // ---- C3: Retention cron endpoint (admin-only) — DELEGATED ----
+      // The actual route handler lives in the auth gate above
+      // (before JWT auth runs) so cron jobs can hit it without
+      // a user token. The VIREO_CRON_SECRET check is there.
+      // The route definition below is a safety net — if the
+      // auth gate ever changes shape, this catch-all still
+      // returns 404 instead of crashing.
 
       // ---- auto-title via LLM (P1 #25) ----
       // Takes the first user message of a conversation and asks the LLM

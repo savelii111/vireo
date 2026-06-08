@@ -37,7 +37,12 @@ export class LLMClient {
     this.usage = { input_tokens: 0, output_tokens: 0, request_count: 0, error_count: 0, retry_count: 0, total_cost_usd: 0 };
   }
 
-  isMock() { return !this.apiKey; }
+  isMock() {
+    // The Ollama endpoint is local and doesn't need an API key.
+    // For every other provider, no API key means mock mode.
+    if (this.baseUrl && /localhost|127\.0\.0\.1/.test(this.baseUrl)) return false;
+    return !this.apiKey;
+  }
 
   costUsd(model, input, output) {
     const p = PRICING[model];

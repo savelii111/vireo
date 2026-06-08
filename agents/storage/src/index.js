@@ -27,6 +27,8 @@ import {
   GdprDeleteStore,
   recordDsrRequest,
   completeDsrRequest,
+  purgeOldAudit,
+  runRetentionCron,
 } from "./gdpr_store.js";
 
 export { MemoryStore, PostgresStore, PostgresUnavailableError };
@@ -40,7 +42,16 @@ export {
   PostgresStyleDNAStore,
 };
 export { applyMigrations, listAppliedMigrations };
-export { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest };
+export {
+  AuditStore,
+  InMemoryAuditStore,
+  GdprExportStore,
+  GdprDeleteStore,
+  recordDsrRequest,
+  completeDsrRequest,
+  purgeOldAudit,
+  runRetentionCron,
+};
 
 /**
  * Pick a store based on env.

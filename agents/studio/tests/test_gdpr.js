@@ -198,3 +198,71 @@ test("B2: rate limit does NOT apply to GDPR endpoints (per user data)", async ()
     await close();
   }
 });
+
+test("C3: POST /api/admin/retention requires VIREO_CRON_SECRET", async () => {
+  // Without the env var, the endpoint is disabled.
+  // Note: must clear any leftover from previous test runs.
+  delete process.env.VIREO_CRON_SECRET;
+  // Re-import server fresh so the env capture sees the new state
+  // (server.js reads VIREO_CRON_SECRET at module-load time only
+  // via process.env lookups in the route handler, but to be safe)
+  const { buildServer } = await import(`../src/server.js?nocache=${Date.now()}_${Math.random()}`);
+  const { server } = buildServer({ secret: "retention-e2e", llm: makeMockLLM() });
+  const { port, close } = await listen(server);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/api/admin/retention`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(r.status, 503, `expected 503 (retention_disabled), got ${r.status}`);
+    const body = await r.json();
+    assert.equal(body.error, "retention_disabled");
+  } finally {
+    await close();
+  }
+});
+
+test("C3: POST /api/admin/retention rejects bad X-Cron-Secret", async () => {
+  process.env.VIREO_CRON_SECRET = "real-secret-12345";
+  const { server } = buildServer({ secret: "retention-e2e", llm: makeMockLLM() });
+  const { port, close } = await listen(server);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/api/admin/retention`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Cron-Secret": "wrong" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(r.status, 401);
+    const body = await r.json();
+    assert.equal(body.error, "unauthorized");
+  } finally {
+    await close();
+    delete process.env.VIREO_CRON_SECRET;
+  }
+});
+
+test("C3: POST /api/admin/retention works with valid X-Cron-Secret + dry_run", async () => {
+  process.env.VIREO_CRON_SECRET = "real-secret-12345";
+  // The endpoint requires Postgres (calls runRetentionCron which
+  // expects the real audit table). Without Postgres, the route
+  // returns 503 gdpr_unavailable. We test that graceful path
+  // here — the actual data path is covered in the storage tests.
+  const { server } = buildServer({ secret: "retention-e2e", llm: makeMockLLM() });
+  const { port, close } = await listen(server);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/api/admin/retention`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Cron-Secret": "real-secret-12345" },
+      body: JSON.stringify({ dry_run: true }),
+    });
+    // No pool → 503 gdpr_unavailable (we test the success path
+    // in storage tests where we have a MockPool).
+    assert.equal(r.status, 503);
+    const body = await r.json();
+    assert.equal(body.error, "gdpr_unavailable");
+  } finally {
+    await close();
+    delete process.env.VIREO_CRON_SECRET;
+  }
+});

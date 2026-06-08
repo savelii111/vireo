@@ -218,3 +218,50 @@ export async function completeDsrRequest(pool, id, { status, artifactPath = null
     [status, artifactPath, id]
   );
 }
+
+// ---- C3: Retention cron (2026-06-08) ----
+//
+// Purges audit rows older than `retentionDays`. The default
+// 365 days is what the audit log table comment in migration
+// 011 promises. Operators can shorten this via
+// VIREO_AUDIT_RETENTION_DAYS (e.g. 90 for a more aggressive
+// retention policy).
+//
+// This is a synchronous purge — for 10K+ rows, switch to
+// `DELETE ... WHERE created_at < $1 LIMIT 1000` in a loop.
+// For the current scale (<100 rows per user per year), a
+// single DELETE is fine.
+//
+// Returns the number of rows purged.
+export async function purgeOldAudit(pool, { retentionDays = 365, now = new Date() } = {}) {
+  const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
+  const r = await pool.query(
+    `DELETE FROM vireo_studio_audit WHERE created_at < $1`,
+    [cutoff.toISOString()]
+  );
+  return r.rowCount || 0;
+}
+
+/**
+ * Run the retention cron once. Designed to be called from a
+ * cron job, a scheduled function, or on a timer.
+ *
+ * @param {object} opts
+ * @param {object} opts.pool - The pg.Pool to use
+ * @param {number} [opts.retentionDays] - Override the default 365-day retention
+ * @param {boolean} [opts.dryRun] - If true, count what would be deleted without deleting
+ * @returns {Promise<{purged: number, cutoff: string, retentionDays: number}>}
+ */
+export async function runRetentionCron({ pool, retentionDays, dryRun = false } = {}) {
+  const days = retentionDays ?? (Number(process.env.VIREO_AUDIT_RETENTION_DAYS) || 365);
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  if (dryRun) {
+    const r = await pool.query(
+      `SELECT count(*)::int AS n FROM vireo_studio_audit WHERE created_at < $1`,
+      [cutoff.toISOString()]
+    );
+    return { purged: 0, would_purge: r.rows[0]?.n || 0, cutoff: cutoff.toISOString(), retentionDays: days, dryRun: true };
+  }
+  const purged = await purgeOldAudit(pool, { retentionDays: days });
+  return { purged, cutoff: cutoff.toISOString(), retentionDays: days, dryRun: false };
+}
