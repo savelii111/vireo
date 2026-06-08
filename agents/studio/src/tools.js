@@ -672,6 +672,35 @@ export const STUDIO_INPROCESS_TOOL_NAMES = new Set([
   "cancel_job",
 ]);
 
+// Tier 1 edit tools (2026-06-08). Dispatched in-process because they
+// return a job_id synchronously and don't need a worker round-trip.
+// Handlers are imported lazily below to keep this module's load
+// time fast.
+export const TIER1_TOOL_NAMES = new Set([
+  "apply_color_grade",
+  "apply_speed_ramp",
+  "mix_audio",
+  "compose_multi_clip",
+  "add_text_overlay",
+]);
+
+// Lazy import of the actual handler functions. We hold them in a
+// TIER1_HANDLERS map keyed by tool name. Populated on first dispatch
+// (see _ensureTier1Handlers).
+let _tier1Handlers = null;
+async function _ensureTier1Handlers() {
+  if (_tier1Handlers) return _tier1Handlers;
+  const tier1 = await import("./edit_tools_tier1.js");
+  _tier1Handlers = {
+    apply_color_grade: tier1.applyColorGrade,
+    apply_speed_ramp: tier1.applySpeedRamp,
+    mix_audio: tier1.mixAudio,
+    compose_multi_clip: tier1.composeMultiClip,
+    add_text_overlay: tier1.addTextOverlay,
+  };
+  return _tier1Handlers;
+}
+
 // ---------- System prompt ----------
 
 // Build a compact summary of the available tools for the system prompt.
@@ -969,6 +998,31 @@ export async function executeToolCall(call, ctx) {
       // so the assistant sees the same shape the HTTP routes do.
       if (result && typeof result === "object" && "ok" in result) return result;
       return { ok: true, result };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
+  // Tier 1 edit tools (2026-06-08) — color grading, speed ramping,
+  // audio mixing, multi-clip compose, text overlays. These are
+  // in-process: they return a job_id synchronously and the actual
+  // FFmpeg work is enqueued to a worker (or, in dev, runs inline).
+  // We dispatch via ctx.deps first (so tests can inject fakes),
+  // then fall back to the module-level handlers imported from
+  // edit_tools_tier1.js.
+  if (TIER1_TOOL_NAMES.has(name)) {
+    const args = (call.args && typeof call.args === "object") ? call.args : {};
+    try {
+      if (ctx?.deps && typeof ctx.deps[name] === "function") {
+        return await ctx.deps[name]({ ...args, userId: ctx.userId });
+      }
+      // Fall back to the module-level handler.
+      const handlers = await _ensureTier1Handlers();
+      const handler = handlers[name];
+      if (typeof handler !== "function") {
+        return { ok: false, error: `tier1_handler_missing: ${name}` };
+      }
+      return await handler(args);
     } catch (e) {
       return { ok: false, error: e?.message || String(e) };
     }

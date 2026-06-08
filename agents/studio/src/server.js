@@ -29,10 +29,24 @@ import { ProjectStore, ContentPieceStorePg, ConversationStore, MessageStore } fr
 import { PostgresStyleDNAStore } from "../../storage/src/extended.js";
 import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrations.js";
 import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest, runRetentionCron, startRetentionScheduler } from "../../storage/src/gdpr_store.js";
+import { runChatTurn } from "./run_chat_turn.js";
 import { LLMClient, LLMError } from "./llm_client.js";
 import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
 import { EDIT_TOOLS, executeToolCall, buildEditToolContext } from "./tools.js";
 import { CHAT_TOOLS, executeChatToolCall } from "./chat_tools.js";
+import {
+  TIER1_EDIT_TOOLS,
+  applyColorGrade,
+  applySpeedRamp,
+  mixAudio,
+  composeMultiClip,
+  addTextOverlay,
+  COLOR_PRESETS,
+  SPEED_PRESETS,
+  DUCK_PRESETS,
+  VOICE_EQ_PRESETS,
+  TEXT_PRESETS,
+} from "./edit_tools_tier1.js";
 import { CAPABILITIES, PERSONA, describeToolsForPrompt, detectLanguage, languageName } from "./persona.js";
 import { computeOnboardingState } from "./onboarding.js";
 import { createSpan, checkBudget, systemPromptCache, projectListCache, styleDNACache } from "./latency.js";
@@ -1094,7 +1108,7 @@ Briefly confirm what happened (1 sentence) and what's next. Don't repeat the too
 - Currency/timestamps: ISO 8601. Default to UTC when ambiguous.
 - Call tools in parallel when independent.
 - Wait for tool results before responding with a conclusion.`;
-const ALL_TOOLS = [...CHAT_TOOLS, ...EDIT_TOOLS];
+const ALL_TOOLS = [...CHAT_TOOLS, ...EDIT_TOOLS, ...TIER1_EDIT_TOOLS];
 
 /**
  * Build the per-user context block that's injected into the chat LLM's
@@ -1140,228 +1154,64 @@ function buildProjectContextBlock(proj) {
   return `\n\nCurrent project: "${proj.name}" (id: ${proj.id})${proj.niche ? `, niche: ${proj.niche}` : ""}, target platforms: ${platformList}. Prefer tool calls and examples that fit this project's niche.`;
 }
 
-/**
- * Run a chat turn with up to N tool-calling rounds.
- *
- * Two-pass design (P0-1):
- *   Pass 1 — tool-calling rounds. Non-streaming `llm.chat()` for fast planning
- *            and reliable tool-call parsing.
- *   Pass 2 — final user-visible reply. If the LLM is real (not mock) and has
- *            `streamChat`, we re-issue the final turn as a streaming call so
- *            deltas reach the user in real time. The non-streamed reply from
- *            pass 1 is replaced in the message history with the streamed one.
- *            If the LLM is mock or doesn't support streamChat, we use the
- *            pass-1 reply as-is (mock mode is just one big chunk anyway).
- *
- * Returns { reply, messages, usage, costUsd, toolCalls, error, streamed }.
- *   streamed: true when the reply came from a real streamChat pass.
- */
-async function runChatTurn({ llm, system, history, userMsg, tools, deps, userId, maxRounds = 6, onTextDelta = null, signal = null }) {
-  const messages = [...history, { role: "user", content: userMsg }];
-  const allToolCalls = [];
-  const allToolResults = [];
-  let lastUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-  let cost = 0;
-  let rounds = 0;
-  let error = null;
-
-  while (rounds < maxRounds) {
-    if (signal?.aborted) {
-      error = "aborted";
-      break;
-    }
-    rounds++;
-    let resp;
-    try {
-      resp = await llm.chat({ system, messages, tools, toolChoice: "auto", temperature: 0.7, maxTokens: 1024 });
-    } catch (e) {
-      if (e instanceof LLMError) {
-        return { reply: `LLM error: ${e.message}`, messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, error: e.code || "llm_error" };
+// runChatTurn is now imported from ./run_chat_turn.js (extracted 2026-06-08
+// to keep server.js manageable). The extracted version preserves all
+// security hooks (G1.1 ownership, G1.2 timeout, G2.2 confirmation token)
+// and streaming support.
+//
+// `makeChatHooks` is a closure that captures the per-request deps
+// (llmClient, audit) plus the module-level security stores
+// (undoStore, confirmationStore). It's called by both the
+// /api/chat and /api/chat/stream handlers.
+function makeChatHooks({ userId, deps, llmClient, audit }) {
+  return {
+    // G1.1: ownership check. If the LLM tries to operate on a
+    // resource (project_id, piece_id) that doesn't belong to the
+    // user, reject before executing the tool.
+    async ownershipCheck({ userId: uid, resourceId, tool }) {
+      try {
+        const owned = await deps.list_projects({ userId: uid, limit: 200 });
+        const allIds = (owned?.projects || []).map((p) => p.id);
+        return allIds.includes(resourceId);
+      } catch {
+        return true; // fail open — if ownership check itself fails, let the tool try
       }
-      return { reply: `LLM error: ${e.message}`, messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, error: "llm_error" };
-    }
-    lastUsage = resp.usage || lastUsage;
-    cost += llm.costUsd(llm.model, resp.usage?.input_tokens || 0, resp.usage?.output_tokens || 0);
-
-    // Append assistant turn
-    const assistantTurn = { role: "assistant", content: resp.content || "" };
-    if (resp.tool_calls && resp.tool_calls.length > 0) {
-      assistantTurn.tool_calls = resp.tool_calls;
-    }
-    messages.push(assistantTurn);
-
-    // If no tool calls, this is the final reply. Try to stream it for
-    // real-time UX. Skip when the LLM is mock (one-shot chunk, no benefit)
-    // or when no callback is provided (e.g. the non-streaming /api/chat path).
-    if (!resp.tool_calls || resp.tool_calls.length === 0) {
-      if (onTextDelta && typeof llm.streamChat === "function" && !llm.isMock?.()) {
-        const streamed = await _streamFinalReply({ llm, system, messages, onTextDelta, signal });
-        if (streamed) {
-          // Replace the last assistant turn in the trajectory with the streamed one
-          // so the persisted message history matches what the user saw.
-          const lastIdx = messages.findLastIndex((m) => m.role === "assistant");
-          if (lastIdx !== -1) {
-            messages[lastIdx] = { ...messages[lastIdx], content: streamed.reply };
-          }
-          lastUsage = {
-            input_tokens: lastUsage.input_tokens + streamed.usage.input_tokens,
-            output_tokens: lastUsage.output_tokens + streamed.usage.output_tokens,
-            total_tokens: lastUsage.total_tokens + streamed.usage.total_tokens,
-          };
-          cost += streamed.cost;
-          return { reply: streamed.reply, messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, streamed: true };
-        }
-        // Stream failed — fall through to non-streamed reply.
-      }
-      return { reply: resp.content || "", messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, streamed: false };
-    }
-
-    // Execute each tool call in parallel. Try chat tools first
-    // (create_project, save_content, list_projects, get_style_dna),
-    // then fall back to video edit tools (cut_video, etc).
-    // The executeToolCall dispatcher in tools.js handles the
-    // video tools; executeChatToolCall handles the chat tools.
-    const ctx = { userId, deps };
-    const toolResults = await Promise.all(resp.tool_calls.map(async (tc) => {
-      let args = {};
-      try { args = JSON.parse(tc.function.arguments || "{}"); } catch { args = {}; }
-      let result;
-      const chatToolNames = CHAT_TOOLS.map((t) => t.function.name);
-
-      // G1.1: ownership validation. If the tool args include a
-      // resource ID (project_id, piece_id, conversation_id), we
-      // verify it belongs to the user before executing. This
-      // prevents the LLM from accidentally (or via prompt
-      // injection) operating on another user's data.
-      const resourceIdKeys = ["project_id", "piece_id", "conversation_id", "id"];
-      const referencedId = resourceIdKeys.map((k) => args[k]).find((v) => typeof v === "string");
-      if (referencedId && chatToolNames.includes(tc.function.name)) {
-        try {
-          // Use deps.listForUser to see if the user has access
-          const owned = await deps.list_projects({ userId, limit: 200 });
-          const allIds = (owned?.projects || []).map((p) => p.id);
-          // Also check pieces if the tool might reference one
-          if (tc.function.name === "save_content" || tc.function.name === "get_style_dna") {
-            // For save_content the project_id is the resource
-            // For get_style_dna we check project ownership
-          }
-          if (!allIds.includes(referencedId) && tc.function.name !== "save_content") {
-            result = {
-              ok: false,
-              error: "not_owned",
-              message: `Resource ${referencedId} not found in your account. Use list_projects to see yours.`,
-            };
-            allToolCalls.push({ name: tc.function.name, args, kind: "chat", denied: true });
-            allToolResults.push({ name: tc.function.name, result });
-            return { tool_call_id: tc.id, role: "tool", name: tc.function.name, content: JSON.stringify(result) };
-          }
-        } catch (e) {
-          // Non-fatal: if the ownership check itself fails, fall
-          // through to the tool. The tool will fail safely.
-        }
-      }
-
-      // G2.2: destructive tools require a confirmation token.
-      // If the LLM tries to call delete_project etc. without
-      // a token, we return a structured error asking for one.
-      if (isDestructiveTool(tc.function.name)) {
-        const confirmToken = args.confirmation_token;
-        if (!confirmToken) {
-          // Create the token on behalf of the user
-          const token = confirmationStore.create(userId, { tool: tc.function.name, args });
-          result = {
-            ok: false,
-            error: "confirmation_required",
-            message: `This action is destructive. Confirm with the user before proceeding.`,
-            confirmation_token: token,
-            confirmation_endpoint: `POST /api/me/confirmations/${token}`,
-          };
-          allToolCalls.push({ name: tc.function.name, args, kind: "chat", needs_confirmation: true });
-          allToolResults.push({ name: tc.function.name, result });
-          return { tool_call_id: tc.id, role: "tool", name: tc.function.name, content: JSON.stringify(result) };
-        }
-        // Token provided — validate and consume
-        const validated = confirmationStore.consume(userId, confirmToken);
-        if (!validated || validated.tool !== tc.function.name) {
-          result = { ok: false, error: "invalid_confirmation_token", message: "Confirmation token is invalid or expired. Ask the user to confirm again." };
-          allToolCalls.push({ name: tc.function.name, args, kind: "chat", denied: true });
-          allToolResults.push({ name: tc.function.name, result });
-          return { tool_call_id: tc.id, role: "tool", name: tc.function.name, content: JSON.stringify(result) };
-        }
-      }
-
-      if (chatToolNames.includes(tc.function.name)) {
-        allToolCalls.push({ name: tc.function.name, args, kind: "chat" });
-        // G1.2: per-tool timeout
-        try {
-          const timeoutMs = getToolTimeoutMs(tc.function.name);
-          result = await withTimeout(
-            executeChatToolCall({ name: tc.function.name, args }, ctx),
-            timeoutMs,
-            tc.function.name,
-          );
-        } catch (e) {
-          result = { ok: false, error: "chat_tool_error", message: e?.message || String(e) };
-        }
-      } else {
-        allToolCalls.push({ name: tc.function.name, args, kind: "edit" });
-        result = await executeToolCall({ name: tc.function.name, args }, ctx);
-      }
-      allToolResults.push({ name: tc.function.name, result });
-      return { tool_call_id: tc.id, role: "tool", name: tc.function.name, content: JSON.stringify(result) };
-    }));
-    for (const tr of toolResults) messages.push(tr);
-  }
-
-  // Hit max rounds — return whatever we have
-  if (error === "aborted") {
-    return { reply: "", messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, error: "aborted" };
-  }
-  return { reply: messages[messages.length - 1]?.content || "(no reply — max tool rounds reached)", messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, error: "max_rounds" };
-}
-
-/**
- * Issue a streamChat call to produce the final user-visible reply in real time.
- * Returns { reply, usage, cost } on success, or null on failure (caller falls
- * back to the non-streamed reply from pass 1).
- *
- * The stream is issued with tools=null so the LLM can't try to call tools
- * during the streaming phase — by the time we reach this code, all tool
- * planning is done. We still keep the full message trajectory (including the
- * pass-1 assistant turn and tool results) so the LLM has full context.
- */
-async function _streamFinalReply({ llm, system, messages, onTextDelta, signal }) {
-  let reply = "";
-  let usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-  try {
-    for await (const ev of llm.streamChat({
-      system,
-      messages,
-      tools: null,
-      toolChoice: "none",
-      temperature: 0.7,
-      maxTokens: 1024,
-      signal,  // passed through; LLMClient honors it for the underlying fetch
-    })) {
-      if (signal?.aborted) break;
-      if (ev.delta) {
-        reply += ev.delta;
-        try { onTextDelta(ev.delta); } catch (e) { console.warn("[studio] onTextDelta threw:", e?.message || e); }
-      }
-      if (ev.usage) {
-        usage = {
-          input_tokens: ev.usage.prompt_tokens || ev.usage.input_tokens || 0,
-          output_tokens: ev.usage.completion_tokens || ev.usage.output_tokens || 0,
-          total_tokens: ev.usage.total_tokens || 0,
+    },
+    // G2.2: destructive tool two-step confirmation.
+    async confirmationCheck({ userId: uid, create, consume, token, tool, args }) {
+      if (create) {
+        const t = confirmationStore.create(uid, { tool, args });
+        return {
+          needsConfirmation: true,
+          message: "This action is destructive. Confirm with the user before proceeding.",
+          confirmation_token: t,
+          confirmation_endpoint: `POST /api/me/confirmations/${t}`,
         };
       }
-    }
-    const cost = llm.costUsd(llm.model, usage.input_tokens, usage.output_tokens);
-    return { reply, usage, cost };
-  } catch (e) {
-    console.warn("[studio] _streamFinalReply failed, falling back to non-streamed reply:", e?.message || e);
-    return null;
-  }
+      if (consume) {
+        const validated = confirmationStore.consume(uid, token);
+        if (!validated || validated.tool !== tool) return null;
+        return validated;
+      }
+      return null;
+    },
+    // Record undo for destructive tools so the user can hit
+    // "Undo" via POST /api/me/undo.
+    async undoRecord({ userId: uid, tool, args, result }) {
+      undoStore.push(uid, { tool, args, result, at: Date.now() });
+    },
+    // Dispatch edit tools (cut_video, add_broll, etc).
+    async executeEditTool({ name, args, userId: uid, deps: d }) {
+      return await executeToolCall({ name, args }, { userId: uid, deps: d });
+    },
+    // Audit hook — fires once per tool call attempt and once per result.
+    async onToolCall({ name, kind, userId: uid }) {
+      try { await audit?.log?.({ userId: uid, action: "chat_tool_call", targetKind: "tool", targetId: name, metadata: { kind } }); } catch {}
+    },
+    async onToolResult({ name, result, userId: uid }) {
+      try { await audit?.log?.({ userId: uid, action: "chat_tool_result", targetKind: "tool", targetId: name, metadata: { ok: !!result?.ok } }); } catch {}
+    },
+  };
 }
 
 export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret = JWT_SECRET, pool, llm, fetchImpl, upstreamTimeoutMs } = {}) {
@@ -1905,6 +1755,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         // Run the turn (may invoke tools). On LLM error we still want a row
         // in the conversation — the user needs to see *something* went wrong,
         // not just a hung "assistant typing…" bubble.
+        const chatHooks = makeChatHooks({ userId, deps, llmClient, audit });
         let result;
         try {
           result = await runChatTurn({
@@ -1916,6 +1767,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
             deps,
             userId,
             maxRounds: 6,
+            hooks: chatHooks,
           });
         } catch (e) {
           console.error(`[studio] runChatTurn crashed for user=${userId}:`, e);
@@ -2199,6 +2051,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
             maxRounds: 6,
             onTextDelta,
             signal: abortCtrl.signal,
+            hooks: makeChatHooks({ userId, deps, llmClient, audit }),
           });
         } catch (e) {
           clearInterval(heartbeat);
