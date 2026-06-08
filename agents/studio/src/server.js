@@ -35,6 +35,8 @@ import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } fro
 import { CHAT_TOOLS, executeChatToolCall } from "./chat_tools.js";
 import { CAPABILITIES, PERSONA, describeToolsForPrompt, detectLanguage, languageName } from "./persona.js";
 import { computeOnboardingState, buildOnboardingGreeting } from "./onboarding.js";
+import { createSpan, checkBudget, prefetchAll, systemPromptCache, projectListCache, styleDNACache } from "./latency.js";
+import { usageTracker, auditStats, spanAggregator, makeRequestId } from "./observability.js";
 import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
 import { sanitizeForLLM, checkForInjection } from "./injection-guard.js";
 
@@ -1368,6 +1370,32 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       const result = await runRetentionCron({ pool, dryRun });
       return json(res, 200, { ok: true, ...result });
     }
+    // ---- E1: audit stats endpoint (admin only, JWT-gated) ----
+    // Returns real-time stats for the admin dashboard.
+    // The response is JSON by default; ?format=csv returns CSV.
+    if (req.method === "GET" && url === "/api/admin/audit-stats") {
+      // E2: include the most recent span timings for observability
+      const recentSpans = spanAggregator.getRecent(50);
+      const summary = {
+        ok: true,
+        ...auditStats.summary(),
+        recent_spans: recentSpans,
+        cache: {
+          system_prompts: systemPromptCache.size,
+          project_lists: projectListCache.size,
+          style_dnas: styleDNACache.size,
+        },
+      };
+      if (req.url.includes("format=csv")) {
+        const csv = auditStats.toCSV();
+        res.writeHead(200, {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": "attachment; filename=\"vireo-audit-stats.csv\"",
+        });
+        return res.end(csv);
+      }
+      return json(res, 200, summary);
+    }
     await new Promise((r) => auth(req, res, r));
     if (res.writableEnded) return;
     const userId = req.user?.id;
@@ -1621,6 +1649,19 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
 
       // ---- chat (the main endpoint) ----
       if (key === "POST /api/chat") {
+        // D3: budget check before doing any work
+        // Cheap (O(1)) — does NOT call the LLM. If the user is
+        // over budget, return 402 immediately so they don't get
+        // a half-response.
+        const budgetCheck = usageTracker.checkBudget(userId);
+        if (!budgetCheck.ok) {
+          return err(res, 402, budgetCheck.reason, `You have exceeded your ${budgetCheck.reason.replace(/_/g, " ")} (used ${budgetCheck.used}, budget ${budgetCheck.budget}). Upgrade or wait for the next billing cycle.`, { used: budgetCheck.used, budget: budgetCheck.budget });
+        }
+
+        // E2: request_id for distributed tracing
+        const requestId = makeRequestId(req);
+        const chatSpan = createSpan("chat_turn", { user_id: userId, request_id: requestId });
+
         // Body size cap: a chat message over 64KB is almost always abuse.
         // Fail fast on Content-Length so we don't allocate buffers for nothing.
         const cl = Number(req.headers["content-length"] || 0);
@@ -1807,6 +1848,56 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           // Non-fatal
         }
 
+        // D3: record usage for budget tracking + per-user telemetry.
+        // We record AFTER the turn so the cost is the actual cost.
+        // The check at the top prevents users from going over; this
+        // records how much they used.
+        try {
+          usageTracker.record(userId, {
+            inputTokens: result.usage?.input_tokens || 0,
+            outputTokens: result.usage?.output_tokens || 0,
+            costUsd: result.costUsd || 0,
+            tool: result.toolCalls?.[0]?.name || null,
+            requestId,
+            model: llmClient.model,
+          });
+        } catch (e) {
+          // Non-fatal: tracking failure shouldn't break the response
+          console.warn("[studio] usageTracker.record failed:", e?.message || e);
+        }
+
+        // E1: record audit stats for the admin dashboard.
+        // We aggregate the per-tool latency + result.
+        try {
+          for (const tc of result.toolCalls || []) {
+            auditStats.record({
+              action: "tool_call",
+              target_kind: "tool",
+              target_id: tc.name,
+              result: "ok",
+              route: "POST /api/chat",
+              request_id: requestId,
+            });
+          }
+        } catch {}
+
+        // D1: finalize the latency span. If we exceeded budget,
+        // log a warning so we can spot regressions.
+        try {
+          chatSpan.mark("total", {
+            tokens: result.usage?.total_tokens,
+            cost_usd: result.costUsd,
+            tool_count: result.toolCalls?.length || 0,
+            streamed: result.streamed,
+          });
+          const violations = checkBudget(chatSpan);
+          if (violations.length > 0) {
+            console.warn(`[studio] latency budget violations for user=${userId} req=${requestId}:`, JSON.stringify(violations));
+          }
+          // E2: store the span for /api/admin/audit-stats
+          spanAggregator.record({ ...chatSpan.toLog(), user_id: userId, request_id: requestId });
+        } catch {}
+
         return json(res, 200, {
           ok: true,
           conversation_id: conversationId,
@@ -1817,6 +1908,14 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           error: result.error || null,
           message_id: lastSavedId,
           onboarding: onboardingContext,
+          // E2: include request_id in the response so the client
+          // can correlate logs and report issues
+          request_id: requestId,
+          // D1: include span timing for client-side telemetry
+          latency: {
+            total_ms: Math.round(chatSpan.total() * 100) / 100,
+            marks: chatSpan.marks.map((m) => ({ label: m.label, at_ms: Math.round(m.at_ms * 100) / 100 })),
+          },
         });
       }
 
@@ -2209,6 +2308,27 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           detected_language: w?.detected_language || null,
         });
       }
+
+      // ---- D3: per-user usage + cost telemetry ----
+      // Returns the user's daily/monthly usage so the UI can
+      // show "you've used $X this month" without parsing logs.
+      if (key === "GET /api/me/usage" && req.method === "GET") {
+        return json(res, 200, {
+          ok: true,
+          ...usageTracker.getUsage(userId),
+        });
+      }
+
+      // ---- E3: user-visible conversation stats ----
+      // "What did I do this month" — favorite tool, time saved,
+      // success rate. The UI uses this for engagement.
+      if (key === "GET /api/me/conversation-stats" && req.method === "GET") {
+        return json(res, 200, {
+          ok: true,
+          ...usageTracker.getStats(userId),
+        });
+      }
+
       if (key === "GET /api/me/export") {
         if (!gdprExport) {
           return err(res, 503, "gdpr_unavailable", "Export requires Postgres. Set VIREO_PG_URL and restart.");
