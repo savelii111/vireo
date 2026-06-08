@@ -4,6 +4,8 @@ Last updated: 2026-06-08
 
 This is the honest, point-by-point assessment of where Vireo Studio stands today. We grade each of the 12 areas on a 1-10 scale and document what's done, what's partial, and what's left.
 
+> **📅 Looking for the roadmap to 10/10?** See [`STUDIO_ROADMAP_6_MONTHS_2026-06-08.md`](./STUDIO_ROADMAP_6_MONTHS_2026-06-08.md) for the 6-month execution plan (24 weeks, 36→72+ tools, 96% eval target, $3K MRR by month 6).
+
 ## Scorecard
 
 | # | Area | Grade | Notes |
