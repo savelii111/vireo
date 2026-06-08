@@ -1,2 +1,0 @@
-file 'C:\Users\koval\OneDrive\случайный проект\vireo\agents\studio\test-videos\blue.mp4'
-file 'C:\Users\koval\OneDrive\случайный проект\vireo\agents\studio\test-videos\red.mp4'

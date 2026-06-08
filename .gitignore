@@ -96,3 +96,5 @@ vireo_media/
 *.key
 secrets/
 .tmp/
+vireo-jobs/
+agents/studio/vireo-jobs/
