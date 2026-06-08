@@ -31,11 +31,11 @@ import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrat
 import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest, runRetentionCron, startRetentionScheduler } from "../../storage/src/gdpr_store.js";
 import { LLMClient, LLMError } from "./llm_client.js";
 import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
-import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } from "./tools.js";
+import { EDIT_TOOLS, executeToolCall, buildEditToolContext } from "./tools.js";
 import { CHAT_TOOLS, executeChatToolCall } from "./chat_tools.js";
 import { CAPABILITIES, PERSONA, describeToolsForPrompt, detectLanguage, languageName } from "./persona.js";
-import { computeOnboardingState, buildOnboardingGreeting } from "./onboarding.js";
-import { createSpan, checkBudget, prefetchAll, systemPromptCache, projectListCache, styleDNACache } from "./latency.js";
+import { computeOnboardingState } from "./onboarding.js";
+import { createSpan, checkBudget, systemPromptCache, projectListCache, styleDNACache } from "./latency.js";
 import { usageTracker, auditStats, spanAggregator, makeRequestId } from "./observability.js";
 import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
 import { sanitizeForLLM, checkForInjection } from "./injection-guard.js";
@@ -1726,16 +1726,25 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           }
         }
 
-        // User preferences (Wave 1): the user's long-term memory. We fetch
-        // this on every chat turn so the LLM always sees current prefs.
-        // A failed read should not break the chat — fall back to a prompt
-        // without prefs (the LLM is robust to missing context).
-        try {
-          const prefs = await preferences.get(userId);
-          system += buildUserPrefsBlock(prefs);
-        } catch (e) {
-          console.warn(`[studio] preferences read failed for user=${userId}:`, e?.message || e);
+        // D4: cache user preferences. The prefs change rarely
+        // (during the welcome flow or when the user updates them
+        // explicitly), so a 60s TTL cuts DB load massively without
+        // making the LLM see stale context.
+        // Cache key: `${userId}:prefs` (the same user can have
+        // different prefs in different builds, so include the
+        // process ID as a namespace).
+        const prefsCacheKey = `${process.pid}:${userId}:prefs`;
+        let prefs = systemPromptCache.get(prefsCacheKey);
+        if (prefs === undefined) {
+          try {
+            prefs = await preferences.get(userId);
+            systemPromptCache.set(prefsCacheKey, prefs);
+          } catch (e) {
+            console.warn(`[studio] preferences read failed for user=${userId}:`, e?.message || e);
+            prefs = null;
+          }
         }
+        system += buildUserPrefsBlock(prefs);
 
         // Run the turn (may invoke tools). On LLM error we still want a row
         // in the conversation — the user needs to see *something* went wrong,
@@ -1929,6 +1938,8 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       //   event: done    { reply, usage, cost_usd, message_id }
       //   event: error   { error, message }
       if (key === "POST /api/chat/stream") {
+        // E2: same request_id as the non-streaming path
+        const requestId = makeRequestId(req);
         const cl2 = Number(req.headers["content-length"] || 0);
         if (cl2 > 64 * 1024) return err(res, 413, "payload_too_large", "message body exceeds 64KB");
         let body; try { body = await readJsonBody(req, 64 * 1024); } catch (e) { return err(res, 400, "bad_json", e.message); }
@@ -1959,13 +1970,20 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
             system += buildProjectContextBlock(proj);
           }
         }
-        // User preferences (Wave 1): same injection as the non-streaming path.
-        try {
-          const prefs = await preferences.get(userId);
-          system += buildUserPrefsBlock(prefs);
-        } catch (e) {
-          console.warn(`[studio] preferences read failed for user=${userId}:`, e?.message || e);
+        // D4: cache user preferences in the streaming path too.
+        // Same TTL/key strategy as the non-streaming path.
+        const prefsCacheKey = `${process.pid}:${userId}:prefs`;
+        let prefs = systemPromptCache.get(prefsCacheKey);
+        if (prefs === undefined) {
+          try {
+            prefs = await preferences.get(userId);
+            systemPromptCache.set(prefsCacheKey, prefs);
+          } catch (e) {
+            console.warn(`[studio] preferences read failed for user=${userId}:`, e?.message || e);
+            prefs = null;
+          }
         }
+        system += buildUserPrefsBlock(prefs);
 
         // SSE headers
         res.writeHead(200, {
@@ -1973,7 +1991,9 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           "Cache-Control": "no-cache, no-transform",
           "Connection": "keep-alive",
           "X-Accel-Buffering": "no",
+          "X-Request-Id": requestId,  // E2: trace correlation
         });
+        // (heartbeat already declared below — D2 keep-alive ping)
         const send = (event, data) => {
           // Guard against writes after the client closed the connection.
           // Without this, an aborted request can throw ERR_STREAM_DESTROYED
@@ -2247,6 +2267,9 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           if (e && (e.httpStatus || e.code)) return err(res, e.httpStatus || 400, e.code || "validation", e.message);
           throw e;
         }
+        // D4: invalidate the prefs cache so the next chat turn
+        // sees the new value immediately (not after the 60s TTL).
+        systemPromptCache.invalidate(`${process.pid}:${userId}:prefs`);
         return json(res, 200, { ok: true, preferences: p });
       }
 
