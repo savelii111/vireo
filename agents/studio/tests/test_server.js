@@ -591,8 +591,14 @@ test("stream: real LLM with streamChat emits real-time delta events", async () =
       return { content: "ok", tool_calls: null, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } };
     },
     streamChat: async function* ({ messages }) {
-      const last = messages[messages.length - 1];
-      if (last?.role === "tool") {
+      // Real LLM behaviour in pass 2: a tool result is somewhere in the
+      // trajectory, the previous assistant turn was a tool_calls stub, and
+      // we just need to produce a short final reply. We detect the
+      // post-tool-call state by looking for ANY tool message in the
+      // trajectory (not just the last role, which is `assistant` after
+      // round 2 of _runAgent).
+      const hasToolResult = messages.some((m) => m.role === "tool");
+      if (hasToolResult) {
         const text = "Done! Project created.";
         for (const part of ["Done!", " Project", " created."]) {
           yield { delta: part, finish_reason: null };
