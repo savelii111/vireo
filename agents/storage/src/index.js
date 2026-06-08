@@ -29,6 +29,8 @@ import {
   completeDsrRequest,
   purgeOldAudit,
   runRetentionCron,
+  scrubMetadata,
+  scrubMetadataJson,
 } from "./gdpr_store.js";
 
 export { MemoryStore, PostgresStore, PostgresUnavailableError };
@@ -51,6 +53,8 @@ export {
   completeDsrRequest,
   purgeOldAudit,
   runRetentionCron,
+  scrubMetadata,
+  scrubMetadataJson,
 };
 
 /**

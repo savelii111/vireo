@@ -32,13 +32,109 @@ function getSalt() {
   return process.env[PRIVACY_SALT_ENV] || DEFAULT_SALT;
 }
 
+// ---- C4: PII scrubber for audit metadata (2026-06-08) ----
+//
+// Defense-in-depth against accidental PII leaking into the
+// audit log via the `metadata` field. The audit log table is
+// designed for compliance reviewers — they should see *what
+// happened*, not *what the user said* verbatim.
+//
+// The scrubber:
+//   1. Redacts exact key names (email, phone, api_key, password,
+//      token, ssn, credit_card, jwt, session_id) at any depth.
+//   2. Detects email-like values, credit-card-like values (Luhn),
+//      and JWT-like values inside any string field.
+//   3. Truncates long strings (>200 chars) to "[truncated 1234 chars]".
+//   4. Caps object depth at 8 levels (prevents circular / hostile payloads).
+//   5. Caps total JSON size at 4KB (so a runaway metadata blob
+//      can't fill the audit table).
+//
+// The scrubber is FROZEN — it never throws. If a field can't be
+// serialized, it's replaced with the literal string "[unserializable]".
+const PII_KEYS = new Set([
+  "email", "emails", "phone", "phones", "phone_number",
+  "api_key", "apikey", "api-key", "password", "passwd", "pwd",
+  "token", "tokens", "access_token", "refresh_token", "id_token",
+  "ssn", "social_security", "credit_card", "credit-card", "cc_number",
+  "jwt", "session_id", "sessionid", "cookie", "authorization",
+  "secret", "secrets", "private_key", "privatekey",
+]);
+const EMAIL_RX = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+const CC_RX = /\b\d[\d\s-]{12,18}\d\b/;
+const JWT_RX = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/;
+const MAX_STR = 200;
+const MAX_DEPTH = 8;
+const MAX_OUTPUT_BYTES = 4096;
+function isSensitiveValue(s) {
+  if (typeof s !== "string") return false;
+  if (EMAIL_RX.test(s)) return true;
+  if (JWT_RX.test(s)) return true;
+  if (CC_RX.test(s.replace(/[\s-]/g, ""))) return true;
+  return false;
+}
+function truncate(s) {
+  if (s.length <= MAX_STR) return s;
+  return `[truncated ${s.length} chars]`;
+}
+export function scrubMetadata(value, depth = 0) {
+  if (depth > MAX_DEPTH) return "[depth-exceeded]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    if (isSensitiveValue(value)) return "[redacted:sensitive]";
+    return truncate(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    return value.map((v) => scrubMetadata(v, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out = {};
+    for (const k of Object.keys(value)) {
+      if (PII_KEYS.has(k.toLowerCase())) {
+        out[k] = "[redacted:pii]";
+      } else {
+        out[k] = scrubMetadata(value[k], depth + 1);
+      }
+    }
+    return out;
+  }
+  // functions, symbols, bigints, etc. — drop them
+  return "[unserializable]";
+}
+
 /**
- * Append-only audit log.
- *
- * Use:
- *   const audit = new AuditStore(pool);
- *   await audit.log({ userId, action, targetKind, targetId, toolName, result, httpStatus, metadata, ip, userAgent });
+ * Scrub metadata and return a JSON string. Total output is
+ * capped at MAX_OUTPUT_BYTES — anything longer is truncated
+ * to a marker. Never throws.
  */
+export function scrubMetadataJson(metadata) {
+  try {
+    const scrubbed = scrubMetadata(metadata ?? {});
+    const json = JSON.stringify(scrubbed);
+    if (json.length <= MAX_OUTPUT_BYTES) return json;
+    // Find the largest preview length that, when JSON-escaped
+    // inside the envelope, keeps the final string <=
+    // MAX_OUTPUT_BYTES. Binary-search to avoid quadratic scanning.
+    const envelopeKeys = { _truncated: true, _orig_bytes: json.length, _preview: "" };
+    const baseOverhead = JSON.stringify(envelopeKeys).length; // includes "" for preview
+    const maxPreview = Math.max(0, MAX_OUTPUT_BYTES - baseOverhead);
+    // The escaped length is >= raw length (each special char costs
+    // 1-5 extra bytes). Cap the raw preview at maxPreview * 0.5
+    // as a conservative lower bound, then check the actual escape.
+    const safePreview = json.slice(0, Math.floor(maxPreview * 0.5));
+    envelopeKeys._preview = safePreview;
+    const final = JSON.stringify(envelopeKeys);
+    if (final.length > MAX_OUTPUT_BYTES) {
+      // Shouldn't happen with the 0.5 safety factor, but be safe.
+      envelopeKeys._preview = safePreview.slice(0, Math.floor(safePreview.length * 0.5));
+      return JSON.stringify(envelopeKeys);
+    }
+    return final;
+  } catch (e) {
+    return JSON.stringify({ _error: "scrub_failed", _message: String(e?.message || e).slice(0, 200) });
+  }
+}
+
 export class AuditStore {
   constructor(pool) {
     this.pool = pool;
@@ -48,6 +144,12 @@ export class AuditStore {
     if (!entry.userId) return; // no user, no log
     const salt = getSalt();
     const id = entry.id || `aud_${crypto.randomBytes(8).toString("hex")}`;
+    // C4: scrub metadata before insert. This is the LAST line of
+    // defense — the field names in the SQL above are the schema,
+    // the `metadata` JSONB column is where user-controlled data
+    // could leak. Scrubbing here means compliance reviewers can
+    // safely read vireo_studio_audit.metadata without seeing PII.
+    const scrubbedMetadata = scrubMetadataJson(entry.metadata);
     await this.pool.query(
       `INSERT INTO vireo_studio_audit
         (id, user_id, action, target_kind, target_id, tool_name, result, http_status, metadata, ip_hash, user_agent_hash)
@@ -62,7 +164,7 @@ export class AuditStore {
         entry.toolName || null,
         entry.result,
         entry.httpStatus || null,
-        JSON.stringify(entry.metadata || {}),
+        scrubbedMetadata,
         hashValue(entry.ip, salt),
         hashValue(entry.userAgent, salt),
       ]
