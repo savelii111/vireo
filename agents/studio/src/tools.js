@@ -672,10 +672,9 @@ export const STUDIO_INPROCESS_TOOL_NAMES = new Set([
   "cancel_job",
 ]);
 
-// Tier 1 edit tools (2026-06-08). Dispatched in-process because they
-// return a job_id synchronously and don't need a worker round-trip.
-// Handlers are imported lazily below to keep this module's load
-// time fast.
+// Vision + generation tools (2026-06-08). Dispatched in-process.
+// Handlers are imported lazily to keep module load fast.
+import { VISION_GENERATION_TOOL_NAMES } from "./vision_generation_tools.js";
 export const TIER1_TOOL_NAMES = new Set([
   "apply_color_grade",
   "apply_speed_ramp",
@@ -699,6 +698,23 @@ async function _ensureTier1Handlers() {
     add_text_overlay: tier1.addTextOverlay,
   };
   return _tier1Handlers;
+}
+
+// Vision + generation handlers (lazy)
+let _visionHandlers = null;
+async function _ensureVisionHandlers() {
+  if (_visionHandlers) return _visionHandlers;
+  const vg = await import("./vision_generation_tools.js");
+  _visionHandlers = {
+    describe_frame: vg.describeFrame,
+    detect_objects: vg.detectObjects,
+    detect_scenes: vg.detectScenes,
+    extract_dominant_colors: vg.extractDominantColors,
+    generate_image: vg.generateImage,
+    generate_video: vg.generateVideo,
+    inpaint_frame: vg.inpaintFrame,
+  };
+  return _visionHandlers;
 }
 
 // ---------- System prompt ----------
@@ -1021,6 +1037,27 @@ export async function executeToolCall(call, ctx) {
       const handler = handlers[name];
       if (typeof handler !== "function") {
         return { ok: false, error: `tier1_handler_missing: ${name}` };
+      }
+      return await handler(args);
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
+  // Vision + generation tools (2026-06-08) — describe_frame,
+  // detect_objects, detect_scenes, extract_dominant_colors,
+  // generate_image, generate_video, inpaint_frame. Same in-process
+  // dispatch pattern as Tier 1.
+  if (VISION_GENERATION_TOOL_NAMES.has(name)) {
+    const args = (call.args && typeof call.args === "object") ? call.args : {};
+    try {
+      if (ctx?.deps && typeof ctx.deps[name] === "function") {
+        return await ctx.deps[name]({ ...args, userId: ctx.userId });
+      }
+      const handlers = await _ensureVisionHandlers();
+      const handler = handlers[name];
+      if (typeof handler !== "function") {
+        return { ok: false, error: `vision_handler_missing: ${name}` };
       }
       return await handler(args);
     } catch (e) {
