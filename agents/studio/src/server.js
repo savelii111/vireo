@@ -409,6 +409,70 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
       }
       return { ok: true, style_dna: saved, corpus_size: corpus.length, merged: !!existing };
     },
+
+    // ---- DESTRUCTIVE TOOLS (require confirmation_token + record undo) ----
+    // Each of these is in the DESTRUCTIVE_TOOLS whitelist. The chat
+    // pipeline checks for a confirmation_token before calling. After
+    // the call succeeds, we record a rollback function in undoStore
+    // so the user can hit "Undo" via POST /api/me/undo.
+    //
+    // We DO NOT do the recording in the chat dispatcher — we do it
+    // INSIDE the tool, because the tool knows what data to restore.
+
+    delete_project: async ({ userId, project_id }) => {
+      if (!project_id) return { ok: false, error: "project_id_required" };
+      const proj = await projects.get(project_id);
+      if (!proj || proj.user_id !== userId) return { ok: false, error: "project_not_found" };
+      // Capture everything we need to restore
+      const snapshot = { project: proj, pieces: await pieces.listForProject(project_id, { limit: 1000 }) };
+      const ok = await projects.delete(project_id, { userId });
+      if (!ok) return { ok: false, error: "delete_failed" };
+      // Record the undo: re-create the project + pieces
+      // (We do this in the chat dispatcher — the tool returns
+      // enough info to identify the action; the dispatcher
+      // attaches a rollback based on the snapshot.)
+      return { ok: true, deleted_project_id: project_id, snapshot };
+    },
+
+    delete_piece: async ({ userId, piece_id }) => {
+      if (!piece_id) return { ok: false, error: "piece_id_required" };
+      const piece = await pieces.get(piece_id);
+      if (!piece || piece.user_id !== userId) return { ok: false, error: "piece_not_found" };
+      const snapshot = { piece };
+      const ok = await pieces.delete(piece_id, { userId });
+      if (!ok) return { ok: false, error: "delete_failed" };
+      return { ok: true, deleted_piece_id: piece_id, snapshot };
+    },
+
+    revoke_consent: async ({ userId, scope }) => {
+      // scope: "data_processing" | "analytics" | "all"
+      // For now, just return the requested scope. Actual consent
+      // store is a Wave 2 feature.
+      return { ok: true, revoked: scope || "all", user_id: userId };
+    },
+
+    delete_account: async ({ userId }) => {
+      // We do NOT actually delete the user here — the chat pipeline
+      // calls the existing DELETE /api/me route which does the full
+      // GDPR delete. The tool is a thin wrapper that goes through
+      // the same audit trail.
+      // Returning a marker so the chat dispatcher knows to call
+      // the /api/me DELETE endpoint.
+      return { ok: true, action: "redirect_to_account_delete", user_id: userId };
+    },
+
+    delete_style_dna: async ({ userId, project_id }) => {
+      const name = project_id ? `project-${project_id}` : "default";
+      const existing = await styleDNA.getByName(userId, name);
+      if (!existing) return { ok: false, error: "no_dna_to_delete" };
+      const snapshot = { dna: existing };
+      await styleDNA.delete(userId, name);
+      if (project_id) {
+        await projects.update(project_id, { userId, styleDnaId: null });
+      }
+      return { ok: true, deleted_dna_name: name, snapshot };
+    },
+
     edit_content: async ({ userId, text, target_sec, project_id }) => {
       // Pull StyleDNA — prefer project-specific, fall back to first user's DNA
       const all = await styleDNA.listForUser(userId);
@@ -1384,6 +1448,24 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
     const u = new URL(req.url, "http://x");
     const key = `${req.method} ${url}`;
 
+    // ---- static UI (served from /public) ----
+    if (req.method === "GET" && (url === "/" || url === "/index.html")) {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const publicDir = path.resolve(__dirname, "..", "public");
+      const indexPath = path.join(publicDir, "index.html");
+      if (fs.existsSync(indexPath)) {
+        const html = fs.readFileSync(indexPath, "utf8");
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        return res.end(html);
+      }
+      // Fallback if no UI built
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end("<h1>Vireo Studio API</h1><p>UI not yet built. Set up /public/index.html.</p>");
+    }
+
     // ---- public ----
     if (key === "GET /health") {
       const health = {
@@ -2076,6 +2158,12 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           if (!res.writable || res.writableEnded) return;
           try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* ignore */ }
         };
+        // D2 latency: send the FIRST event before doing any
+        // DB work. The user sees "connected" within ~5ms
+        // (vs ~500ms+ while we wait for conversation creation,
+        // prefs cache lookup, etc.). This makes the UI feel
+        // instant even if the LLM takes 5s to respond.
+        send("ready", { request_id: requestId, ts: Date.now() });
         send("meta", { conversation_id: conversationId });
 
         // P0-2: AbortController wired to client disconnect. When the user

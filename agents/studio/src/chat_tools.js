@@ -129,6 +129,43 @@ export const CHAT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "delete_project",
+      description:
+        "Delete a content project and all its content pieces. " +
+        "DESTRUCTIVE — requires a confirmation_token from the user. " +
+        "Before calling: confirm with the user that they want to delete " +
+        "the project. After they confirm, re-call this tool with the " +
+        "confirmation_token from the first response.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: { type: "string", description: "The project to delete (REQUIRED)" },
+          confirmation_token: { type: "string", description: "Token from the first 'confirmation_required' response" },
+        },
+        required: ["project_id", "confirmation_token"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_piece",
+      description:
+        "Delete a single content piece (script, idea, etc). " +
+        "DESTRUCTIVE — requires a confirmation_token.",
+      parameters: {
+        type: "object",
+        properties: {
+          piece_id: { type: "string", description: "The content piece to delete (REQUIRED)" },
+          confirmation_token: { type: "string", description: "Token from the first 'confirmation_required' response" },
+        },
+        required: ["piece_id", "confirmation_token"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_style_dna",
       description:
         "Retrieve the user's Style DNA (their writing style analysis: " +
@@ -188,6 +225,12 @@ export async function executeChatToolCall(call, ctx) {
     case "list_projects":
       if (!list_projects) throw new Error("list_projects tool not available in this deployment");
       return await list_projects({ userId: ctx.userId, limit: args.limit });
+    case "delete_project":
+      if (!ctx.deps.delete_project) throw new Error("delete_project tool not available");
+      return await ctx.deps.delete_project({ userId: ctx.userId, project_id: args.project_id });
+    case "delete_piece":
+      if (!ctx.deps.delete_piece) throw new Error("delete_piece tool not available");
+      return await ctx.deps.delete_piece({ userId: ctx.userId, piece_id: args.piece_id });
     case "get_style_dna":
       if (!get_style_dna) throw new Error("get_style_dna tool not available in this deployment");
       return await get_style_dna({ userId: ctx.userId, project_id: args.project_id });

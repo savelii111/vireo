@@ -53,8 +53,8 @@ async function chatWithTool(secret, sub, toolCall, message) {
   } finally { await close(); }
 }
 
-test("B2: CHAT_TOOLS exports 4 tools with valid OpenAI shape", () => {
-  assert.equal(CHAT_TOOLS.length, 4);
+test("B2: CHAT_TOOLS exports 6 tools with valid OpenAI shape", () => {
+  assert.equal(CHAT_TOOLS.length, 6);
   for (const t of CHAT_TOOLS) {
     assert.equal(t.type, "function");
     assert.ok(t.function.name);
@@ -63,7 +63,7 @@ test("B2: CHAT_TOOLS exports 4 tools with valid OpenAI shape", () => {
     assert.equal(t.function.parameters.type, "object");
   }
   const names = CHAT_TOOLS.map((t) => t.function.name).sort();
-  assert.deepEqual(names, ["create_project", "get_style_dna", "list_projects", "save_content"]);
+  assert.deepEqual(names, ["create_project", "delete_piece", "delete_project", "get_style_dna", "list_projects", "save_content"]);
 });
 
 test("B2: create_project tool creates a project in the store", async () => {
