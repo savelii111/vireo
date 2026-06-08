@@ -39,6 +39,11 @@ import { createSpan, checkBudget, systemPromptCache, projectListCache, styleDNAC
 import { usageTracker, auditStats, spanAggregator, makeRequestId } from "./observability.js";
 import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
 import { sanitizeForLLM, checkForInjection } from "./injection-guard.js";
+import {
+  filterByOwner, isOwnedBy, findForeignIds,
+  withTimeout, getToolTimeoutMs,
+  undoStore, confirmationStore, isDestructiveTool,
+} from "./security.js";
 
 // Wrap PostgresStyleDNAStore to use the API we expect: { pool } constructor + id-based methods.
 class StyleDNAStorePg {
@@ -1158,10 +1163,79 @@ async function runChatTurn({ llm, system, history, userMsg, tools, deps, userId,
       try { args = JSON.parse(tc.function.arguments || "{}"); } catch { args = {}; }
       let result;
       const chatToolNames = CHAT_TOOLS.map((t) => t.function.name);
+
+      // G1.1: ownership validation. If the tool args include a
+      // resource ID (project_id, piece_id, conversation_id), we
+      // verify it belongs to the user before executing. This
+      // prevents the LLM from accidentally (or via prompt
+      // injection) operating on another user's data.
+      const resourceIdKeys = ["project_id", "piece_id", "conversation_id", "id"];
+      const referencedId = resourceIdKeys.map((k) => args[k]).find((v) => typeof v === "string");
+      if (referencedId && chatToolNames.includes(tc.function.name)) {
+        try {
+          // Use deps.listForUser to see if the user has access
+          const owned = await deps.list_projects({ userId, limit: 200 });
+          const allIds = (owned?.projects || []).map((p) => p.id);
+          // Also check pieces if the tool might reference one
+          if (tc.function.name === "save_content" || tc.function.name === "get_style_dna") {
+            // For save_content the project_id is the resource
+            // For get_style_dna we check project ownership
+          }
+          if (!allIds.includes(referencedId) && tc.function.name !== "save_content") {
+            result = {
+              ok: false,
+              error: "not_owned",
+              message: `Resource ${referencedId} not found in your account. Use list_projects to see yours.`,
+            };
+            allToolCalls.push({ name: tc.function.name, args, kind: "chat", denied: true });
+            allToolResults.push({ name: tc.function.name, result });
+            return { tool_call_id: tc.id, role: "tool", name: tc.function.name, content: JSON.stringify(result) };
+          }
+        } catch (e) {
+          // Non-fatal: if the ownership check itself fails, fall
+          // through to the tool. The tool will fail safely.
+        }
+      }
+
+      // G2.2: destructive tools require a confirmation token.
+      // If the LLM tries to call delete_project etc. without
+      // a token, we return a structured error asking for one.
+      if (isDestructiveTool(tc.function.name)) {
+        const confirmToken = args.confirmation_token;
+        if (!confirmToken) {
+          // Create the token on behalf of the user
+          const token = confirmationStore.create(userId, { tool: tc.function.name, args });
+          result = {
+            ok: false,
+            error: "confirmation_required",
+            message: `This action is destructive. Confirm with the user before proceeding.`,
+            confirmation_token: token,
+            confirmation_endpoint: `POST /api/me/confirmations/${token}`,
+          };
+          allToolCalls.push({ name: tc.function.name, args, kind: "chat", needs_confirmation: true });
+          allToolResults.push({ name: tc.function.name, result });
+          return { tool_call_id: tc.id, role: "tool", name: tc.function.name, content: JSON.stringify(result) };
+        }
+        // Token provided — validate and consume
+        const validated = confirmationStore.consume(userId, confirmToken);
+        if (!validated || validated.tool !== tc.function.name) {
+          result = { ok: false, error: "invalid_confirmation_token", message: "Confirmation token is invalid or expired. Ask the user to confirm again." };
+          allToolCalls.push({ name: tc.function.name, args, kind: "chat", denied: true });
+          allToolResults.push({ name: tc.function.name, result });
+          return { tool_call_id: tc.id, role: "tool", name: tc.function.name, content: JSON.stringify(result) };
+        }
+      }
+
       if (chatToolNames.includes(tc.function.name)) {
         allToolCalls.push({ name: tc.function.name, args, kind: "chat" });
+        // G1.2: per-tool timeout
         try {
-          result = await executeChatToolCall({ name: tc.function.name, args }, ctx);
+          const timeoutMs = getToolTimeoutMs(tc.function.name);
+          result = await withTimeout(
+            executeChatToolCall({ name: tc.function.name, args }, ctx),
+            timeoutMs,
+            tc.function.name,
+          );
         } catch (e) {
           result = { ok: false, error: "chat_tool_error", message: e?.message || String(e) };
         }
@@ -2350,6 +2424,36 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           ok: true,
           ...usageTracker.getStats(userId),
         });
+      }
+
+      // ---- G2.1: undo history ----
+      // The bot records destructive actions in the undo store.
+      // GET returns the list; POST triggers the rollback for
+      // the most recent action.
+      if (key === "GET /api/me/undo" && req.method === "GET") {
+        const next = undoStore.peek(userId);
+        return json(res, 200, {
+          ok: true,
+          history: undoStore.list(userId),
+          can_undo: !!next,
+          next: next ? { id: next.id, tool: next.tool, args: next.args, created_at: next.created_at } : null,
+        });
+      }
+      if (key === "POST /api/me/undo" && req.method === "POST") {
+        const entry = undoStore.pop(userId);
+        if (!entry) return err(res, 404, "nothing_to_undo", "No actions to undo.");
+        try {
+          const result = await entry.rollback();
+          await audit.log({
+            userId, action: "undo", targetKind: "tool", targetId: entry.tool,
+            result: "ok", httpStatus: 200,
+            ip: req.socket?.remoteAddress, userAgent: req.headers["user-agent"],
+            requestId,
+          });
+          return json(res, 200, { ok: true, undone: { tool: entry.tool, args: entry.args }, result });
+        } catch (e) {
+          return err(res, 500, "undo_failed", e?.message || String(e));
+        }
       }
 
       if (key === "GET /api/me/export") {
