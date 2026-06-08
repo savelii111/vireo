@@ -33,6 +33,8 @@ import { LLMClient, LLMError } from "./llm_client.js";
 import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
 import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } from "./tools.js";
 import { CHAT_TOOLS, executeChatToolCall } from "./chat_tools.js";
+import { CAPABILITIES, PERSONA, describeToolsForPrompt, detectLanguage, languageName } from "./persona.js";
+import { computeOnboardingState, buildOnboardingGreeting } from "./onboarding.js";
 import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
 import { sanitizeForLLM, checkForInjection } from "./injection-guard.js";
 
@@ -996,9 +998,7 @@ You never start with "I'd be happy to", "Great question!", or "Sure!". You get t
 
 # What you can actually do (in plain terms)
 
-You have tools for two layers:
-1. **Chat tools** (always available): create_project, save_content, list_projects, get_style_dna
-2. **Video tools** (only when a video is uploaded): cut_video, add_broll, generate_thumbnail, etc.
+${describeToolsForPrompt()}
 
 When the user says "save this" or "create a project" or "what do I have", USE the chat tools — don't make up data, don't ask unnecessary questions.
 
@@ -1645,6 +1645,23 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           conversationId = conv.id;
         }
 
+        // C4: language detection. We pin the language to the
+        // conversation for stability across turns. The user
+        // can override per-message by setting the
+        // X-Vireo-Language header (advanced, for power users).
+        if (!conv.metadata?.language) {
+          const lang = req.headers["x-vireo-language"] || detectLanguage(body.message);
+          const updatedMetadata = { ...(conv.metadata || {}), language: lang };
+          try {
+            await conversations.update(conversationId, userId, { metadata: updatedMetadata });
+            conv.metadata = updatedMetadata;
+          } catch (e) {
+            // Non-fatal: language detection failure shouldn't
+            // break the chat. The next message will retry.
+            console.warn(`[studio] language detection failed:`, e?.message || e);
+          }
+        }
+
         // Save user message
         const userMsg = await messages.add({ conversationId, userId, role: "user", content: body.message });
         const userMessageId = userMsg.id;
@@ -1773,6 +1790,23 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         }
         await conversations.touch(conversationId);
 
+        // C3: append onboarding state + suggested next step
+        // to the response. The UI uses this to decide whether
+        // to show the welcome card. We compute it inline (cheap)
+        // rather than calling /api/me/onboarding-state separately.
+        let onboardingContext = null;
+        try {
+          const [w, ps] = await Promise.all([
+            welcome.get(userId).catch(() => null),
+            projects.list({ userId, limit: 5 }).catch(() => []),
+          ]);
+          const state = computeOnboardingState({ welcome: w, projects: ps, conversations: [{ id: conversationId }] });
+          const lang = conv.metadata?.language || "en";
+          onboardingContext = { ...state, detected_language: lang };
+        } catch (e) {
+          // Non-fatal
+        }
+
         return json(res, 200, {
           ok: true,
           conversation_id: conversationId,
@@ -1782,6 +1816,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           cost_usd: costUsd,
           error: result.error || null,
           message_id: lastSavedId,
+          onboarding: onboardingContext,
         });
       }
 
@@ -2132,6 +2167,47 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         const limit = Math.min(Number(req.url.match(/limit=(\d+)/)?.[1]) || 50, 200);
         const rows = await audit.list({ userId, limit });
         return json(res, 200, { ok: true, count: rows.length, items: rows });
+      }
+
+      // ---- C2: capabilities (public read, no user state) ----
+      // Returns the structured capabilities manifest so the UI
+      // can render "what Vireo can do" without parsing the
+      // system prompt. The persona section is also included
+      // for clients that want to show a friendly identity card.
+      if (key === "GET /api/me/capabilities" && req.method === "GET") {
+        return json(res, 200, {
+          ok: true,
+          persona: {
+            name: PERSONA.name,
+            tagline: PERSONA.tagline,
+            voice: PERSONA.voice,
+            signature_phrases: PERSONA.signature_phrases,
+            anti_patterns: PERSONA.anti_patterns,
+          },
+          capabilities: CAPABILITIES,
+          tools: {
+            chat: CHAT_TOOLS.map((t) => ({ name: t.function.name, description: t.function.description })),
+            video: EDIT_TOOLS.map((t) => ({ name: t.function.name, description: t.function.description })),
+          },
+        });
+      }
+
+      // ---- C3: onboarding state ----
+      // Returns the user's current onboarding state + suggested
+      // next step. The UI uses this to decide whether to show
+      // the welcome flow or skip it.
+      if (key === "GET /api/me/onboarding-state" && req.method === "GET") {
+        const [w, ps, cs] = await Promise.all([
+          welcome.get(userId).catch(() => null),
+          projects.list({ userId, limit: 5 }).catch(() => []),
+          conversations.list({ userId, limit: 5 }).catch(() => []),
+        ]);
+        const state = computeOnboardingState({ welcome: w, projects: ps, conversations: cs });
+        return json(res, 200, {
+          ok: true,
+          ...state,
+          detected_language: w?.detected_language || null,
+        });
       }
       if (key === "GET /api/me/export") {
         if (!gdprExport) {
