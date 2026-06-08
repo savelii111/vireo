@@ -28,7 +28,7 @@ import { MessageFeedbackStore, WelcomeAnswersStore, UserPreferencesStore } from 
 import { ProjectStore, ContentPieceStorePg, ConversationStore, MessageStore } from "../../storage/src/chat_store.js";
 import { PostgresStyleDNAStore } from "../../storage/src/extended.js";
 import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrations.js";
-import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest, runRetentionCron } from "../../storage/src/gdpr_store.js";
+import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest, runRetentionCron, startRetentionScheduler } from "../../storage/src/gdpr_store.js";
 import { LLMClient, LLMError } from "./llm_client.js";
 import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
 import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } from "./tools.js";
@@ -2276,6 +2276,16 @@ export async function start(opts = {}) {
     const isSmart = resolvedLlm instanceof SmartRouter;
     console.log(`[studio] llm: ${resolvedLlm?.isMock() ? "MOCK" : "real"} provider=${LLM_PROVIDER} model=${resolvedLlm?.model || OPENAI_MODEL}${isSmart ? " (smart router)" : ""}`);
     console.log(`[studio] postgres: ${pool ? "connected" : "in-memory"}`);
+
+    // ---- A1: Auto-start retention scheduler (opt-in) ----
+    // The scheduler is only auto-started in the production `start()`
+    // entry point (not in `buildServer()`), so tests that call
+    // buildServer() don't accidentally start a long-running timer.
+    // Operators set VIREO_CRON_ENABLED=true to enable.
+    if (pool && process.env.VIREO_CRON_ENABLED === "true") {
+      const handle = startRetentionScheduler({ pool });
+      console.log(`[studio] retention scheduler started: every ${handle.intervalMs / 1000}s, retention=${handle.retentionDays}d`);
+    }
   });
 
   // Graceful shutdown — drain in-flight requests and close the pool.

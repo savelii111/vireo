@@ -26,25 +26,46 @@ import { buildServer } from "../src/server.js";
 import { signToken } from "../../../packages/auth-middleware/index.js";
 
 const OLLAMA_BASE = "http://localhost:11434/v1";
-// We use gemma4:e2b (5B params) for the e2e tests — it has
-// native tool-calling support (tinyllama doesn't) and emits a
-// real `content` field (qwen3.5 is a thinking model that goes
-// over its 1024 token budget before producing a final answer).
-// gemma4:e2b's reasoning is short enough to fit in Studio's
-// default max_tokens=1024 budget.
-const OLLAMA_MODEL = "gemma4:e2b";
+// We use gemma4:31b-cloud for the e2e tests — it's a 31B model
+// that's faster and smarter than gemma4:e2b (5B). Both are
+// available via Ollama without an API key:
+//   - gemma4:e2b         — 5B, ~1s/completion, OK for tool tests
+//   - gemma4:31b-cloud   — 31B, ~2s/completion, better quality
+//   - gemma4:31b         — 31B, local, ~10s/completion (slow on CPU)
+//
+// `gemma4:31b-cloud` is the best balance: large enough to be
+// useful, fast enough for CI, free (Ollama Cloud), and supports
+// tool calls.
+//
+// We fall back to gemma4:e2b if 31b-cloud isn't available.
+const OLLAMA_MODEL = process.env.VIREO_OLLAMA_MODEL || "gemma4:31b-cloud";
+const OLLAMA_FALLBACK = "gemma4:e2b";
 
 async function isOllamaReachable() {
   try {
     const r = await fetch(`${OLLAMA_BASE.replace("/v1", "")}/api/tags`, {
       signal: AbortSignal.timeout(2000),
     });
-    if (!r.ok) return false;
+    if (!r.ok) return { ok: false };
     const data = await r.json();
-    return Array.isArray(data.models) && data.models.some((m) => m.name.startsWith(OLLAMA_MODEL.split(":")[0]));
+    const modelFamily = OLLAMA_MODEL.split(":")[0];
+    // Prefer the configured model; fall back to e2b if not installed
+    const exact = (data.models || []).find((m) => m.name === OLLAMA_MODEL);
+    const family = (data.models || []).find((m) => m.name.startsWith(modelFamily));
+    const fallback = (data.models || []).find((m) => m.name === OLLAMA_FALLBACK);
+    if (exact) return { ok: true, model: OLLAMA_MODEL };
+    if (family) return { ok: true, model: family.name };
+    if (fallback) return { ok: true, model: OLLAMA_FALLBACK };
+    return { ok: false };
   } catch {
-    return false;
+    return { ok: false };
   }
+}
+
+// Helper to get a working model name. Returns null if no model available.
+async function getAvailableModel() {
+  const status = await isOllamaReachable();
+  return status.ok ? status.model : null;
 }
 
 // 60s timeout for LLM calls in this file — qwen3.5 is a
@@ -63,13 +84,19 @@ async function getToken(secret, sub = "u-real-llm") {
   return signToken({ sub, email: `${sub}@example.com`, name: "Real" }, secret, 600);
 }
 
-test("C2.2 real-LLM: Ollama reachable check", async (t) => {
-  const ok = await isOllamaReachable();
-  if (!ok) {
+// All tests use the same setup pattern: get an available model,
+// set env, build a fresh server. We do this ONCE at the top
+// (cached) so we don't pay the 200ms Ollama probe for every test.
+const PROBE = await isOllamaReachable();
+const EFFECTIVE_MODEL = PROBE.ok ? PROBE.model : null;
+
+test("C2.2 real-LLM: Ollama reachable check", (t) => {
+  if (!PROBE.ok) {
     t.skip("Ollama not reachable on localhost:11434 — skipping real-LLM tests");
     return;
   }
-  assert.ok(ok, "Ollama should be reachable");
+  assert.ok(PROBE.ok, "Ollama should be reachable");
+  assert.ok(EFFECTIVE_MODEL, "Should have a model name");
 });
 
 async function loadServerFresh() {
@@ -83,8 +110,17 @@ async function loadServerFresh() {
   return await import(`${serverPath}?t=${Date.now()}_${Math.random()}`);
 }
 
+// Returns the model name to use for the current test, or null
+// if Ollama isn't reachable. We pick the EFFECTIVE_MODEL set at
+// the top (which is the user-preferred model, or the first
+// available one if that's missing).
+function getModelName() {
+  return EFFECTIVE_MODEL;
+}
+
 test("C2.2 real-LLM: chat returns a real (non-mock) LLM response", async (t) => {
-  if (!(await isOllamaReachable())) {
+  const model = getModelName();
+  if (!model) {
     t.skip("Ollama not reachable");
     return;
   }
@@ -149,7 +185,8 @@ test("C2.2 real-LLM: chat tool-call roundtrip with create_project", async (t) =>
   // decides to call create_project, and the tool result is
   // re-injected so the LLM can produce a final reply. A mock
   // would always pass; the real test catches schema drift.
-  if (!(await isOllamaReachable())) {
+  const model = getModelName();
+  if (!model) {
     t.skip("Ollama not reachable");
     return;
   }
@@ -198,7 +235,8 @@ test("C2.2 real-LLM: prompt-injection guard redacts injection in real chat", asy
   // injection pattern in the message body before it reaches
   // the LLM. This is the integration test that proves the
   // guard is wired into the real path, not just the mock.
-  if (!(await isOllamaReachable())) {
+  const model = getModelName();
+  if (!model) {
     t.skip("Ollama not reachable");
     return;
   }

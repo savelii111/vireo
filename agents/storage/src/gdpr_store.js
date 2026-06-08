@@ -367,3 +367,12 @@ export async function runRetentionCron({ pool, retentionDays, dryRun = false } =
   const purged = await purgeOldAudit(pool, { retentionDays: days });
   return { purged, cutoff: cutoff.toISOString(), retentionDays: days, dryRun: false };
 }
+
+// Re-export the scheduler API from scheduler.js so consumers
+// can `import { startRetentionScheduler } from "./gdpr_store.js"`
+// without having to know about a separate scheduler module.
+export {
+  startRetentionScheduler,
+  stopRetentionScheduler,
+  getActiveScheduler,
+} from "./scheduler.js";

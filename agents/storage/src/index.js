@@ -29,6 +29,9 @@ import {
   completeDsrRequest,
   purgeOldAudit,
   runRetentionCron,
+  startRetentionScheduler,
+  stopRetentionScheduler,
+  getActiveScheduler,
   scrubMetadata,
   scrubMetadataJson,
 } from "./gdpr_store.js";
@@ -53,6 +56,9 @@ export {
   completeDsrRequest,
   purgeOldAudit,
   runRetentionCron,
+  startRetentionScheduler,
+  stopRetentionScheduler,
+  getActiveScheduler,
   scrubMetadata,
   scrubMetadataJson,
 };
