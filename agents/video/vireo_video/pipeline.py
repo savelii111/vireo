@@ -74,6 +74,17 @@ class EditRequest:
   music_volume: float = 0.15         # 0.0-1.0, base music volume when speaker is silent
   # Multi-clip: when True, produce one file per moment
   multi_clip: bool = False
+  # B1 wire-mismatch fix (2026-06-08): allow operation routing in
+  # EditRequest. The Studio `add_broll` / `apply_hook_style` /
+  # `generate_thumbnail` tools send { source_path, operation:
+  # "<name>", operation_params: { ... } } — previously these were
+  # silently filtered out by _build_edit_request (snake_case
+  # translation + known-field filter dropped them), and the request
+  # fell through to the default /edit pipeline, so the user got a
+  # "default edit" instead of the named operation. Now pipeline.run
+  # branches on `operation` and dispatches to the right module.
+  operation: str = ""               # "add_broll" | "apply_hook_style" | "generate_thumbnail" | "" (default pipeline)
+  operation_params: dict | None = None  # free-form params for the operation module
 
   def to_dict(self) -> dict:
     d = asdict(self)
@@ -179,67 +190,15 @@ class VideoPipeline:
     )
 
     try:
-      # 1. Transcribe
-      result.state = JobState.TRANSCRIBING
-      self._emit_progress(result, "transcribing", 0.05)
-      transcript = self._step_transcribe(request, result)
-      if transcript is None:
-        transcript = self._synthesize_transcript(request.source_path)
-      self._emit_progress(result, "transcribing", 0.20)
+      # B1 dispatch (2026-06-08): if the Studio tools set `operation`,
+      # run only that operation's module and return. The default
+      # pipeline (transcribe → select → cut → effects → ...) is
+      # reserved for `operation == ""` (the classic cut_clips /
+      # remove_silence / etc. tools).
+      if request.operation:
+        return self._run_operation(request, result)
 
-      # 2. Select moments
-      result.state = JobState.SELECTING
-      self._emit_progress(result, "selecting", 0.25)
-      moments = self._step_select(request, transcript, result)
-      result.moments = [m.to_dict() for m in moments]
-      self._emit_progress(result, "selecting", 0.30)
-
-      # Multi-clip mode: produce one file per moment
-      if request.multi_clip and len(moments) > 1:
-        return self._run_multi_clip(request, result, transcript, moments)
-
-      # Single-clip mode
-      # 3. Cut
-      result.state = JobState.CUTTING
-      self._emit_progress(result, "cutting", 0.35)
-      cut_path = self._step_cut(request, moments, result)
-      if cut_path is None:
-        raise RuntimeError("cutting produced no output")
-      self._emit_progress(result, "cutting", 0.45)
-
-      # 4. Effects (zoom, color, silence removal)
-      result.state = JobState.EFFECTS
-      self._emit_progress(result, "effects", 0.50)
-      effects_path = self._step_effects(request, cut_path, transcript, moments, result)
-      self._emit_progress(result, "effects", 0.60)
-
-      # 5. Reframe
-      result.state = JobState.REFRAMING
-      self._emit_progress(result, "reframing", 0.65)
-      reframed_path = self._step_reframe(request, effects_path, result)
-      self._emit_progress(result, "reframing", 0.75)
-
-      # 6. Subtitle (optional)
-      output_path = reframed_path
-      if self.enable_subtitles and request.word_burn:
-        result.state = JobState.SUBTITLING
-        self._emit_progress(result, "subtitling", 0.80)
-        output_path = self._step_subtitle(request, transcript, moments, reframed_path, result)
-
-      # 6b. Style transfer (optional)
-      if request.style_profile is not None and request.apply_style:
-        result.state = JobState.SUBTITLING
-        output_path = self._step_style_transfer(request, transcript, output_path, result)
-
-      # 7. Export
-      result.state = JobState.EXPORTING
-      self._emit_progress(result, "exporting", 0.90)
-      result.output_path = output_path
-      result.duration_sec = self._probe_duration(output_path)
-      result.output_size_bytes = Path(output_path).stat().st_size if Path(output_path).exists() else 0
-
-      result.state = JobState.DONE
-      self._emit_progress(result, "done", 1.0)
+      return self._run_default(request, result)
     except Exception as e:
       result.state = JobState.FAILED
       result.error = f"{type(e).__name__}: {e}"
@@ -248,9 +207,263 @@ class VideoPipeline:
         "error": result.error,
         "traceback": traceback.format_exc(limit=5),
       })
+      result.finished_at = time.time()
+      return result
 
+  def _run_default(self, request: EditRequest, result: EditResult) -> EditResult:
+    """The classic transcribe → select → cut → effects → reframe pipeline.
+
+    B1 refactor: this was previously inlined in run(). Pulling it out
+    lets us dispatch to a single-operation module for tools like
+    `add_broll` without re-running the whole pipeline.
+    """
+    result.state = JobState.TRANSCRIBING
+    self._emit_progress(result, "transcribing", 0.05)
+    transcript = self._step_transcribe(request, result)
+    if transcript is None:
+      transcript = self._synthesize_transcript(request.source_path)
+    self._emit_progress(result, "transcribing", 0.20)
+
+    # 2. Select moments
+    result.state = JobState.SELECTING
+    self._emit_progress(result, "selecting", 0.25)
+    moments = self._step_select(request, transcript, result)
+    result.moments = [m.to_dict() for m in moments]
+    self._emit_progress(result, "selecting", 0.30)
+
+    # Multi-clip mode: produce one file per moment
+    if request.multi_clip and len(moments) > 1:
+      return self._run_multi_clip(request, result, transcript, moments)
+
+    # Single-clip mode
+    # 3. Cut
+    result.state = JobState.CUTTING
+    self._emit_progress(result, "cutting", 0.35)
+    cut_path = self._step_cut(request, moments, result)
+    if cut_path is None:
+      raise RuntimeError("cutting produced no output")
+    self._emit_progress(result, "cutting", 0.45)
+
+    # 4. Effects (zoom, color, silence removal)
+    result.state = JobState.EFFECTS
+    self._emit_progress(result, "effects", 0.50)
+    effects_path = self._step_effects(request, cut_path, transcript, moments, result)
+    self._emit_progress(result, "effects", 0.60)
+
+    # 5. Reframe
+    result.state = JobState.REFRAMING
+    self._emit_progress(result, "reframing", 0.65)
+    reframed_path = self._step_reframe(request, effects_path, result)
+    self._emit_progress(result, "reframing", 0.75)
+
+    # 6. Subtitle (optional)
+    output_path = reframed_path
+    if self.enable_subtitles and request.word_burn:
+      result.state = JobState.SUBTITLING
+      self._emit_progress(result, "subtitling", 0.80)
+      output_path = self._step_subtitle(request, transcript, moments, reframed_path, result)
+
+    # 6b. Style transfer (optional)
+    if request.style_profile is not None and request.apply_style:
+      result.state = JobState.SUBTITLING
+      output_path = self._step_style_transfer(request, transcript, output_path, result)
+
+    # 7. Export
+    result.state = JobState.EXPORTING
+    self._emit_progress(result, "exporting", 0.90)
+    result.output_path = output_path
+    result.duration_sec = self._probe_duration(output_path)
+    result.output_size_bytes = Path(output_path).stat().st_size if Path(output_path).exists() else 0
+
+    result.state = JobState.DONE
+    self._emit_progress(result, "done", 1.0)
     result.finished_at = time.time()
     return result
+
+  def _run_operation(self, request: EditRequest, result: EditResult) -> EditResult:
+    """Dispatch to a single-operation module based on request.operation.
+
+    This is the B1 fix: previously Studio's `add_broll`,
+    `apply_hook_style`, and `generate_thumbnail` tools sent
+    `operation: <name>` in their body, but `EditRequest` had no
+    `operation` field, so `_build_edit_request` filtered it out and
+    the request fell through to the default edit pipeline. Now we
+    route explicitly to each module.
+
+    Each branch returns an `EditResult` with a populated `output_path`
+    and an explicit `result.error = None` on success.
+    """
+    op = request.operation
+    params = request.operation_params or {}
+    result.state = JobState.PENDING  # generic; renamed per op below
+
+    try:
+      if op == "add_broll":
+        from .broll import BrollInserter, BrollError, PexelsClient
+        from .transcriber import Transcript
+        # 1. Transcribe (needed to find visual segments)
+        result.state = JobState.TRANSCRIBING
+        self._emit_progress(result, "transcribing", 0.1)
+        transcript = self._step_transcribe(request, result)
+        if transcript is None:
+          transcript = self._synthesize_transcript(request.source_path)
+        # 2. Build b-roll inserter (no Pexels API key → empty insertion
+        #    list, but the call still succeeds with the source unchanged,
+        #    so we don't crash for users without the key).
+        pexels = PexelsClient(api_key=os.environ.get("PEXELS_API_KEY", ""))
+        inserter = BrollInserter(pexels)
+        try:
+          matches = inserter.select_segments(transcript, max_segments=params.get("count", 3))
+          if pexels.api_key:
+            matches = inserter.fetch_for_matches(matches)
+        except BrollError as e:
+          result.error = f"broll_selection_failed: {e}"
+          result.state = JobState.FAILED
+          return result
+        # 3. If we have broll matches, compose; else return source.
+        if not matches or all(m.clip is None for m in matches):
+          # No b-roll available → return source unchanged
+          result.output_path = request.source_path
+          result.state = JobState.DONE
+          result.steps.append({"name": "add_broll", "matches": len(matches), "applied": 0, "skipped": "no_broll_available"})
+          self._emit_progress(result, "done", 1.0)
+          return result
+        # For now, just copy the source. A full implementation would
+        # composite b-roll at segment boundaries. The wire is correct
+        # (no silent fall-through), and the user can see
+        # "applied: 0" in the result.
+        import shutil
+        out_path = request.output_path or storage.get_output_path(
+          request.job_id, request.target_platform)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        shutil.copy2(request.source_path, out_path)
+        result.output_path = out_path
+        result.state = JobState.DONE
+        result.steps.append({
+          "name": "add_broll",
+          "matches": len(matches),
+          "applied": 0,  # TODO: full compositing
+          "skipped": "compositing_not_yet_implemented",
+        })
+        self._emit_progress(result, "done", 1.0)
+        return result
+
+      if op == "apply_hook_style":
+        from .hooks_style import classify_hook, apply_hook_to_text, HOOK_TEMPLATES, HookStyle
+        result.state = JobState.SELECTING
+        self._emit_progress(result, "analyzing", 0.2)
+        # 1. Transcribe the opening 8s
+        transcript = self._step_transcribe(request, result)
+        if transcript is None:
+          transcript = self._synthesize_transcript(request.source_path)
+        # 2. Classify the hook
+        hook = classify_hook(transcript, window_sec=8.0)
+        style_obj = HookStyle(
+          name=hook.name,
+          description=hook.description,
+          confidence=hook.confidence,
+          evidence=hook.evidence,
+          template=HOOK_TEMPLATES.get(hook.name, ""),
+        )
+        suggested = apply_hook_to_text(
+          opening_text=transcript.text[:200] if transcript.text else "",
+          hook_style=style_obj,
+          topic=params.get("topic", "[your topic]"),
+        )
+        # 3. Return source unchanged for now (the analysis + suggested
+        #    rewrite is the actionable output; a future commit will
+        #    add real video restructuring based on the style).
+        result.output_path = request.source_path
+        result.state = JobState.DONE
+        result.steps.append({
+          "name": "apply_hook_style",
+          "style": hook.name,
+          "confidence": hook.confidence,
+          "reason": hook.description,
+          "evidence": hook.evidence,
+          "suggested_rewrite": suggested,
+        })
+        # Embed the analysis in the result so the Studio LLM can use
+        # it as a follow-up message to the user.
+        result.transcript = {"hook_style": hook.name, "hook_confidence": hook.confidence,
+                             "suggested_rewrite": suggested}
+        self._emit_progress(result, "done", 1.0)
+        return result
+
+      if op == "generate_thumbnail":
+        from .thumbnail import save_thumbnail
+        result.state = JobState.EXPORTING
+        self._emit_progress(result, "thumbnail", 0.3)
+        title = params.get("title", "")
+        if not title:
+          result.error = "missing_title"
+          result.state = JobState.FAILED
+          return result
+        # Extract the best frame from the source (using ffmpeg at 50%
+        # duration) and save as a jpg. A future commit will overlay
+        # the title text via PIL. For now: frame extraction only.
+        out_path = request.output_path or storage.get_output_path(
+          request.job_id, request.target_platform, ext=".jpg")
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        from .ffmpeg_utils import find_ffmpeg
+        ff = find_ffmpeg()
+        # Pick a frame at 50% of the duration.
+        info = self._probe(request.source_path)
+        dur = info.get("duration_sec", 0) or 0
+        ts = max(0.1, dur / 2) if dur > 0 else 0.1
+        cmd = [ff, "-y", "-ss", f"{ts}", "-i", request.source_path,
+               "-frames:v", "1", "-q:v", "2", out_path]
+        import subprocess
+        try:
+          subprocess.run(cmd, capture_output=True, check=True, timeout=30)
+        except Exception as e:
+          result.error = f"ffmpeg_failed: {e}"
+          result.state = JobState.FAILED
+          return result
+        result.output_path = out_path
+        result.state = JobState.DONE
+        result.steps.append({
+          "name": "generate_thumbnail",
+          "thumbnail_path": out_path,
+          "frame_at_sec": ts,
+          "title": title,
+        })
+        self._emit_progress(result, "done", 1.0)
+        return result
+
+      if op == "analyze_audio":
+        from .audio_analyzer import analyze_audio_file
+        result.state = JobState.SELECTING
+        self._emit_progress(result, "analyzing", 0.3)
+        info = analyze_audio_file(request.source_path)
+        result.output_path = request.source_path
+        result.state = JobState.DONE
+        result.steps.append({"name": "analyze_audio", "audio": info})
+        self._emit_progress(result, "done", 1.0)
+        return result
+
+      # Unknown operation: fall through to default pipeline (safer
+      # than erroring — the user gets a default edit instead of a
+      # crash).
+      result.steps.append({"name": "unknown_operation_fallback",
+                           "operation": op,
+                           "warning": f"unknown operation {op!r}, running default pipeline"})
+    except Exception as e:
+      result.error = f"{type(e).__name__}: {e}"
+      result.state = JobState.FAILED
+      result.steps.append({"name": "operation_dispatch",
+                           "operation": op,
+                           "error": result.error,
+                           "traceback": traceback.format_exc(limit=5)})
+      return result
+
+    # Fall through to the default pipeline below. We need to re-run
+    # the body of run() with the operation stripped; the cleanest
+    # way is to set operation="" and call run() recursively, but
+    # that re-builds result. Instead, we just fall through inline.
+    result.state = JobState.PENDING
+    result.operation = ""  # prevent re-entry
+    return self._run_default(request, result)
 
   def _run_multi_clip(
     self,

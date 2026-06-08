@@ -367,6 +367,77 @@ export const MIGRATIONS = [
       );
     `,
   },
+  {
+    name: "011_gdpr_audit",
+    sql: `
+      -- Studio audit log (B2.3, 2026-06-08) ---------------------------------
+      -- One row per significant user action in Studio: chat request, tool
+      -- call, content edit, preference change, project create/delete. We
+      -- log the action + target + result code, but NOT the body of the
+      -- message or the content of edits (privacy by default — the user
+      -- already has access to their own data through the normal API).
+      --
+      -- Two consumers:
+      --   1. The user (GET /api/me/audit) — what did Vireo do on my behalf?
+      --   2. GDPR Article 15 export (GET /api/me/export) — proof of
+      --      processing for the data subject access request.
+      --
+      -- Retention: 365 days (configurable via VIREO_AUDIT_RETENTION_DAYS).
+      -- A separate cron job (not in scope here) purges old rows.
+      CREATE TABLE IF NOT EXISTS vireo_studio_audit (
+        id text PRIMARY KEY,
+        user_id text NOT NULL,
+        action text NOT NULL,         -- chat_request | tool_call | project_create | project_delete | content_save | preference_change | feedback | export_request | delete_request
+        target_kind text,             -- project | content | preference | conversation | tool | none
+        target_id text,               -- the row id the action touched (nullable)
+        tool_name text,               -- for tool_call actions, the tool name (nullable)
+        result text NOT NULL,         -- ok | error | denied
+        http_status int,              -- for HTTP-driven actions
+        metadata jsonb DEFAULT '{}'::jsonb,  -- action-specific extras (e.g. tool args, error code)
+        ip_hash text,                 -- sha256 of the request IP, NOT the IP itself (privacy)
+        user_agent_hash text,         -- sha256 of UA, NOT the UA string
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS vireo_audit_user_idx ON vireo_studio_audit(user_id);
+      CREATE INDEX IF NOT EXISTS vireo_audit_user_created_idx ON vireo_studio_audit(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS vireo_audit_action_idx ON vireo_studio_audit(action);
+      CREATE INDEX IF NOT EXISTS vireo_audit_target_idx ON vireo_studio_audit(target_kind, target_id);
+
+      -- GDPR consent ledger (B2.5) -----------------------------------------
+      -- Records explicit user consent for LLM processing. Created when
+      -- the user accepts the privacy notice (or implicitly, by making
+      -- the first /api/chat call — we record the implicit acceptance).
+      -- Required for GDPR Article 6 (lawful basis: consent).
+      CREATE TABLE IF NOT EXISTS vireo_consent (
+        user_id text PRIMARY KEY,
+        consent_kind text NOT NULL,   -- 'llm_processing' | 'analytics' | 'third_party_share'
+        granted boolean NOT NULL,
+        granted_at timestamptz NOT NULL DEFAULT now(),
+        revoked_at timestamptz,
+        ip_hash text,                 -- sha256 of the IP at consent time (audit trail)
+        user_agent_hash text,
+        policy_version text NOT NULL  -- the version of the privacy policy the user accepted
+      );
+      CREATE INDEX IF NOT EXISTS vireo_consent_granted_idx ON vireo_consent(granted, granted_at);
+
+      -- GDPR data subject requests (Article 15/17) -------------------------
+      -- Every export or delete request is recorded as a row. Even after
+      -- a delete, the request itself stays (as required by Article 30
+      -- records of processing activities) but user_id is nulled out.
+      CREATE TABLE IF NOT EXISTS vireo_dsr_requests (
+        id text PRIMARY KEY,
+        user_id text,                 -- nulled out after delete completes
+        request_kind text NOT NULL,   -- 'export' | 'delete'
+        status text NOT NULL DEFAULT 'pending',  -- pending | completed | failed
+        requested_at timestamptz NOT NULL DEFAULT now(),
+        completed_at timestamptz,
+        artifact_path text,           -- for exports: file path of the JSON dump
+        metadata jsonb DEFAULT '{}'::jsonb
+      );
+      CREATE INDEX IF NOT EXISTS vireo_dsr_user_idx ON vireo_dsr_requests(user_id);
+      CREATE INDEX IF NOT EXISTS vireo_dsr_status_idx ON vireo_dsr_requests(status, requested_at);
+    `,
+  },
 ];
 
 export async function applyMigrations(pool) {

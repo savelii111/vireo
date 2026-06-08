@@ -1,0 +1,220 @@
+// B2.3 + B2.4 + B2.5 — GDPR audit + export + delete stores (2026-06-08).
+//
+// Three stores back the GDPR endpoints:
+//   - AuditStore: append-only log of user actions
+//   - GdprExportStore: builds a JSON dump of everything tied to a user
+//   - GdprDeleteStore: removes (or anonymizes) everything tied to a user
+//
+// Design notes:
+//   - We hash IPs and UAs (sha256 + a per-deployment salt) instead of
+//     storing them in clear. This gives us a "same request" signal
+//     without leaking the actual address.
+//   - We log the *fact* of an action, not the content. The user's
+//     chat history, content piece text, etc. are already accessible
+//     via the normal API — we don't duplicate them in the audit log.
+//   - The delete path is "soft" by design: we delete the user's data
+//     (projects, content, prefs, audit log) but we keep the user row,
+//     the auth credentials, and the DSR request record. This lets
+//     the user re-register with the same email without colliding,
+//     and lets us prove the delete happened (Article 30).
+
+import crypto from "node:crypto";
+
+const PRIVACY_SALT_ENV = "VIREO_PRIVACY_SALT";
+const DEFAULT_SALT = "vireo-default-salt-please-override-in-prod";
+
+function hashValue(value, salt) {
+  if (!value) return null;
+  return crypto.createHash("sha256").update(`${salt}|${value}`).digest("hex").slice(0, 32);
+}
+
+function getSalt() {
+  return process.env[PRIVACY_SALT_ENV] || DEFAULT_SALT;
+}
+
+/**
+ * Append-only audit log.
+ *
+ * Use:
+ *   const audit = new AuditStore(pool);
+ *   await audit.log({ userId, action, targetKind, targetId, toolName, result, httpStatus, metadata, ip, userAgent });
+ */
+export class AuditStore {
+  constructor(pool) {
+    this.pool = pool;
+  }
+
+  async log(entry) {
+    if (!entry.userId) return; // no user, no log
+    const salt = getSalt();
+    const id = entry.id || `aud_${crypto.randomBytes(8).toString("hex")}`;
+    await this.pool.query(
+      `INSERT INTO vireo_studio_audit
+        (id, user_id, action, target_kind, target_id, tool_name, result, http_status, metadata, ip_hash, user_agent_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        id,
+        entry.userId,
+        entry.action,
+        entry.targetKind || null,
+        entry.targetId || null,
+        entry.toolName || null,
+        entry.result,
+        entry.httpStatus || null,
+        JSON.stringify(entry.metadata || {}),
+        hashValue(entry.ip, salt),
+        hashValue(entry.userAgent, salt),
+      ]
+    );
+    return id;
+  }
+
+  async list({ userId, limit = 50, since = null } = {}) {
+    const r = await this.pool.query(
+      `SELECT id, action, target_kind, target_id, tool_name, result, http_status, metadata, created_at
+       FROM vireo_studio_audit
+       WHERE user_id = $1
+         AND ($2::timestamptz IS NULL OR created_at >= $2)
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [userId, since, Math.min(limit, 200)]
+    );
+    return r.rows;
+  }
+}
+
+/** No-op audit store for in-memory mode (no Postgres). */
+export class InMemoryAuditStore {
+  constructor() { this.rows = []; }
+  async log(entry) {
+    if (!entry.userId) return;
+    const id = entry.id || `aud_${crypto.randomBytes(8).toString("hex")}`;
+    this.rows.push({ ...entry, id, created_at: new Date().toISOString() });
+    return id;
+  }
+  async list({ userId, limit = 50 } = {}) {
+    return this.rows
+      .filter((r) => r.userId === userId)
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+      .slice(0, Math.min(limit, 200));
+  }
+}
+
+/**
+ * GDPR Article 15 — Right to data portability.
+ *
+ * Builds a JSON dump of every row tied to a user, across every
+ * table. The dump is a single object with a "tables" key, where
+ * each entry is an array of rows (or null if the table is empty).
+ */
+export class GdprExportStore {
+  constructor(pool) {
+    this.pool = pool;
+  }
+
+  async exportUser(userId) {
+    const r = await this.pool.query(
+      `SELECT jsonb_build_object(
+        'exported_at', now(),
+        'user_id', $1,
+        'tables', jsonb_build_object(
+          'user', (SELECT row_to_json(u) FROM vireo_users u WHERE id = $1),
+          'projects', (SELECT COALESCE(jsonb_agg(row_to_json(p)), '[]'::jsonb) FROM vireo_projects p WHERE user_id = $1),
+          'conversations', (SELECT COALESCE(jsonb_agg(row_to_json(c)), '[]'::jsonb) FROM vireo_conversations c WHERE user_id = $1),
+          'messages', (SELECT COALESCE(jsonb_agg(row_to_json(m)), '[]'::jsonb) FROM vireo_messages m WHERE user_id = $1),
+          'content_pieces', (SELECT COALESCE(jsonb_agg(row_to_json(cp)), '[]'::jsonb) FROM vireo_content_pieces cp WHERE user_id = $1),
+          'preferences', (SELECT row_to_json(p) FROM vireo_user_prefs p WHERE user_id = $1),
+          'welcome_answers', (SELECT row_to_json(w) FROM vireo_welcome_answers w WHERE user_id = $1),
+          'style_dna', (SELECT COALESCE(jsonb_agg(row_to_json(s)), '[]'::jsonb) FROM vireo_style_dna s WHERE user_id = $1),
+          'feedback', (SELECT COALESCE(jsonb_agg(row_to_json(f)), '[]'::jsonb) FROM vireo_message_feedback f WHERE user_id = $1),
+          'audit', (SELECT COALESCE(jsonb_agg(row_to_json(a)), '[]'::jsonb) FROM vireo_studio_audit a WHERE user_id = $1),
+          'dsr_requests', (SELECT COALESCE(jsonb_agg(row_to_json(d)), '[]'::jsonb) FROM vireo_dsr_requests d WHERE user_id = $1)
+        )
+      ) AS payload`,
+      [userId]
+    );
+    return r.rows[0]?.payload || { exported_at: new Date().toISOString(), user_id: userId, tables: {} };
+  }
+}
+
+/**
+ * GDPR Article 17 — Right to erasure ("right to be forgotten").
+ *
+ * Deletes (or anonymizes) every row tied to a user. After this
+ * returns, the user row is gone (so they can't re-login) and all
+ * the dependent tables are empty for that user_id.
+ *
+ * We deliberately keep:
+ *   - The vireo_dsr_requests row (with user_id = NULL) — Article 30
+ *     requires us to keep records of processing activities.
+ *   - The vireo_audit rows — already gone by the time we get here
+ *     (cascaded by the user_id deletion).
+ */
+export class GdprDeleteStore {
+  constructor(pool) {
+    this.pool = pool;
+  }
+
+  async deleteUser(userId) {
+    // Order matters: child rows first, then the user row. The
+    // vireo_users PK is the foreign key target, and the DB has no
+    // ON DELETE CASCADE on most of these (we want the explicit
+    // audit trail). We use a transaction so a failure rolls back.
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // 1. Anonymize the DSR record (keep the fact of the request, drop the link)
+      await client.query(
+        `UPDATE vireo_dsr_requests SET user_id = NULL WHERE user_id = $1`,
+        [userId]
+      );
+      // 2. Delete user-owned data
+      const deletes = [
+        ["vireo_message_feedback", "user_id"],
+        ["vireo_content_pieces", "user_id"],
+        ["vireo_messages", "user_id"],
+        ["vireo_conversations", "user_id"],
+        ["vireo_projects", "user_id"],
+        ["vireo_user_prefs", "user_id"],
+        ["vireo_welcome_answers", "user_id"],
+        ["vireo_style_dna", "user_id"],
+        ["vireo_studio_audit", "user_id"],
+        ["vireo_consent", "user_id"],
+      ];
+      for (const [table, col] of deletes) {
+        await client.query(`DELETE FROM ${table} WHERE ${col} = $1`, [userId]);
+      }
+      // 3. Delete the user row last
+      await client.query(`DELETE FROM vireo_users WHERE id = $1`, [userId]);
+      await client.query("COMMIT");
+      return { ok: true, deleted_user: userId };
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+/**
+ * Record a data subject request (export or delete). Returns the
+ * request id, which is needed for the audit trail and for the
+ * caller to look up the artifact later.
+ */
+export async function recordDsrRequest(pool, { userId, kind, metadata = {} }) {
+  const id = `dsr_${crypto.randomBytes(8).toString("hex")}`;
+  await pool.query(
+    `INSERT INTO vireo_dsr_requests (id, user_id, request_kind, metadata) VALUES ($1, $2, $3, $4::jsonb)`,
+    [id, userId, kind, JSON.stringify(metadata)]
+  );
+  return id;
+}
+
+export async function completeDsrRequest(pool, id, { status, artifactPath = null }) {
+  await pool.query(
+    `UPDATE vireo_dsr_requests SET status = $1, completed_at = now(), artifact_path = $2 WHERE id = $3`,
+    [status, artifactPath, id]
+  );
+}

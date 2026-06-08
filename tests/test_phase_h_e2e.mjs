@@ -177,10 +177,16 @@ test("phase-H e2e: add_music → /edit with enable_music + mood", async () => {
   }
 });
 
-test("phase-H e2e: add_broll → /edit with operation=add_broll", async () => {
+test("phase-H e2e: add_broll → /edit with operation=add_broll + source_path", async () => {
   // add_broll is a STUDIO_INPROCESS tool: it's implemented in
   // buildToolDeps (server.js) and needs a real ctx.deps. We exercise
   // it through the chat endpoint with a tool-forcing mock LLM.
+  //
+  // B1 fix (2026-06-08): the Studio handler now maps
+  // `{file_path: ...}` (LLM-facing) to `{source_path: ...}`
+  // (video agent's EditRequest field). Previously the request
+  // fell through to the default edit pipeline because
+  // _build_edit_request filtered out `file_path`.
   const video = await startMockVideoAgent();
   try {
     const toolLLM = {
@@ -216,7 +222,9 @@ test("phase-H e2e: add_broll → /edit with operation=add_broll", async () => {
       assert.equal(body.tool_calls[0].name, "add_broll");
       const editCall = video.calls.find((c) => c.path === "/edit");
       assert.ok(editCall, "video agent /edit should have been called");
-      assert.equal(editCall.body.file_path, "/uploads/long.mp4");
+      // B1 wire-shape: Studio sends `source_path` (snake_case alias of
+      // `file_path`) + the new `operation` + `operation_params` fields.
+      assert.equal(editCall.body.source_path, "/uploads/long.mp4", "Studio must map file_path -> source_path for the video agent");
       assert.equal(editCall.body.operation, "add_broll");
       assert.deepEqual(editCall.body.operation_params, { style: "tech", count: 3 });
     } finally {
@@ -261,6 +269,7 @@ test("phase-H e2e: apply_hook_style → /edit with operation=apply_hook_style", 
       assert.equal(r.status, 200, `chat should be 200, got ${r.status}: ${JSON.stringify(body).slice(0, 300)}`);
       const editCall = video.calls.find((c) => c.path === "/edit");
       assert.ok(editCall, "video agent /edit should have been called");
+      assert.equal(editCall.body.source_path, "/uploads/v.mp4", "Studio must map file_path -> source_path");
       assert.equal(editCall.body.operation, "apply_hook_style");
       assert.deepEqual(editCall.body.operation_params, { style: "question" });
     } finally {
@@ -305,6 +314,7 @@ test("phase-H e2e: generate_thumbnail → /edit with operation=generate_thumbnai
       assert.equal(r.status, 200, `chat should be 200, got ${r.status}: ${JSON.stringify(body).slice(0, 300)}`);
       const editCall = video.calls.find((c) => c.path === "/edit");
       assert.ok(editCall, "video agent /edit should have been called");
+      assert.equal(editCall.body.source_path, "/uploads/v.mp4", "Studio must map file_path -> source_path");
       assert.equal(editCall.body.operation, "generate_thumbnail");
       assert.deepEqual(editCall.body.operation_params, { style: "expressive", title: "AI editing 101" });
     } finally {

@@ -20,6 +20,14 @@ import {
   PostgresStyleDNAStore,
 } from "./extended.js";
 import { applyMigrations, listAppliedMigrations } from "./migrations.js";
+import {
+  AuditStore,
+  InMemoryAuditStore,
+  GdprExportStore,
+  GdprDeleteStore,
+  recordDsrRequest,
+  completeDsrRequest,
+} from "./gdpr_store.js";
 
 export { MemoryStore, PostgresStore, PostgresUnavailableError };
 export {
@@ -32,6 +40,7 @@ export {
   PostgresStyleDNAStore,
 };
 export { applyMigrations, listAppliedMigrations };
+export { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest };
 
 /**
  * Pick a store based on env.

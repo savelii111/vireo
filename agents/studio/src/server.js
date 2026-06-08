@@ -28,10 +28,12 @@ import { MessageFeedbackStore, WelcomeAnswersStore, UserPreferencesStore } from 
 import { ProjectStore, ContentPieceStorePg, ConversationStore, MessageStore } from "../../storage/src/chat_store.js";
 import { PostgresStyleDNAStore } from "../../storage/src/extended.js";
 import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrations.js";
+import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest } from "../../storage/src/gdpr_store.js";
 import { LLMClient, LLMError } from "./llm_client.js";
 import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
 import { EDIT_TOOLS, executeToolCall, parseToolCalls, buildEditToolContext } from "./tools.js";
 import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
+import { sanitizeForLLM, checkForInjection } from "./injection-guard.js";
 
 // Wrap PostgresStyleDNAStore to use the API we expect: { pool } constructor + id-based methods.
 class StyleDNAStorePg {
@@ -309,7 +311,14 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         const p = await projects.get(project_id);
         if (!p || p.user_id !== userId) return { ok: false, error: "project_not_found" };
       }
-      const piece = await pieces.add({ userId, projectId: project_id, source, kind, text });
+      // B2.2 fix (2026-06-08): sanitize content text on save so
+      // future LLM calls that read this piece back (e.g. style
+      // analysis, edit_content) can't be tricked by an injection
+      // payload hidden in user content. Redaction (not rejection) —
+      // the user's text is still saved, but dangerous patterns are
+      // replaced with [redacted:prompt-injection].
+      const safeText = sanitizeForLLM(text);
+      const piece = await pieces.add({ userId, projectId: project_id, source, kind, text: safeText });
       return { ok: true, piece };
     },
     list_content: async ({ userId, project_id, limit = 20 }) => {
@@ -561,10 +570,17 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
 
     add_broll: async ({ userId, file_path, style = "auto", count = 5 }) => {
       try {
+        // B1 fix (2026-06-08): map `file_path` (Studio's LLM-facing
+        // arg) to `source_path` (video agent's EditRequest field).
+        // Previously the request fell through to the default edit
+        // pipeline because EditRequest didn't have a `file_path`
+        // field and `_build_edit_request` filtered it out. Now the
+        // video agent branches on `operation: "add_broll"` and
+        // dispatches to the BrollInserter.
         const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
-          body: JSON.stringify({ file_path, operation: "add_broll", operation_params: { style, count } }),
+          body: JSON.stringify({ source_path: file_path, operation: "add_broll", operation_params: { style, count } }),
         });
         return { ok: true, job_id: resp.job_id || null, output: resp.output || null };
       } catch (e) {
@@ -577,9 +593,9 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
-          body: JSON.stringify({ file_path, operation: "apply_hook_style", operation_params: { style } }),
+          body: JSON.stringify({ source_path: file_path, operation: "apply_hook_style", operation_params: { style } }),
         });
-        return { ok: true, job_id: resp.job_id || null, output: resp.output || null };
+        return { ok: true, job_id: resp.job_id || null, output: resp.output || null, hook_analysis: resp.steps?.[0] || null };
       } catch (e) {
         return { ok: false, error: `hook_failed: ${e.message}` };
       }
@@ -590,9 +606,9 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
-          body: JSON.stringify({ file_path, operation: "generate_thumbnail", operation_params: { style, title } }),
+          body: JSON.stringify({ source_path: file_path, operation: "generate_thumbnail", operation_params: { style, title } }),
         });
-        return { ok: true, output: resp.output || null, thumbnail_path: resp.thumbnail_path || null };
+        return { ok: true, output: resp.output || null, thumbnail_path: resp.output || null };
       } catch (e) {
         return { ok: false, error: `thumbnail_failed: ${e.message}` };
       }
@@ -603,7 +619,7 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
-          body: JSON.stringify({ file_path, operation: "analyze_audio", operation_params: {} }),
+          body: JSON.stringify({ source_path: file_path, operation: "analyze_audio", operation_params: {} }),
         });
         return { ok: true, audio: resp.audio || resp };
       } catch (e) {
@@ -1002,13 +1018,18 @@ function buildUserPrefsBlock(prefs) {
   if (!prefs) return "";
   // Compact view: drop nulls, drop empty arrays. The LLM only needs
   // what the user has actually set, not the full row shape.
+  // B2.2 fix (2026-06-08): run sanitizeForLLM over every string
+  // field so an attacker who somehow injected a malicious string
+  // into the prefs row (via a compromised welcome flow, a buggy
+  // migration, or a future endpoint) can't smuggle "ignore
+  // previous instructions" past the LLM.
   const cleaned = {
-    niche: prefs.niche || undefined,
-    platforms: Array.isArray(prefs.platforms) && prefs.platforms.length > 0 ? prefs.platforms : undefined,
-    tone: prefs.tone || undefined,
-    goals: prefs.goals || undefined,
-    audience: prefs.audience || undefined,
-    voice_keywords: Array.isArray(prefs.voice_keywords) && prefs.voice_keywords.length > 0 ? prefs.voice_keywords : undefined,
+    niche: prefs.niche ? sanitizeForLLM(prefs.niche) : undefined,
+    platforms: Array.isArray(prefs.platforms) && prefs.platforms.length > 0 ? prefs.platforms.map(sanitizeForLLM) : undefined,
+    tone: prefs.tone ? sanitizeForLLM(prefs.tone) : undefined,
+    goals: prefs.goals ? sanitizeForLLM(prefs.goals) : undefined,
+    audience: prefs.audience ? sanitizeForLLM(prefs.audience) : undefined,
+    voice_keywords: Array.isArray(prefs.voice_keywords) && prefs.voice_keywords.length > 0 ? prefs.voice_keywords.map(sanitizeForLLM) : undefined,
     default_target_sec: Number.isFinite(prefs.default_target_sec) ? prefs.default_target_sec : undefined,
     default_aspect_ratio: prefs.default_aspect_ratio || undefined,
   };
@@ -1200,6 +1221,14 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
   const feedback = pool ? new MessageFeedbackStore(pool) : new InMemoryFeedbackStore();
   const welcome = pool ? new WelcomeAnswersStore(pool) : new InMemoryWelcomeStore();
   const preferences = pool ? new UserPreferencesStore(pool) : new InMemoryUserPreferencesStore();
+  // B2.3 (2026-06-08): audit log + GDPR stores. The audit store is
+  // always available (in-memory fallback). The export/delete stores
+  // need a real Postgres pool — for in-memory mode we return a
+  // friendly 503 because there's nothing to export and the user
+  // can simply restart the server to wipe state.
+  const audit = pool ? new AuditStore(pool) : new InMemoryAuditStore();
+  const gdprExport = pool ? new GdprExportStore(pool) : null;
+  const gdprDelete = pool ? new GdprDeleteStore(pool) : null;
 
   // Per-request header provider. Replaces the previous `let currentAuthHeader`
   // module-mutable global, which was a race condition: under concurrent
@@ -1369,7 +1398,11 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
         }
         let meta = {}; try { meta = capMetadata(body.metadata); } catch (e) { return err(res, e.httpStatus || 400, e.code || "validation", e.message); }
-        const piece = await pieces.add({ userId, projectId: body.project_id, source: body.source || "manual", sourceId: body.source_id, kind: body.kind || "script", language: body.language, text: body.text, metadata: meta });
+        // B2.2 fix (2026-06-08): sanitize text on write so the LLM
+        // can't be tricked by content-piece reads later (style
+        // analysis, edit_content, etc.). See save_content above.
+        const safeText = sanitizeForLLM(body.text);
+        const piece = await pieces.add({ userId, projectId: body.project_id, source: body.source || "manual", sourceId: body.source_id, kind: body.kind || "script", language: body.language, text: safeText, metadata: meta });
         return json(res, 201, { ok: true, piece });
       }
       const pieceMatch = url.match(/^\/api\/content-pieces\/([^/]+)$/);
@@ -1978,10 +2011,20 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         // the right shape. We don't reject unknown keys here — forward
         // compatibility: future migrations adding columns should not
         // start breaking old clients.
+        // B2.2 fix (2026-06-08): sanitizeForLLM over every string
+        // field so an attacker who controls a compromised OAuth
+        // account (or a buggy client) can't plant a payload in
+        // their own prefs that will be injected into every future
+        // /api/chat LLM call. Redaction (not rejection) so the user
+        // can still save prefs with weird-but-OK strings.
         const platforms = body.platforms == null ? undefined
-          : (Array.isArray(body.platforms) ? body.platforms.slice(0, 8).map(String) : (() => { throw { httpStatus: 400, code: "validation", message: "platforms must be array" }; })());
+          : (Array.isArray(body.platforms) ? body.platforms.slice(0, 8).map(sanitizeForLLM).map(String) : (() => { throw { httpStatus: 400, code: "validation", message: "platforms must be array" }; })());
         const voiceKeywords = body.voice_keywords == null ? undefined
-          : (Array.isArray(body.voice_keywords) ? body.voice_keywords.slice(0, 64).map((s) => String(s).toLowerCase().slice(0, 64)) : (() => { throw { httpStatus: 400, code: "validation", message: "voice_keywords must be array" }; })());
+          : (Array.isArray(body.voice_keywords) ? body.voice_keywords.slice(0, 64).map((s) => sanitizeForLLM(String(s).toLowerCase().slice(0, 64))) : (() => { throw { httpStatus: 400, code: "validation", message: "voice_keywords must be array" }; })());
+        const niche = body.niche == null ? undefined : sanitizeForLLM(String(body.niche).slice(0, 100));
+        const tone = body.tone == null ? undefined : sanitizeForLLM(String(body.tone).slice(0, 100));
+        const goals = body.goals == null ? undefined : sanitizeForLLM(String(body.goals).slice(0, 500));
+        const audience = body.audience == null ? undefined : sanitizeForLLM(String(body.audience).slice(0, 500));
         let meta = body.metadata == null ? undefined : body.metadata;
         if (meta !== undefined) {
           try { meta = capMetadata(meta); } catch (e) { return err(res, e.httpStatus || 400, e.code || "validation", e.message); }
@@ -1990,11 +2033,11 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         try {
           p = await preferences.upsert({
             userId,
-            niche: body.niche ?? undefined,
+            niche,
             platforms,
-            tone: body.tone ?? undefined,
-            goals: body.goals ?? undefined,
-            audience: body.audience ?? undefined,
+            tone,
+            goals,
+            audience,
             voiceKeywords,
             defaultTargetSec: Number.isFinite(body.default_target_sec) ? body.default_target_sec : undefined,
             defaultAspectRatio: body.default_aspect_ratio ?? undefined,
@@ -2006,6 +2049,126 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           throw e;
         }
         return json(res, 200, { ok: true, preferences: p });
+      }
+
+      // ---- B2.3 + B2.4 + B2.5: GDPR endpoints ----
+      // We expose three routes that map directly to the GDPR articles:
+      //   GET    /api/me/audit   - "what did Vireo do on my behalf"
+      //   GET    /api/me/export  - Article 15 (right of access / portability)
+      //   DELETE /api/me         - Article 17 (right to erasure)
+      //   GET    /api/me/consent - the consent ledger entry
+      //   POST   /api/me/consent - record a new consent (grant or revoke)
+      //
+      // All four require a valid JWT (the `authMw` wrapper already
+      // enforces that). The audit log + export are not rate-limited
+      // here — they're cheap reads and the user is asking about
+      // THEIR OWN data, so we don't need to throttle them.
+      if (key === "GET /api/me/audit") {
+        const limit = Math.min(Number(req.url.match(/limit=(\d+)/)?.[1]) || 50, 200);
+        const rows = await audit.list({ userId, limit });
+        return json(res, 200, { ok: true, count: rows.length, items: rows });
+      }
+      if (key === "GET /api/me/export") {
+        if (!gdprExport) {
+          return err(res, 503, "gdpr_unavailable", "Export requires Postgres. Set VIREO_PG_URL and restart.");
+        }
+        const dsrId = await recordDsrRequest(pool, { userId, kind: "export" });
+        try {
+          const payload = await gdprExport.exportUser(userId);
+          await audit.log({
+            userId, action: "export_request", targetKind: "user", targetId: userId,
+            result: "ok", httpStatus: 200, ip: req.socket?.remoteAddress, userAgent: req.headers["user-agent"],
+            metadata: { dsr_id: dsrId },
+          });
+          await completeDsrRequest(pool, dsrId, { status: "completed" });
+          // We send the dump as application/json attachment so the
+          // browser offers to save it. The `filename` hint follows
+          // the GDPR convention <service>-user-<id>-<date>.json.
+          const filename = `vireo-user-${userId}-${new Date().toISOString().slice(0, 10)}.json`;
+          res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${filename}"`,
+            "X-DSR-Id": dsrId,
+          });
+          res.end(JSON.stringify(payload, null, 2));
+          return;
+        } catch (e) {
+          await completeDsrRequest(pool, dsrId, { status: "failed" });
+          await audit.log({
+            userId, action: "export_request", targetKind: "user", targetId: userId,
+            result: "error", httpStatus: 500, ip: req.socket?.remoteAddress, userAgent: req.headers["user-agent"],
+            metadata: { dsr_id: dsrId, error: e.message },
+          });
+          throw e;
+        }
+      }
+      if (key === "DELETE /api/me" && req.method === "DELETE") {
+        if (!gdprDelete) {
+          return err(res, 503, "gdpr_unavailable", "Delete requires Postgres. Set VIREO_PG_URL and restart.");
+        }
+        // We do NOT require a re-auth here. The user already proved
+        // possession of the JWT in the authMw wrapper. If the user
+        // hit "delete my account" with a stolen token, the attacker
+        // would have the same power as the user anyway (chat, edit,
+        // export). The token expiry (default 1h) is the backstop.
+        //
+        // We DO record the DSR request BEFORE deleting, so the
+        // audit trail is preserved.
+        const dsrId = await recordDsrRequest(pool, { userId, kind: "delete" });
+        try {
+          const result = await gdprDelete.deleteUser(userId);
+          // The user row is gone now — but the DSR record stays
+          // (with user_id = NULL). We can't log "delete_completed"
+          // for a user that no longer exists, so we just complete
+          // the DSR row and return.
+          await completeDsrRequest(pool, dsrId, { status: "completed" });
+          return json(res, 200, { ok: true, deleted: true, user_id: userId, dsr_id: dsrId });
+        } catch (e) {
+          await completeDsrRequest(pool, dsrId, { status: "failed" });
+          throw e;
+        }
+      }
+      if (key === "GET /api/me/consent") {
+        if (!pool) {
+          return json(res, 200, { ok: true, consent: null, gdpr_persistence: "memory" });
+        }
+        const r = await pool.query(
+          `SELECT user_id, consent_kind, granted, granted_at, revoked_at, policy_version
+           FROM vireo_consent WHERE user_id = $1`, [userId]
+        );
+        return json(res, 200, { ok: true, consent: r.rows[0] || null });
+      }
+      if (key === "POST /api/me/consent" && req.method === "POST") {
+        if (!pool) {
+          return err(res, 503, "gdpr_unavailable", "Consent ledger requires Postgres.");
+        }
+        let body; try { body = await readJsonBody(req, 8192); } catch (e) { return err(res, 400, "bad_json", e.message); }
+        const granted = body.granted !== false; // default to true
+        const kind = String(body.consent_kind || "llm_processing").slice(0, 64);
+        const policyVersion = String(body.policy_version || "v1").slice(0, 32);
+        const salt = process.env.VIREO_PRIVACY_SALT || "vireo-default-salt";
+        // We use INSERT ... ON CONFLICT to upsert the consent
+        // record. If the user revokes, we set granted=false and
+        // revoked_at=now(). If they re-grant, we clear revoked_at.
+        await pool.query(
+          `INSERT INTO vireo_consent (user_id, consent_kind, granted, revoked_at, ip_hash, user_agent_hash, policy_version)
+           VALUES ($1, $2, $3, $4, $5, $5, $6)
+           ON CONFLICT (user_id) DO UPDATE SET
+             granted = EXCLUDED.granted,
+             revoked_at = CASE WHEN EXCLUDED.granted THEN NULL ELSE now() END,
+             policy_version = EXCLUDED.policy_version`,
+          [
+            userId, kind, granted, granted ? null : new Date(),
+            require("node:crypto").createHash("sha256").update(`${salt}|${req.socket?.remoteAddress || ""}`).digest("hex").slice(0, 32),
+            policyVersion,
+          ]
+        );
+        await audit.log({
+          userId, action: "consent_change", targetKind: "user", targetId: userId,
+          result: "ok", httpStatus: 200, ip: req.socket?.remoteAddress, userAgent: req.headers["user-agent"],
+          metadata: { consent_kind: kind, granted, policy_version: policyVersion },
+        });
+        return json(res, 200, { ok: true, consent: { user_id: userId, consent_kind: kind, granted, policy_version: policyVersion } });
       }
 
       // ---- auto-title via LLM (P1 #25) ----
