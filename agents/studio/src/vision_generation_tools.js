@@ -28,6 +28,20 @@
 
 import { randomUUID } from "node:crypto";
 
+// Lazy import of the neural executor. Same pattern as edit_tools_tier1.js.
+// The high-level functions delegate to the executor when available;
+// the executor handles all the actual work (Python subprocess, Ollama HTTP, etc).
+let _executor = null;
+async function _getExecutor() {
+  if (_executor !== null) return _executor;
+  try {
+    _executor = await import("./neural_executor.js");
+  } catch (e) {
+    _executor = false; // mark as unavailable
+  }
+  return _executor || null;
+}
+
 // ---------- Vision tool 1: describe_frame ----------
 
 /**
@@ -45,25 +59,39 @@ export async function describeFrame({ file_path, timestamp_sec = 0, focus = null
   if (!file_path) return { ok: false, error: "file_path_required" };
   if (timestamp_sec < 0) return { ok: false, error: "invalid_timestamp", message: "timestamp_sec must be >= 0" };
 
+  const job_id = `describeframe-${randomUUID()}`;
+  const job = { job_id, kind: "describe_frame", status: "queued", file_path, timestamp_sec, focus, model, started_at: new Date().toISOString() };
+
+  const executor = await _getExecutor();
+  if (executor && typeof executor.describeFrameReal === "function") {
+    (async () => {
+      try {
+        const r2 = await executor.describeFrameReal({ file_path, timestamp_sec, focus, model: model || "llava:7b" });
+        if (r2 && r2.job_id) {
+          const realJob = executor.getJob(r2.job_id);
+          if (realJob) {
+            job.status = realJob.status;
+            job.result = realJob.result;
+            job.error = realJob.error;
+            job.finished_at = realJob.finished_at;
+          }
+        }
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+      }
+    })();
+    return { ok: true, job_id, job, message: `describe_frame job '${job_id}' queued.` };
+  }
+
+  // Fallback stub (no executor available)
   const backend = process.env.NEURAL_BACKEND || "local";
   const chosenModel = model || (backend === "openai" ? "gpt-4v" : backend === "replicate" ? "llava-13b" : "llava-1.5-7b");
-
-  // In production: extract frame at timestamp, send to vision LLM.
-  // For now: return a deterministic stub that downstream code can
-  // parse. The real implementation uses ffmpeg to extract a frame
-  // and either:
-  //   - Local: pipe to LLaVA / BLIP-2 via ollama or text-generation-webui
-  //   - OpenAI: POST to /v1/chat/completions with image_url
-  //   - Replicate: POST to their LLaVA model
-  const result = {
-    ok: true,
-    description: `Frame at ${timestamp_sec}s of ${file_path}: a video frame. [STUB — wire to vision LLM]`,
-    tags: ["video", "frame"],
+  return { ok: true, description: `Frame at ${timestamp_sec}s of ${file_path}: a video frame. [STUB — wire to vision LLM]`, tags: ["video", "frame"],
     model: chosenModel,
     backend,
     timestamp_sec,
   };
-  return result;
 }
 
 // ---------- Vision tool 2: detect_objects ----------
@@ -91,10 +119,35 @@ export async function detectObjects({ file_path, timestamp_sec = 0, classes = nu
   }
   const targetClasses = classes && classes.length > 0 ? classes : COMMON_OBJECT_CLASSES;
 
+  const job_id = `detectobj-${randomUUID()}`;
+  const job = { job_id, kind: "detect_objects", status: "queued", file_path, timestamp_sec, classes: targetClasses, confidence_threshold, started_at: new Date().toISOString() };
+  const executor = await _getExecutor();
+  if (executor && typeof executor.detectObjectsReal === "function") {
+    (async () => {
+      try {
+        const r2 = await executor.detectObjectsReal({ file_path, timestamp_sec, classes: targetClasses, confidence_threshold });
+        if (r2 && r2.job_id) {
+          const realJob = executor.getJob(r2.job_id);
+          if (realJob) {
+            job.status = realJob.status;
+            job.result = realJob.result;
+            job.error = realJob.error;
+            job.finished_at = realJob.finished_at;
+          }
+        }
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+      }
+    })();
+    return { ok: true, job_id, job, message: `detect_objects job '${job_id}' queued.` };
+  }
+
+  // Fallback stub
   const backend = process.env.NEURAL_BACKEND || "local";
   return {
     ok: true,
-    objects: [],  // STUB — wire to YOLO (local) or cloud detection API
+    objects: [],
     model: backend === "local" ? "yolov8n" : "yolov8l",
     classes_searched: targetClasses,
     confidence_threshold,
@@ -119,10 +172,34 @@ export async function detectObjects({ file_path, timestamp_sec = 0, classes = nu
 export async function detectScenes({ file_path, min_scene_length_sec = 2, description_model = "clip" }) {
   if (!file_path) return { ok: false, error: "file_path_required" };
 
+  const job_id = `scenes-${randomUUID()}`;
+  const job = { job_id, kind: "detect_scenes", status: "queued", file_path, min_scene_length_sec, description_model, started_at: new Date().toISOString() };
+  const executor = await _getExecutor();
+  if (executor && typeof executor.detectScenesReal === "function") {
+    (async () => {
+      try {
+        const r2 = await executor.detectScenesReal({ file_path, min_scene_length_sec, description_model });
+        if (r2 && r2.job_id) {
+          const realJob = executor.getJob(r2.job_id);
+          if (realJob) {
+            job.status = realJob.status;
+            job.result = realJob.result;
+            job.error = realJob.error;
+            job.finished_at = realJob.finished_at;
+          }
+        }
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+      }
+    })();
+    return { ok: true, job_id, job, message: `detect_scenes job '${job_id}' queued.` };
+  }
+
   const backend = process.env.NEURAL_BACKEND || "local";
   return {
     ok: true,
-    scenes: [],  // STUB — wire to scenedetect + clip
+    scenes: [],
     min_scene_length_sec,
     description_model,
     backend,
@@ -145,9 +222,33 @@ export async function extractDominantColors({ file_path, n_colors = 5, timestamp
   if (!file_path) return { ok: false, error: "file_path_required" };
   if (n_colors < 1 || n_colors > 20) return { ok: false, error: "invalid_n_colors" };
 
+  const job_id = `colors-${randomUUID()}`;
+  const job = { job_id, kind: "extract_dominant_colors", status: "queued", file_path, n_colors, timestamp_sec, started_at: new Date().toISOString() };
+  const executor = await _getExecutor();
+  if (executor && typeof executor.extractDominantColorsReal === "function") {
+    (async () => {
+      try {
+        const r2 = await executor.extractDominantColorsReal({ file_path, n_colors, timestamp_sec });
+        if (r2 && r2.job_id) {
+          const realJob = executor.getJob(r2.job_id);
+          if (realJob) {
+            job.status = realJob.status;
+            job.result = realJob.result;
+            job.error = realJob.error;
+            job.finished_at = realJob.finished_at;
+          }
+        }
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+      }
+    })();
+    return { ok: true, job_id, job, message: `extract_dominant_colors job '${job_id}' queued.` };
+  }
+
   return {
     ok: true,
-    palette: [],  // STUB — wire to k-means or colorthief
+    palette: [],
     n_colors,
     timestamp_sec,
   };
@@ -180,21 +281,45 @@ export async function generateImage({ prompt, negative_prompt = null, style = nu
     return { ok: false, error: "invalid_aspect_ratio", message: `aspect_ratio must be one of: ${validAspects.join(", ")}` };
   }
 
-  const backend = process.env.NEURAL_BACKEND || "local";
-  const chosenModel = model || (backend === "openai" ? "dall-e-3" : backend === "replicate" ? "sdxl" : "sdxl-base-1.0");
-
   const job_id = `genimg-${randomUUID()}`;
+  const job = { job_id, kind: "generate_image", status: "queued", prompt, negative_prompt, style, aspect_ratio, seed: seed ?? Math.floor(Math.random() * 2 ** 32), model, started_at: new Date().toISOString() };
+  const executor = await _getExecutor();
+  if (executor && typeof executor.generateImageReal === "function") {
+    (async () => {
+      try {
+        const r2 = await executor.generateImageReal({ prompt, negative_prompt, style, aspect_ratio, seed, model });
+        if (r2 && r2.job_id) {
+          const realJob = executor.getJob(r2.job_id);
+          if (realJob) {
+            job.status = realJob.status;
+            job.result = realJob.result;
+            job.image_path = realJob.image_path;
+            job.error = realJob.error;
+            job.finished_at = realJob.finished_at;
+          }
+        }
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+      }
+    })();
+    return { ok: true, job_id, job, message: `generate_image job '${job_id}' queued for prompt: "${prompt.slice(0, 80)}${prompt.length > 80 ? "..." : ""}"` };
+  }
+
+  // Fallback stub
+  const stubBackend = process.env.NEURAL_BACKEND || "local";
+  const chosenModel = model || (stubBackend === "openai" ? "dall-e-3" : stubBackend === "replicate" ? "sdxl" : "sdxl-base-1.0");
   return {
     ok: true,
     job_id,
-    image_path: null,  // populated when job completes
+    image_path: null,
     prompt,
     negative_prompt,
     style,
     aspect_ratio,
     seed: seed ?? Math.floor(Math.random() * 2 ** 32),
     model: chosenModel,
-    backend,
+    backend: stubBackend,
     message: `Image generation job '${job_id}' queued for prompt: "${prompt.slice(0, 80)}${prompt.length > 80 ? "..." : ""}"`,
   };
 }
@@ -223,10 +348,34 @@ export async function generateVideo({ prompt, duration_sec = 4, aspect_ratio = "
     return { ok: false, error: "invalid_duration", message: "duration_sec must be 1-60" };
   }
 
-  const backend = process.env.NEURAL_BACKEND || "local";
-  const chosenModel = backend === "openai" ? "sora" : backend === "replicate" ? "svd-xt" : "svd-xt-1.1";
-
   const job_id = `genvid-${randomUUID()}`;
+  const job = { job_id, kind: "generate_video", status: "queued", prompt, duration_sec, aspect_ratio, motion, style, reference_image_path, started_at: new Date().toISOString() };
+  const executor = await _getExecutor();
+  if (executor && typeof executor.generateVideoReal === "function") {
+    (async () => {
+      try {
+        const r2 = await executor.generateVideoReal({ prompt, duration_sec, aspect_ratio, motion, style, reference_image_path });
+        if (r2 && r2.job_id) {
+          const realJob = executor.getJob(r2.job_id);
+          if (realJob) {
+            job.status = realJob.status;
+            job.result = realJob.result;
+            job.video_path = realJob.video_path;
+            job.error = realJob.error;
+            job.finished_at = realJob.finished_at;
+          }
+        }
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+      }
+    })();
+    return { ok: true, job_id, job, message: `generate_video job '${job_id}' queued: ${duration_sec}s ${aspect_ratio} "${prompt.slice(0, 80)}${prompt.length > 80 ? "..." : ""}"` };
+  }
+
+  // Fallback stub
+  const stubBackend = process.env.NEURAL_BACKEND || "local";
+  const chosenModel = stubBackend === "openai" ? "sora" : stubBackend === "replicate" ? "svd-xt" : "svd-xt-1.1";
   return {
     ok: true,
     job_id,
@@ -238,7 +387,7 @@ export async function generateVideo({ prompt, duration_sec = 4, aspect_ratio = "
     style,
     reference_image_path,
     model: chosenModel,
-    backend,
+    backend: stubBackend,
     message: `Video generation job '${job_id}' queued: ${duration_sec}s ${aspect_ratio} "${prompt.slice(0, 80)}${prompt.length > 80 ? "..." : ""}"`,
   };
 }
@@ -271,10 +420,34 @@ export async function inpaintFrame({ file_path, timestamp_sec, mode, mask, promp
     return { ok: false, error: "mask_required", message: "mask must have bbox or polygon" };
   }
 
-  const backend = process.env.NEURAL_BACKEND || "local";
-  const chosenModel = backend === "local" ? "sdxl-inpainting" : "sdxl-inpainting";
-
   const job_id = `inpaint-${randomUUID()}`;
+  const job = { job_id, kind: "inpaint_frame", status: "queued", file_path, timestamp_sec, mode, mask, prompt, negative_prompt, started_at: new Date().toISOString() };
+  const executor = await _getExecutor();
+  if (executor && typeof executor.inpaintFrameReal === "function") {
+    (async () => {
+      try {
+        const r2 = await executor.inpaintFrameReal({ file_path, timestamp_sec, mode, mask, prompt, negative_prompt });
+        if (r2 && r2.job_id) {
+          const realJob = executor.getJob(r2.job_id);
+          if (realJob) {
+            job.status = realJob.status;
+            job.result = realJob.result;
+            job.frame_path = realJob.frame_path;
+            job.error = realJob.error;
+            job.finished_at = realJob.finished_at;
+          }
+        }
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+      }
+    })();
+    return { ok: true, job_id, job, message: `inpaint_frame job '${job_id}' queued: ${mode} at ${timestamp_sec}s` };
+  }
+
+  // Fallback stub
+  const stubBackend = process.env.NEURAL_BACKEND || "local";
+  const chosenModel = "sdxl-inpainting";
   return {
     ok: true,
     job_id,
@@ -286,7 +459,7 @@ export async function inpaintFrame({ file_path, timestamp_sec, mode, mask, promp
     prompt,
     negative_prompt,
     model: chosenModel,
-    backend,
+    backend: stubBackend,
     message: `Inpaint job '${job_id}' queued: ${mode} at ${timestamp_sec}s`,
   };
 }
