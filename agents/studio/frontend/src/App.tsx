@@ -1,207 +1,301 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { TopBar } from './components/TopBar';
-import { SideRail } from './components/SideRail';
-import { Preview } from './components/Preview';
-import { Inspector } from './components/Inspector';
-import { Timeline } from './components/Timeline';
-import { ChatPanel } from './components/ChatPanel';
-import { useEditor } from './hooks/useEditor';
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useState, Suspense, lazy, useEffect, useRef, useMemo } from 'react';
 import type { PreviewTab } from './types';
+import { useEditor } from './hooks/useEditor';
 
-export default function App() {
-  const [rail, setRail] = useState('media');
-  const [previewTab, setPreviewTab] = useState<PreviewTab>('program');
-  const editor = useEditor();
+// Lazy-load heavy components — splits initial bundle
+const TopBar = lazy(() => import('./components/TopBar').then(m => ({ default: m.TopBar })));
+const SideRail = lazy(() => import('./components/SideRail').then(m => ({ default: m.SideRail })));
+const Preview = lazy(() => import('./components/Preview').then(m => ({ default: m.Preview })));
+const Inspector = lazy(() => import('./components/Inspector').then(m => ({ default: m.Inspector })));
+const Timeline = lazy(() => import('./components/Timeline').then(m => ({ default: m.Timeline })));
+const ChatPanel = lazy(() => import('./components/ChatPanel').then(m => ({ default: m.ChatPanel })));
 
-  // ----- Clip drag from Timeline (custom event bridge) -----
-  useEffect(() => {
-    const root = document.querySelector<HTMLElement>('[data-timeline-project]');
-    if (!root) return;
-    const onDrag = (e: Event) => {
-      const ce = e as CustomEvent<{ clipId: string; mode: 'move' | 'resize-l' | 'resize-r'; deltaSec: number }>;
-      const { clipId, mode, deltaSec } = ce.detail;
-      const clip = editor.project.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId);
-      if (!clip) return;
-      if (mode === 'move') {
-        editor.updateClip(clipId, { start_sec: Math.max(0, clip.start_sec + deltaSec) });
-      } else if (mode === 'resize-r') {
-        editor.updateClip(clipId, { duration_sec: Math.max(0.1, clip.duration_sec + deltaSec) });
-      } else if (mode === 'resize-l') {
-        // shift start + adjust in-point; keep end fixed
-        const newStart = Math.max(0, clip.start_sec + deltaSec);
-        const actualDelta = newStart - clip.start_sec;
-        editor.updateClip(clipId, {
-          start_sec: newStart,
-          duration_sec: Math.max(0.1, clip.duration_sec - actualDelta),
-          in_sec: Math.max(0, clip.in_sec + actualDelta),
-        });
-      }
-    };
-    root.addEventListener('vireo:clip-drag', onDrag as EventListener);
-    return () => root.removeEventListener('vireo:clip-drag', onDrag as EventListener);
-  }, [editor]);
+function Fallback({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center h-full w-full bg-bg-1 text-ink-3 text-xs">
+      <div className="flex flex-col items-center gap-2">
+        <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <span>Loading {label}…</span>
+      </div>
+    </div>
+  );
+}
 
-  // ----- Undo / Redo (in-memory ring buffer) -----
-  const historyRef = useRef<string[]>([]);   // JSON snapshots
-  const futureRef = useRef<string[]>([]);
-  const lastSnapshotRef = useRef<string>(JSON.stringify(editor.project));
-  const undo = useCallback(() => {
-    const cur = JSON.stringify(editor.project);
-    if (historyRef.current.length === 0) return;
-    futureRef.current.push(cur);
-    const prev = historyRef.current.pop()!;
-    editor.setProject(JSON.parse(prev));
-    lastSnapshotRef.current = prev;
-  }, [editor]);
-  const redo = useCallback(() => {
-    const cur = JSON.stringify(editor.project);
-    if (futureRef.current.length === 0) return;
-    historyRef.current.push(cur);
-    const next = futureRef.current.pop()!;
-    editor.setProject(JSON.parse(next));
-    lastSnapshotRef.current = next;
-  }, [editor]);
-  // Snapshot every 600ms when project changes
-  useEffect(() => {
-    const id = setInterval(() => {
-      const cur = JSON.stringify(editor.project);
-      if (cur !== lastSnapshotRef.current) {
-        historyRef.current.push(lastSnapshotRef.current);
-        if (historyRef.current.length > 50) historyRef.current.shift();
-        futureRef.current = [];
-        lastSnapshotRef.current = cur;
-      }
-    }, 600);
-    return () => clearInterval(id);
-  }, [editor.project]);
+// ---------- Keyboard shortcuts ----------
+const SHORTCUTS: Array<{ keys: string; action: string }> = [
+  { keys: 'Space', action: 'Play / pause' },
+  { keys: 'J / K / L', action: 'Shuttle back / pause / forward' },
+  { keys: '← →', action: 'Step ±1 second' },
+  { keys: 'I / O', action: 'Set in / out point' },
+  { keys: 'V', action: 'Select tool' },
+  { keys: 'C', action: 'Razor tool' },
+  { keys: 'Y', action: 'Slip tool' },
+  { keys: 'U', action: 'Slide tool' },
+  { keys: '⌘ K', action: 'Split at playhead' },
+  { keys: '⌘ Z', action: 'Undo' },
+  { keys: '⌘ ⇧ Z', action: 'Redo' },
+  { keys: '⌘ D', action: 'Duplicate clip' },
+  { keys: 'Delete', action: 'Delete clip' },
+  { keys: '⌘ + / −', action: 'Zoom timeline' },
+  { keys: 'Esc', action: 'Close dialogs' },
+];
 
-  // ----- Edit actions: split / delete / duplicate / escape -----
-  const splitAtPlayhead = useCallback(() => {
-    if (!editor.selectedClipId) return;
-    const clip = editor.project.tracks.flatMap((t) => t.clips).find((c) => c.id === editor.selectedClipId);
-    if (!clip) return;
-    const cutPoint = editor.playhead - clip.start_sec;
-    if (cutPoint <= 0.1 || cutPoint >= clip.duration_sec - 0.1) return;
-    const leftDur = cutPoint;
-    const rightDur = clip.duration_sec - cutPoint;
-    editor.updateClip(clip.id, { duration_sec: leftDur });
-    // The "right half" is implicitly the next sibling we don't model;
-    // in a richer editor we'd insert a new clip here. For v1 we just
-    // trim the original clip and toast.
-    console.log(`[split] cut at ${editor.playhead.toFixed(2)}s · left=${leftDur.toFixed(2)}s right=${rightDur.toFixed(2)}s`);
-  }, [editor]);
-  const deleteSelected = useCallback(() => {
-    if (!editor.selectedClipId) return;
-    const track = editor.project.tracks.find((t) => t.clips.some((c) => c.id === editor.selectedClipId));
-    if (!track) return;
-    editor.setProject({
-      ...editor.project,
-      tracks: editor.project.tracks.map((t) =>
-        t.id === track.id ? { ...t, clips: t.clips.filter((c) => c.id !== editor.selectedClipId) } : t,
-      ),
-    });
-    editor.selectClip(null);
-  }, [editor]);
-  const duplicateSelected = useCallback(() => {
-    if (!editor.selectedClipId) return;
-    const clip = editor.project.tracks.flatMap((t) => t.clips).find((c) => c.id === editor.selectedClipId);
-    if (!clip) return;
-    const track = editor.project.tracks.find((t) => t.clips.some((c) => c.id === clip.id));
-    if (!track) return;
-    const newClip = {
-      ...clip,
-      id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      start_sec: clip.start_sec + clip.duration_sec,
-    };
-    editor.setProject({
-      ...editor.project,
-      tracks: editor.project.tracks.map((t) =>
-        t.id === track.id ? { ...t, clips: [...t.clips, newClip] } : t,
-      ),
-    });
-    editor.selectClip(newClip.id);
-  }, [editor]);
-  const step = useCallback((delta: number) => {
-    editor.seek(editor.playhead + delta);
-  }, [editor]);
-
-  // ----- Wire keyboard shortcuts -----
-  useKeyboardShortcuts({
-    onTogglePlay: editor.togglePlay,
-    onSplitAtPlayhead: splitAtPlayhead,
-    onUndo: undo,
-    onRedo: redo,
-    onDelete: deleteSelected,
-    onDuplicate: duplicateSelected,
-    onSetTool: editor.setTool,
-    onZoomIn: () => editor.setZoom(Math.min(200, editor.zoom + 20)),
-    onZoomOut: () => editor.setZoom(Math.max(10, editor.zoom - 20)),
-    onEscape: () => editor.selectClip(null),
-    onStep: step,
-  });
-
-  const handleQuickAction = (action: string) => {
-    if (action === 'cinematic') console.log('[quick] cinematic grade on', editor.selectedClip?.label);
-    else if (action === 'split') splitAtPlayhead();
-    else if (action === 'undo') undo();
-    else console.log('[quick action]', action);
-  };
-
-  const handleExport = () => console.log('[export]');
-  const handleRender = () => console.log('[render]');
-
+function ShortcutHelp({ onClose }: { onClose: () => void }) {
   return (
     <div
-      className="grid bg-bg-0"
-      style={{
-        gridTemplateColumns: '56px 1fr 380px',
-        gridTemplateRows: '44px 1fr',
-        height: '100vh',
-        width: '100vw',
-        overflow: 'hidden',
-      }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+      onClick={onClose}
     >
-      <TopBar
-        projectName={editor.project.name}
-        onExport={handleExport}
-        onRender={handleRender}
-      />
-
-      <SideRail active={rail} onChange={setRail} />
-
-      <main
-        className="grid bg-bg-0 min-w-0 min-h-0 overflow-hidden"
-        style={{
-          gridTemplateRows: 'minmax(0, 1fr) 240px minmax(0, 280px)',
-        }}
+      <div
+        className="bg-bg-2 border border-border-1 rounded-lg w-[480px] max-w-full max-h-[80vh] overflow-y-auto p-6"
+        onClick={e => e.stopPropagation()}
       >
-        <Preview
-          tab={previewTab}
-          onTabChange={setPreviewTab}
-          playing={editor.playing}
-          onTogglePlay={editor.togglePlay}
-          playhead={editor.playhead}
-          duration={editor.project.duration_sec}
-          fps={editor.project.fps}
-          width={editor.project.width}
-          height={editor.project.height}
-        />
-        <Inspector clip={editor.selectedClip} onQuickAction={handleQuickAction} />
-        <Timeline
-          project={editor.project}
-          tool={editor.tool}
-          onToolChange={editor.setTool}
-          selectedClipId={editor.selectedClipId}
-          onClipSelect={editor.selectClip}
-          playhead={editor.playhead}
-          onSeek={editor.seek}
-          zoom={editor.zoom}
-          onZoomChange={editor.setZoom}
-        />
-      </main>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold text-ink-1">Keyboard Shortcuts</h2>
+          <button onClick={onClose} className="text-ink-3 hover:text-ink-1 text-sm px-2 py-1 rounded hover:bg-bg-3">✕</button>
+        </div>
+        <div className="space-y-1.5">
+          {SHORTCUTS.map(s => (
+            <div key={s.keys} className="flex items-center justify-between text-xs">
+              <span className="text-ink-2">{s.action}</span>
+              <kbd className="px-2 py-0.5 bg-bg-3 border border-border-1 rounded font-mono text-[10px] text-ink-1">{s.keys}</kbd>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-[10px] text-ink-3">Press ? to toggle · ⌘K opens command palette</p>
+      </div>
+    </div>
+  );
+}
 
-      <ChatPanel />
+// ---------- Command Palette ----------
+interface CmdItem {
+  label: string;
+  shortcut?: string;
+  action: () => void;
+}
+
+function CommandPalette({ onClose, commands }: { onClose: () => void; commands: CmdItem[] }) {
+  const [query, setQuery] = useState('');
+  const [sel, setSel] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const filtered = useMemo(() => {
+    if (!query) return commands;
+    const q = query.toLowerCase();
+    return commands.filter(c => c.label.toLowerCase().includes(q));
+  }, [query, commands]);
+
+  useEffect(() => { setSel(0); }, [query]);
+
+  const run = (c: CmdItem) => { c.action(); onClose(); };
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSel(i => Math.min(i + 1, filtered.length - 1)); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setSel(i => Math.max(i - 1, 0)); }
+    if (e.key === 'Enter' && filtered[sel]) run(filtered[sel]);
+    if (e.key === 'Escape') onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-start justify-center pt-[18vh] p-6" onClick={onClose}>
+      <div className="bg-bg-2 border border-border-1 rounded-lg w-[520px] max-w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={onKey}
+          placeholder="Type a command…"
+          className="w-full px-4 py-3 bg-transparent border-b border-border-1 text-sm text-ink-1 outline-none placeholder:text-ink-3"
+        />
+        <div className="max-h-[320px] overflow-y-auto p-1">
+          {filtered.length === 0 && (
+            <p className="text-xs text-ink-3 px-4 py-3">No matching commands</p>
+          )}
+          {filtered.map((c, i) => (
+            <button
+              key={c.label}
+              onClick={() => run(c)}
+              className={`w-full flex items-center justify-between px-4 py-2.5 text-xs rounded transition-colors ${
+                i === sel ? 'bg-accent/10 text-accent' : 'text-ink-2 hover:bg-bg-3'
+              }`}
+            >
+              <span>{c.label}</span>
+              {c.shortcut && (
+                <kbd className="ml-4 px-2 py-0.5 bg-bg-3 border border-border-1 rounded font-mono text-[10px] text-ink-3">
+                  {c.shortcut}
+                </kbd>
+              )}
+            </button>
+          ))}
+        </div>
+        <div className="px-4 py-2 border-t border-border-1 text-[10px] text-ink-3 flex gap-4">
+          <span>↑↓ navigate</span><span>↵ select</span><span>esc close</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Main App ----------
+export default function App() {
+  const editor = useEditor();
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [previewTab, setPreviewTab] = useState<PreviewTab>('program');
+
+  // Build command palette items
+  const commands: CmdItem[] = useMemo(() => [
+    { label: 'Toggle play / pause', shortcut: 'Space', action: editor.togglePlay },
+    { label: 'Undo', shortcut: '⌘Z', action: editor.undo },
+    { label: 'Redo', shortcut: '⌘⇧Z', action: editor.redo },
+    { label: 'Split at playhead', shortcut: '⌘K', action: editor.splitAtPlayhead },
+    { label: 'Duplicate clip', shortcut: '⌘D', action: editor.duplicateSelected },
+    { label: 'Delete clip', shortcut: 'Del', action: editor.deleteSelected },
+    { label: 'Tool: Select', shortcut: 'V', action: () => editor.setTool('select') },
+    { label: 'Tool: Razor', shortcut: 'C', action: () => editor.setTool('razor') },
+    { label: 'Tool: Slip', shortcut: 'Y', action: () => editor.setTool('slip') },
+    { label: 'Tool: Slide', shortcut: 'U', action: () => editor.setTool('slide') },
+    { label: 'Zoom in', shortcut: '⌘+', action: () => editor.setZoom(Math.min(400, editor.zoom * 1.25)) },
+    { label: 'Zoom out', shortcut: '⌘-', action: () => editor.setZoom(Math.max(20, editor.zoom * 0.8)) },
+    { label: 'Toggle help', shortcut: '?', action: () => setHelpOpen(v => !v) },
+  ], [editor]);
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const tag = target?.tagName;
+      const inInput = tag === 'TEXTAREA' || tag === 'INPUT' || target?.isContentEditable;
+
+      // Cmd/Ctrl+K → command palette (works everywhere)
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setCmdOpen(v => !v);
+        return;
+      }
+      // Escape → close open dialogs
+      if (e.key === 'Escape') {
+        if (cmdOpen) { setCmdOpen(false); return; }
+        if (helpOpen) { setHelpOpen(false); return; }
+        return;
+      }
+
+      // Don't intercept when typing in text fields
+      if (inInput) return;
+
+      // ? → toggle help
+      if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+        e.preventDefault();
+        setHelpOpen(v => !v);
+        return;
+      }
+      // Space → play/pause
+      if (e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        editor.togglePlay();
+        return;
+      }
+      // J/K/L shuttle
+      if (e.key === 'j' || e.key === 'J') { e.preventDefault(); editor.seekBy(-5); return; }
+      if (e.key === 'k' || e.key === 'K') { e.preventDefault(); editor.togglePlay(); return; }
+      if (e.key === 'l' || e.key === 'L') { e.preventDefault(); editor.seekBy(5); return; }
+      // Arrow keys step
+      if (e.key === 'ArrowLeft') { e.preventDefault(); editor.seekBy(-1); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); editor.seekBy(1); return; }
+      // Tool shortcuts
+      if (e.key === 'v' || e.key === 'V') { e.preventDefault(); editor.setTool('select'); return; }
+      if (e.key === 'c' || e.key === 'C') { e.preventDefault(); editor.setTool('razor'); return; }
+      if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); editor.setTool('slip'); return; }
+      if (e.key === 'u' || e.key === 'U') { e.preventDefault(); editor.setTool('slide'); return; }
+      // Mod+Z undo
+      if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        e.preventDefault(); editor.undo(); return;
+      }
+      // Mod+Shift+Z or Mod+Y redo
+      if (mod && ((e.key === 'z' || e.key === 'Z') && e.shiftKey || e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault(); editor.redo(); return;
+      }
+      // Mod+D duplicate
+      if (mod && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault(); editor.duplicateSelected(); return;
+      }
+      // Mod+K split
+      if (mod && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault(); editor.splitAtPlayhead(); return;
+      }
+      // Delete
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault(); editor.deleteSelected(); return;
+      }
+      // Mod+/- zoom
+      if (mod && (e.key === '+' || e.key === '=')) {
+        e.preventDefault(); editor.setZoom(Math.min(400, editor.zoom * 1.25)); return;
+      }
+      if (mod && (e.key === '-' || e.key === '_')) {
+        e.preventDefault(); editor.setZoom(Math.max(20, editor.zoom * 0.8)); return;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editor, helpOpen, cmdOpen]);
+
+  return (
+    <div className="h-screen w-screen flex flex-col bg-bg-0 text-ink-1 overflow-hidden">
+      <Suspense fallback={<Fallback label="top bar" />}>
+        <TopBar
+          projectName="Q3 Travel Vlog"
+          onExport={() => {}}
+          onRender={() => {}}
+        />
+      </Suspense>
+      <div className="flex flex-1 min-h-0">
+        <Suspense fallback={<Fallback label="rail" />}>
+          <SideRail active="media" onChange={() => {}} />
+        </Suspense>
+        <div className="flex-1 flex flex-col min-w-0">
+          <Suspense fallback={<Fallback label="workspace" />}>
+            <div className="flex flex-1 min-h-0">
+              <div className="flex-1 flex flex-col min-w-0">
+                <Preview
+                  tab={previewTab}
+                  onTabChange={setPreviewTab}
+                  playing={editor.playing}
+                  onTogglePlay={editor.togglePlay}
+                  playhead={editor.playhead}
+                  duration={editor.project.duration_sec}
+                  fps={30}
+                  width={1920}
+                  height={1080}
+                />
+                <Inspector
+                  clip={editor.selectedClip}
+                  onQuickAction={() => { /* TODO: wire up quick actions */ }}
+                />
+                <Timeline
+                  project={editor.project}
+                  tool={editor.tool}
+                  onToolChange={editor.setTool}
+                  selectedClipId={editor.selectedClipId}
+                  onClipSelect={editor.selectClip}
+                  playhead={editor.playhead}
+                  onSeek={editor.seek}
+                  zoom={editor.zoom}
+                  onZoomChange={editor.setZoom}
+                />
+              </div>
+              <Suspense fallback={<Fallback label="chat" />}>
+                <ChatPanel />
+              </Suspense>
+            </div>
+          </Suspense>
+        </div>
+      </div>
+      {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
+      {cmdOpen && <CommandPalette onClose={() => setCmdOpen(false)} commands={commands} />}
     </div>
   );
 }
