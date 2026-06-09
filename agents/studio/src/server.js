@@ -70,6 +70,20 @@ import {
   autoRespondToComment,
   analyzeAudienceSentiment,
 } from "./engagement_tools.js";
+import {
+  MULTIMODAL_TOOLS,
+  MULTIMODAL_TOOL_NAMES,
+  summarizeVideoArc,
+  findEmotionalMoments,
+  detectBrandingConsistency,
+  learnUserStyle,
+  compareToCompetitors,
+  vireoRecall,
+  vectorSearch,
+  generateVideoReaction,
+  createCompilationFromVoice,
+  autoChapterize,
+} from "./multimodal_tools.js";
 import { CAPABILITIES, PERSONA, describeToolsForPrompt, detectLanguage, languageName } from "./persona.js";
 import { computeOnboardingState } from "./onboarding.js";
 import { createSpan, checkBudget, systemPromptCache, projectListCache, styleDNACache } from "./latency.js";
@@ -1131,7 +1145,7 @@ Briefly confirm what happened (1 sentence) and what's next. Don't repeat the too
 - Currency/timestamps: ISO 8601. Default to UTC when ambiguous.
 - Call tools in parallel when independent.
 - Wait for tool results before responding with a conclusion.`;
-const ALL_TOOLS = [...CHAT_TOOLS, ...EDIT_TOOLS, ...TIER1_EDIT_TOOLS, ...VISION_GENERATION_TOOLS, ...ENGAGEMENT_TOOLS];
+const ALL_TOOLS = [...CHAT_TOOLS, ...EDIT_TOOLS, ...TIER1_EDIT_TOOLS, ...VISION_GENERATION_TOOLS, ...ENGAGEMENT_TOOLS, ...MULTIMODAL_TOOLS];
 
 /**
  * Build the per-user context block that's injected into the chat LLM's
@@ -1338,7 +1352,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
       const candidates = [
         process.env.STUDIO_STATIC_DIR,
-        path.resolve(__dirname, "..", "..", "frontend", "dist"),
+        path.resolve(__dirname, "..", "frontend", "dist"),
         path.resolve(__dirname, "..", "public"),
       ].filter(Boolean);
       for (const dir of candidates) {
@@ -1363,7 +1377,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
       const staticDirs = [
         process.env.STUDIO_STATIC_DIR,
-        path.resolve(__dirname, "..", "..", "frontend", "dist"),
+        path.resolve(__dirname, "..", "frontend", "dist"),
         path.resolve(__dirname, "..", "public"),
       ].filter(Boolean);
       for (const dir of staticDirs) {

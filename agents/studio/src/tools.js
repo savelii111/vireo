@@ -676,6 +676,7 @@ export const STUDIO_INPROCESS_TOOL_NAMES = new Set([
 // Handlers are imported lazily to keep module load fast.
 import { VISION_GENERATION_TOOL_NAMES } from "./vision_generation_tools.js";
 import { ENGAGEMENT_TOOL_NAMES } from "./engagement_tools.js";
+import { MULTIMODAL_TOOL_NAMES } from "./multimodal_tools.js";
 export const TIER1_TOOL_NAMES = new Set([
   "apply_color_grade",
   "apply_speed_ramp",
@@ -734,6 +735,26 @@ async function _ensureEngagementHandlers() {
     analyze_audience_sentiment: eg.analyzeAudienceSentiment,
   };
   return _engagementHandlers;
+}
+
+// Multi-modal intelligence handlers (lazy)
+let _multimodalHandlers = null;
+async function _ensureMultimodalHandlers() {
+  if (_multimodalHandlers) return _multimodalHandlers;
+  const mm = await import("./multimodal_tools.js");
+  _multimodalHandlers = {
+    summarize_video_arc: mm.summarizeVideoArc,
+    find_emotional_moments: mm.findEmotionalMoments,
+    detect_branding_consistency: mm.detectBrandingConsistency,
+    learn_user_style: mm.learnUserStyle,
+    compare_to_competitors: mm.compareToCompetitors,
+    vireo_recall: mm.vireoRecall,
+    vector_search: mm.vectorSearch,
+    generate_video_reaction: mm.generateVideoReaction,
+    create_compilation_from_voice: mm.createCompilationFromVoice,
+    auto_chapterize: mm.autoChapterize,
+  };
+  return _multimodalHandlers;
 }
 
 // ---------- System prompt ----------
@@ -1098,6 +1119,27 @@ export async function executeToolCall(call, ctx) {
       const handler = handlers[name];
       if (typeof handler !== "function") {
         return { ok: false, error: `engagement_handler_missing: ${name}` };
+      }
+      return await handler(args);
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
+  // Multi-modal intelligence tools (2026-06-09) — narrative arc,
+  // emotional moments, branding consistency, Style DNA, semantic
+  // search, video reaction, compilation from voice, auto-chapters.
+  // These are SYNCHRONOUS (heuristic-based v1) so they execute inline.
+  if (MULTIMODAL_TOOL_NAMES.has(name)) {
+    const args = (call.args && typeof call.args === "object") ? call.args : {};
+    try {
+      if (ctx?.deps && typeof ctx.deps[name] === "function") {
+        return await ctx.deps[name]({ ...args, userId: ctx.userId });
+      }
+      const handlers = await _ensureMultimodalHandlers();
+      const handler = handlers[name];
+      if (typeof handler !== "function") {
+        return { ok: false, error: `multimodal_handler_missing: ${name}` };
       }
       return await handler(args);
     } catch (e) {
