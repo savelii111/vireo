@@ -2,18 +2,24 @@
 //
 // Provides platform configuration, content validation, SEO optimization,
 // and publish job management for YouTube, TikTok, Instagram Reels, Instagram
-// Feed, Facebook, Twitter, LinkedIn, and Vimeo.
+// Stories, Instagram Feed, Facebook, Twitter, and LinkedIn.
+//
+// 10 Distribution Tools:
+//   1. publishYouTube({ video, title, description, tags, privacy })
+//   2. publishTikTok({ video, caption, hashtags, music })
+//   3. publishInstagramReels({ video, caption, hashtags, location })
+//   4. publishInstagramStories({ video, duration_sec, stickers })
+//   5. publishInstagramFeed({ video, caption, hashtags, location })
+//   6. publishFacebook({ video, description, privacy, group_id })
+//   7. publishTwitter({ video, text, hashtags, thread })
+//   8. publishLinkedIn({ video, title, description, visibility })
+//   9. publishAll({ video, config })
+//  10. generateSEO({ title, description, tags })
 //
 // Usage:
-//   import { publish, getPublishStatus, listPublished, validateForPlatform, generateSEO } from "./distribution.js";
-//   const job = await publish({ platform: "youtube", file_path: "./video.mp4", title: "My Video" });
-//   getPublishStatus(job.job_id);
-//
-// Design:
-//   - Platform configs encode codec, resolution, and aspect-ratio constraints.
-//   - Validation enforces per-platform content limits (title, description, tags).
-//   - generateSEO produces optimized metadata with hashtag suggestions.
-//   - Publish jobs are stored in-memory with unique UUIDs.
+//   import { publishYouTube, publishTikTok, publishAll, generateSEO } from "./distribution.js";
+//   const yt = publishYouTube({ video: "./vid.mp4", title: "My Video", description: "Great content" });
+//   const seo = generateSEO({ title: "My Video", description: "Content about topics", tags: "coding,tutorial" });
 
 import crypto from "node:crypto";
 
@@ -210,9 +216,10 @@ export function validateForPlatform(platform, { title = "", description = "", ta
 
 /**
  * Generate SEO-optimized metadata from raw input.
+ * Tool #10: generateSEO({ title, description, tags }) → SEOOptimization
  *
  * @param {{ title?: string, description?: string, tags?: string }} raw
- * @returns {{ optimized_title: string, optimized_description: string, suggested_tags: string[], suggested_hashtags: string[], estimated_reach: string }}
+ * @returns {{ optimized_title: string, optimized_description: string, suggested_tags: string[], score: number }}
  */
 export function generateSEO({ title = "", description = "", tags = "" } = {}) {
   // ── Optimized title ──
@@ -246,31 +253,36 @@ export function generateSEO({ title = "", description = "", tags = "" } = {}) {
     if (suggested_tags.length >= 15) break;
   }
 
-  // ── Suggested hashtags ──
-  const suggested_hashtags = [];
+  // ── SEO Score (0-100) ──
+  let score = 0;
+  // Title quality (0-30)
+  if (optimized_title.length >= 10 && optimized_title.length <= 70) score += 30;
+  else if (optimized_title.length >= 5) score += 15;
+  else score += 5;
+  // Description quality (0-30)
+  if (optimized_description.length >= 100) score += 30;
+  else if (optimized_description.length >= 30) score += 15;
+  else score += 5;
+  // Tags quality (0-25)
+  const tagCount = suggested_tags.length;
+  if (tagCount >= 5 && tagCount <= 15) score += 25;
+  else if (tagCount >= 3) score += 15;
+  else if (tagCount >= 1) score += 5;
+  // Keyword presence in title (0-15)
   if (tags && tags.trim().length > 0) {
-    const words = tags.split(/[,;\s]+/).filter((w) => w.length > 2);
-    for (const w of words) {
-      const tag = w.replace(/[^a-zA-Z0-9]/g, "");
-      if (tag.length > 2) suggested_hashtags.push("#" + tag.toLowerCase());
-      if (suggested_hashtags.length >= 10) break;
+    const firstTag = tags.split(/[,;]+/)[0]?.trim().toLowerCase();
+    if (firstTag && optimized_title.toLowerCase().includes(firstTag)) {
+      score += 15;
+    } else {
+      score += 5;
     }
   }
-  if (!suggested_hashtags.includes("#video")) suggested_hashtags.unshift("#video");
-  if (!suggested_hashtags.includes("#creator")) suggested_hashtags.push("#creator");
-
-  // ── Estimated reach ──
-  let estimated_reach = "medium";
-  const combinedLength = (optimized_title + optimized_description).length;
-  if (combinedLength > 200) estimated_reach = "high";
-  else if (combinedLength < 50) estimated_reach = "low";
 
   return {
     optimized_title,
     optimized_description,
     suggested_tags,
-    suggested_hashtags,
-    estimated_reach,
+    score,
   };
 }
 
@@ -396,6 +408,266 @@ export function listPublished({ platform = null, limit = 50 } = {}) {
   }
 
   return jobs.slice(0, limit);
+}
+
+// ── Platform-Specific Publish Tools ────────────────────────────────────────
+
+/**
+ * Generate a simulated URL for a platform.
+ * @param {string} platform
+ * @param {string} id
+ * @returns {string}
+ */
+function _makeUrl(platform, id) {
+  const baseUrls = {
+    youtube: "https://youtube.com/watch?v=",
+    tiktok: "https://tiktok.com/@user/video/",
+    instagram_reels: "https://instagram.com/reel/",
+    instagram_stories: "https://instagram.com/stories/",
+    instagram_feed: "https://instagram.com/p/",
+    facebook: "https://facebook.com/watch/?v=",
+    twitter: "https://x.com/user/status/",
+    linkedin: "https://linkedin.com/feed/update/urn:li:activity:",
+  };
+  return (baseUrls[platform] || "https://example.com/") + id;
+}
+
+/**
+ * Tool #1: Publish video to YouTube.
+ *
+ * @param {{ video: string, title: string, description?: string, tags?: string, privacy?: string }} opts
+ * @returns {{ url: string, video_id: string, channel_id: string, scheduled_time: string, privacy: string }}
+ */
+export function publishYouTube({ video, title, description = "", tags = "", privacy = "public" } = {}) {
+  if (!video) throw new Error("video is required");
+  if (!title) throw new Error("title is required");
+  if (privacy && !["public", "unlisted", "private"].includes(privacy)) {
+    throw new Error("privacy must be 'public', 'unlisted', or 'private'");
+  }
+  const video_id = crypto.randomUUID().replace(/-/g, "").substring(0, 11);
+  const channel_id = "UC" + crypto.randomUUID().replace(/-/g, "").substring(0, 22);
+  const url = _makeUrl("youtube", video_id);
+
+  return {
+    url,
+    video_id,
+    channel_id,
+    scheduled_time: new Date().toISOString(),
+    privacy: privacy || "public",
+  };
+}
+
+/**
+ * Tool #2: Publish video to TikTok.
+ *
+ * @param {{ video: string, caption: string, hashtags?: string[], music?: string }} opts
+ * @returns {{ url: string, video_id: string, music_used: string, hashtags_count: number }}
+ */
+export function publishTikTok({ video, caption = "", hashtags = [], music = "" } = {}) {
+  if (!video) throw new Error("video is required");
+  const video_id = crypto.randomUUID().replace(/-/g, "").substring(0, 19);
+  const url = _makeUrl("tiktok", video_id);
+
+  return {
+    url,
+    video_id,
+    music_used: music || "original sound",
+    hashtags_count: Array.isArray(hashtags) ? hashtags.length : 0,
+  };
+}
+
+/**
+ * Tool #3: Publish video to Instagram Reels.
+ *
+ * @param {{ video: string, caption?: string, hashtags?: string[], location?: string }} opts
+ * @returns {{ url: string, post_id: string, hashtags_count: number, location: string }}
+ */
+export function publishInstagramReels({ video, caption = "", hashtags = [], location = "" } = {}) {
+  if (!video) throw new Error("video is required");
+  const post_id = crypto.randomUUID().replace(/-/g, "").substring(0, 11);
+  const url = _makeUrl("instagram_reels", post_id);
+
+  return {
+    url,
+    post_id,
+    hashtags_count: Array.isArray(hashtags) ? hashtags.length : 0,
+    location: location || "",
+  };
+}
+
+/**
+ * Tool #4: Publish video to Instagram Stories.
+ *
+ * @param {{ video: string, duration_sec?: number, stickers?: string[] }} opts
+ * @returns {{ url: string, story_id: string, duration_sec: number, sticker_count: number }}
+ */
+export function publishInstagramStories({ video, duration_sec = 15, stickers = [] } = {}) {
+  if (!video) throw new Error("video is required");
+  const story_id = crypto.randomUUID().replace(/-/g, "").substring(0, 12);
+  const url = _makeUrl("instagram_stories", story_id);
+
+  // Clamp duration to Instagram Stories limits (1-60 seconds)
+  const clampedDuration = Math.max(1, Math.min(Math.floor(duration_sec || 15), 60));
+
+  return {
+    url,
+    story_id,
+    duration_sec: clampedDuration,
+    sticker_count: Array.isArray(stickers) ? stickers.length : 0,
+  };
+}
+
+/**
+ * Tool #5: Publish video to Instagram Feed.
+ *
+ * @param {{ video: string, caption?: string, hashtags?: string[], location?: string }} opts
+ * @returns {{ url: string, post_id: string, aspect_ratio: string, hashtags_count: number }}
+ */
+export function publishInstagramFeed({ video, caption = "", hashtags = [], location = "" } = {}) {
+  if (!video) throw new Error("video is required");
+  const post_id = crypto.randomUUID().replace(/-/g, "").substring(0, 11);
+  const url = _makeUrl("instagram_feed", post_id);
+
+  // Determine aspect ratio from video name hint
+  let aspect_ratio = "1:1";
+  if (video.includes("portrait") || video.includes("vertical")) {
+    aspect_ratio = "4:5";
+  } else if (video.includes("landscape") || video.includes("wide")) {
+    aspect_ratio = "16:9";
+  }
+
+  return {
+    url,
+    post_id,
+    aspect_ratio,
+    hashtags_count: Array.isArray(hashtags) ? hashtags.length : 0,
+  };
+}
+
+/**
+ * Tool #6: Publish video to Facebook.
+ *
+ * @param {{ video: string, description?: string, privacy?: string, group_id?: string }} opts
+ * @returns {{ url: string, post_id: string, group_id: string, privacy: string }}
+ */
+export function publishFacebook({ video, description = "", privacy = "public", group_id = "" } = {}) {
+  if (!video) throw new Error("video is required");
+  if (privacy && !["public", "friends", "only_me", "group"].includes(privacy)) {
+    throw new Error("privacy must be 'public', 'friends', 'only_me', or 'group'");
+  }
+  const post_id = crypto.randomUUID().replace(/-/g, "").substring(0, 16);
+  const url = _makeUrl("facebook", post_id);
+
+  return {
+    url,
+    post_id,
+    group_id: group_id || "",
+    privacy: privacy || "public",
+  };
+}
+
+/**
+ * Tool #7: Publish video to Twitter/X.
+ *
+ * @param {{ video: string, text?: string, hashtags?: string[], thread?: boolean }} opts
+ * @returns {{ url: string, tweet_id: string, thread_count: number, hashtags: string[] }}
+ */
+export function publishTwitter({ video, text = "", hashtags = [], thread = false } = {}) {
+  if (!video) throw new Error("video is required");
+  // Only enforce 280-char limit when NOT in thread mode
+  if (!thread && text && text.length > 280) throw new Error("Tweet text cannot exceed 280 characters");
+  const tweet_id = crypto.randomUUID().replace(/-/g, "").substring(0, 19);
+  const url = _makeUrl("twitter", tweet_id);
+
+  let thread_count = 1;
+  if (thread) {
+    // Simulate thread splitting by tweet text length
+    const effectiveLength = text.length + (Array.isArray(hashtags) ? hashtags.join(" ").length : 0);
+    thread_count = Math.max(1, Math.ceil(effectiveLength / 280));
+  }
+
+  return {
+    url,
+    tweet_id,
+    thread_count,
+    hashtags: Array.isArray(hashtags) ? hashtags : [],
+  };
+}
+
+/**
+ * Tool #8: Publish video to LinkedIn.
+ *
+ * @param {{ video: string, title?: string, description?: string, visibility?: string }} opts
+ * @returns {{ url: string, post_id: string, visibility: string, impressions_estimate: number }}
+ */
+export function publishLinkedIn({ video, title = "", description = "", visibility = "public" } = {}) {
+  if (!video) throw new Error("video is required");
+  if (visibility && !["public", "connections", "private"].includes(visibility)) {
+    throw new Error("visibility must be 'public', 'connections', or 'private'");
+  }
+  const post_id = crypto.randomUUID().replace(/-/g, "").substring(0, 16);
+  const url = _makeUrl("linkedin", post_id);
+
+  // Estimate impressions based on content length and visibility
+  let base_impressions = 100;
+  if (visibility === "public") base_impressions = 500;
+  else if (visibility === "connections") base_impressions = 200;
+  const content_bonus = Math.floor((title.length + description.length) / 10);
+  const impressions_estimate = base_impressions + content_bonus;
+
+  return {
+    url,
+    post_id,
+    visibility: visibility || "public",
+    impressions_estimate,
+  };
+}
+
+/**
+ * Tool #9: Publish video to all configured platforms simultaneously.
+ *
+ * @param {{ video: string, config: Record<string, object> }} opts
+ * @returns {{ results: Array<{platform: string, url: string, success: boolean, error?: string}>, total_published: number, failures: number }}
+ */
+export function publishAll({ video, config = {} } = {}) {
+  if (!video) throw new Error("video is required");
+
+  const platformFns = {
+    youtube: publishYouTube,
+    tiktok: publishTikTok,
+    instagram_reels: publishInstagramReels,
+    instagram_stories: publishInstagramStories,
+    instagram_feed: publishInstagramFeed,
+    facebook: publishFacebook,
+    twitter: publishTwitter,
+    linkedin: publishLinkedIn,
+  };
+
+  const results = [];
+  let total_published = 0;
+  let failures = 0;
+
+  for (const [platform, fn] of Object.entries(platformFns)) {
+    const platformConfig = config[platform] || {};
+    try {
+      // Build args based on platform requirements
+      let args = { video, ...platformConfig };
+      if (platform === "youtube" && !args.title) args.title = "Video Title";
+      if (platform === "tiktok" && !args.caption) args.caption = "";
+      if (platform === "facebook" && !args.description) args.description = "";
+      if (platform === "twitter" && !args.text) args.text = "";
+      if (platform === "linkedin" && !args.title) args.title = "Video Title";
+
+      const result = fn(args);
+      results.push({ platform, url: result.url, success: true });
+      total_published++;
+    } catch (err) {
+      results.push({ platform, url: "", success: false, error: err.message });
+      failures++;
+    }
+  }
+
+  return { results, total_published, failures };
 }
 
 // ── Internal helpers (for testing) ────────────────────────────────────────
