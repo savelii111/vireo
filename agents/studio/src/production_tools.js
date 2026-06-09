@@ -18,12 +18,16 @@
 //     move to SQLite/PG via the storage agent.
 
 import { randomUUID } from "node:crypto";
+import { createJob, getJob as _getJob, listJobs as _listJobs, countJobs as _countJobs,
+  updateJob as _updateJob, startJob as _startJob, completeJob as _completeJob,
+  failJob as _failJob, cancelJob as _cancelJob, claimNextJob as _claimNextJob,
+  getJobEvents as _getJobEvents, dbStats as _dbStats } from "./jobs.js";
 
-// ---------- In-memory job store (process-local) ----------
-// One job store per process. Server.js and tools.js both import this
-// module so they share the same Map. Resets on server restart.
+// ---------- In-memory state ----------
+// jobs (batch/export) are now persisted via jobs.js (SQLite).
+// Watchers and schedules are still in-memory v1 (small datasets,
+// low cardinality — fine to lose on restart).
 
-const _jobs = new Map();
 const _watchers = new Map();
 const _schedules = new Map();
 const _watchEvents = [];
@@ -69,7 +73,6 @@ export async function batchEdit({
     return { ok: false, error: "operations_must_be_array" };
   }
 
-  const jobId = _newJobId("batch");
   const fileList = files ?? [];
   const opList = operations ?? [{ tool: "apply_color_grade", args: { preset: "balanced" } }];
 
@@ -81,34 +84,36 @@ export async function batchEdit({
     }
   }
 
-  // Estimate cost (in operations, not dollars)
   const totalOps = fileList.length * opList.length;
   const estimated_seconds = Math.ceil((fileList.length / max_concurrent) * 2.5);
 
-  // In v1 we execute immediately. In v2 we'd return queued and
-  // let a worker pick it up.
+  // Persist the job via jobs.js (SQLite). In v1 we run synchronously
+  // and mark done; v2 will have a real worker pool that claims via
+  // claimNextJob() and updates progress.
+  const job = createJob({
+    type: "batch_edit",
+    args: { file_count: fileList.length, op_count: opList.length, operations: opList, recursive, extensions, max_concurrent, folder },
+    user_id: undefined,
+    priority: 5,
+    max_attempts: 1,
+    metadata: { total_operations: totalOps, estimated_seconds },
+  });
+  const jobId = job.id;
+  // Mark running and immediately done (v1 sync execution)
+  _startJob(jobId);
   const results = fileList.slice(0, 50).map((f) => ({
     file: typeof f === "string" ? f : f.path ?? "unknown",
     status: "ok",
     ops_applied: opList.length,
     duration_ms: Math.floor(50 + Math.random() * 200),
   }));
-
-  const job = {
-    job_id: jobId,
-    type: "batch_edit",
-    status: "done",
-    progress: 1.0,
+  _completeJob(jobId, {
     files_total: fileList.length,
     files_done: results.length,
-    files_failed: 0,
-    operations: opList,
     results,
-    started_at: Date.now(),
-    completed_at: Date.now(),
+    operations: opList,
     estimated_seconds,
-  };
-  _jobs.set(jobId, job);
+  });
 
   return {
     ok: true,
@@ -119,13 +124,13 @@ export async function batchEdit({
     files_done: results.length,
     estimated_seconds,
     total_operations: totalOps,
-    job,
+    job: _getJob(jobId),
     note: "v1 executes synchronously. v2 will use a worker pool with progress polling.",
   };
 }
 
 export function getBatchStatus(job_id) {
-  const job = _jobs.get(job_id);
+  const job = _getJob(job_id);
   if (!job) return { ok: false, error: "job_not_found" };
   return { ok: true, job };
 }
@@ -290,64 +295,51 @@ export async function queueExport({
     return { ok: false, error: "invalid_priority", valid: ["low", "normal", "high", "urgent"] };
   }
 
-  const jobId = _newJobId("export");
-  // Position in queue (just count + 1)
-  const position = [..._jobs.values()].filter((j) => j.type === "export" && j.status === "queued").length + 1;
-
-  const job = {
-    job_id: jobId,
+  // Persist via jobs.js (SQLite). Position is auto-computed by createJob
+  // based on queued jobs of same type with priority<=this.
+  const estimated_seconds = Math.floor(60 + Math.random() * 240);
+  const PRIORITY_MAP = { low: 9, normal: 5, high: 3, urgent: 1 };
+  const job = createJob({
     type: "export",
-    status: "queued",
-    progress: 0,
-    position,
-    file_path,
-    project_id,
-    format,
-    preset,
-    resolution,
-    bitrate_mbps,
-    priority,
-    callback_url,
-    estimated_seconds: Math.floor(60 + Math.random() * 240),
-    output_path: null,
-    queued_at: Date.now(),
-    started_at: null,
-    completed_at: null,
-    error: null,
-  };
-  _jobs.set(jobId, job);
+    args: { file_path, project_id, format, preset, resolution, bitrate_mbps, callback_url },
+    priority: PRIORITY_MAP[priority] ?? 5,
+    max_attempts: 3,
+    metadata: { estimated_seconds, output_path: null, error: null, requested_priority: priority },
+  });
+  const jobId = job.id;
+  // Re-fetch to get computed position
+  const stored = _getJob(jobId);
 
   return {
     ok: true,
     job_id: jobId,
     status: "queued",
-    position,
-    estimated_seconds: job.estimated_seconds,
-    job,
+    position: stored.position,
+    estimated_seconds,
+    job: stored,
     note: "v1 stores the job. v2 will pick it up with ffmpeg + a worker pool.",
   };
 }
 
 export function getExportStatus(job_id) {
-  const job = _jobs.get(job_id);
+  const job = _getJob(job_id);
   if (!job) return { ok: false, error: "job_not_found" };
   return { ok: true, job };
 }
 
 export function listExportQueue({ status = null, limit = 20 } = {}) {
-  let jobs = [..._jobs.values()].filter((j) => j.type === "export");
-  if (status) jobs = jobs.filter((j) => j.status === status);
+  const all = _listJobs({ type: "export", status, limit: Math.max(limit, 100) });
   return {
     ok: true,
-    total: jobs.length,
-    jobs: jobs.slice(0, limit).map((j) => ({
-      job_id: j.job_id,
+    total: all.length,
+    jobs: all.slice(0, limit).map((j) => ({
+      job_id: j.id,
       status: j.status,
       progress: j.progress,
       position: j.position,
-      format: j.format,
-      preset: j.preset,
-      queued_at: j.queued_at,
+      format: j.args?.format,
+      preset: j.args?.preset,
+      queued_at: j.created_at,
     })),
   };
 }

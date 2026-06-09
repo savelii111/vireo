@@ -7,8 +7,38 @@
 //
 // All return JOB envelopes; v1 executes synchronously.
 
-import { test } from "node:test";
-import assert from "node:assert/strict";
+import { test, before, beforeEach, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, rmSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const TEST_DB = join(__dirname, '..', 'test-data', 'production_jobs_test.db');
+
+let jobsModule;
+
+before(async () => {
+  const dir = dirname(TEST_DB);
+  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  process.env.VIREO_JOBS_DB = TEST_DB;
+  jobsModule = await import('../src/jobs.js');
+});
+
+after(async () => {
+  if (jobsModule) jobsModule.closeDb();
+  if (existsSync(dirname(TEST_DB))) {
+    try { rmSync(dirname(TEST_DB), { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+beforeEach(() => {
+  // Clean DB between tests
+  const db = jobsModule._getDbHandle();
+  db.exec('DELETE FROM job_events; DELETE FROM jobs;');
+});
+
 import {
   PRODUCTION_TOOLS,
   PRODUCTION_TOOL_NAMES,
@@ -23,7 +53,7 @@ import {
   queueExport,
   getExportStatus,
   listExportQueue,
-} from "../src/production_tools.js";
+} from '../src/production_tools.js';
 
 // ---------- Tool shape ----------
 
@@ -56,12 +86,12 @@ test("batchEdit: returns job_id and executes synchronously", async () => {
     operations: [{ tool: "apply_color_grade", args: { preset: "cinematic" } }],
   });
   assert.equal(r.ok, true);
-  assert.ok(r.job_id.startsWith("batch-"));
+  assert.ok(r.job_id.startsWith("batch_edit-"));
   assert.equal(r.status, "done");
   assert.equal(r.files_total, 3);
   assert.equal(r.files_done, 3);
   // results is on the inner job envelope (full audit trail)
-  assert.equal(r.job.results.length, 3);
+  assert.equal(r.job.result.files_total, 3);
   assert.ok(r.estimated_seconds > 0);
 });
 
@@ -91,7 +121,7 @@ test("batchEdit: getBatchStatus returns the stored job", async () => {
   const r = await batchEdit({ files: ["/tmp/a.mp4"], operations: [{ tool: "apply_color_grade", args: {} }] });
   const status = getBatchStatus(r.job_id);
   assert.equal(status.ok, true);
-  assert.equal(status.job.job_id, r.job_id);
+  assert.equal(status.job.id, r.job_id);
 });
 
 test("batchEdit: getBatchStatus returns error for unknown id", () => {
@@ -261,7 +291,7 @@ test("queueExport: getExportStatus returns the stored job", async () => {
   const r = await queueExport({ file_path: "/tmp/v.mp4", format: "mp4", preset: "youtube_long" });
   const status = getExportStatus(r.job_id);
   assert.equal(status.ok, true);
-  assert.equal(status.job.job_id, r.job_id);
+  assert.equal(status.job.id, r.job_id);
 });
 
 test("queueExport: getExportStatus returns error for unknown id", () => {

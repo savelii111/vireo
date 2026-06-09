@@ -98,3 +98,8 @@ secrets/
 .tmp/
 vireo-jobs/
 agents/studio/vireo-jobs/
+agents/studio/test-data/
+agents/studio/vireo-jobs.db
+agents/studio/vireo-jobs.db-shm
+agents/studio/vireo-jobs.db-wal
+*.vireo-jobs.db*

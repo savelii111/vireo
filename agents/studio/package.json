@@ -10,6 +10,7 @@
   "dependencies": {
     "@vireo/auth-middleware": "file:../../../packages/auth-middleware",
     "@vireo/shared": "file:../../../packages/shared",
-    "@vireo/storage": "file:../../storage"
+    "@vireo/storage": "file:../../storage",
+    "better-sqlite3": "^12.10.0"
   }
 }
