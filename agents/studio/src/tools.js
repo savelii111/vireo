@@ -677,6 +677,7 @@ export const STUDIO_INPROCESS_TOOL_NAMES = new Set([
 import { VISION_GENERATION_TOOL_NAMES } from "./vision_generation_tools.js";
 import { ENGAGEMENT_TOOL_NAMES } from "./engagement_tools.js";
 import { MULTIMODAL_TOOL_NAMES } from "./multimodal_tools.js";
+import { PRODUCTION_TOOL_NAMES } from "./production_tools.js";
 export const TIER1_TOOL_NAMES = new Set([
   "apply_color_grade",
   "apply_speed_ramp",
@@ -755,6 +756,20 @@ async function _ensureMultimodalHandlers() {
     auto_chapterize: mm.autoChapterize,
   };
   return _multimodalHandlers;
+}
+
+// Production pipeline handlers (lazy)
+let _productionHandlers = null;
+async function _ensureProductionHandlers() {
+  if (_productionHandlers) return _productionHandlers;
+  const pp = await import("./production_tools.js");
+  _productionHandlers = {
+    batch_edit: pp.batchEdit,
+    watch_folders: pp.watchFolders,
+    schedule_edit: pp.scheduleEdit,
+    queue_export: pp.queueExport,
+  };
+  return _productionHandlers;
 }
 
 // ---------- System prompt ----------
@@ -1140,6 +1155,27 @@ export async function executeToolCall(call, ctx) {
       const handler = handlers[name];
       if (typeof handler !== "function") {
         return { ok: false, error: `multimodal_handler_missing: ${name}` };
+      }
+      return await handler(args);
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
+  // Production pipeline tools (2026-06-09) — batch edit, watch folders,
+  // scheduled edits, export queue. These are SYNCHRONOUS v1 (return
+  // immediately as 'queued' or 'done' with a job_id). v2 will use a
+  // real worker pool.
+  if (PRODUCTION_TOOL_NAMES.has(name)) {
+    const args = (call.args && typeof call.args === "object") ? call.args : {};
+    try {
+      if (ctx?.deps && typeof ctx.deps[name] === "function") {
+        return await ctx.deps[name]({ ...args, userId: ctx.userId });
+      }
+      const handlers = await _ensureProductionHandlers();
+      const handler = handlers[name];
+      if (typeof handler !== "function") {
+        return { ok: false, error: `production_handler_missing: ${name}` };
       }
       return await handler(args);
     } catch (e) {

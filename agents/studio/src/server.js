@@ -84,6 +84,14 @@ import {
   createCompilationFromVoice,
   autoChapterize,
 } from "./multimodal_tools.js";
+import {
+  PRODUCTION_TOOLS,
+  PRODUCTION_TOOL_NAMES,
+  batchEdit,
+  watchFolders,
+  scheduleEdit,
+  queueExport,
+} from "./production_tools.js";
 import { CAPABILITIES, PERSONA, describeToolsForPrompt, detectLanguage, languageName } from "./persona.js";
 import { computeOnboardingState } from "./onboarding.js";
 import { createSpan, checkBudget, systemPromptCache, projectListCache, styleDNACache } from "./latency.js";
@@ -1145,7 +1153,7 @@ Briefly confirm what happened (1 sentence) and what's next. Don't repeat the too
 - Currency/timestamps: ISO 8601. Default to UTC when ambiguous.
 - Call tools in parallel when independent.
 - Wait for tool results before responding with a conclusion.`;
-const ALL_TOOLS = [...CHAT_TOOLS, ...EDIT_TOOLS, ...TIER1_EDIT_TOOLS, ...VISION_GENERATION_TOOLS, ...ENGAGEMENT_TOOLS, ...MULTIMODAL_TOOLS];
+const ALL_TOOLS = [...CHAT_TOOLS, ...EDIT_TOOLS, ...TIER1_EDIT_TOOLS, ...VISION_GENERATION_TOOLS, ...ENGAGEMENT_TOOLS, ...MULTIMODAL_TOOLS, ...PRODUCTION_TOOLS];
 
 /**
  * Build the per-user context block that's injected into the chat LLM's
