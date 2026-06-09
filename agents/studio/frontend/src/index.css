@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Vireo design tokens — kept as CSS vars for the few cases Tailwind can't reach */
+:root {
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  @apply bg-bg-0 text-ink-1 font-sans antialiased;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+button, input, textarea, select {
+  @apply font-sans text-ink-1;
+}
+
+input::placeholder, textarea::placeholder {
+  @apply text-ink-3;
+}
+
+/* Scrollbar — minimal, dark */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  @apply bg-bg-3;
+  border-radius: 5px;
+  border: 2px solid theme('colors.bg.1');
+}
+::-webkit-scrollbar-thumb:hover { @apply bg-bg-4; }
+::-webkit-scrollbar-corner { @apply bg-bg-1; }
+
+/* Range input styling (slider for inspector params) */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: theme('colors.bg.3');
+  border-radius: 2px;
+  height: 4px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+  box-shadow: 0 0 0 3px theme('colors.accent.DEFAULT / 10%');
+  border: none;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+  box-shadow: 0 0 0 3px theme('colors.accent.DEFAULT / 10%');
+  border: none;
+}
+
+/* Focus rings — subtle, accent */
+button:focus-visible, [role="button"]:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid theme('colors.accent.DEFAULT');
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Tooltip component class */
+.tip { @apply relative; }
+.tip[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  background: theme('colors.bg.4');
+  color: theme('colors.ink.1');
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  z-index: 100;
+  border: 1px solid theme('colors.border.2');
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms var(--ease), transform 120ms var(--ease);
+}
+.tip[data-tip]:hover::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+.tip-left[data-tip]::after { left: auto; right: calc(100% + 8px); }

@@ -1321,22 +1321,60 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
     const u = new URL(req.url, "http://x");
     const key = `${req.method} ${url}`;
 
-    // ---- static UI (served from /public) ----
+    // ---- static UI ----
+    // Vireo Studio serves a single-page React app (the Vite build) for
+    // any non-API GET request in production. Dev mode: the Vite server
+    // (npm run dev in frontend/) handles the UI; this block is a no-op.
+    //
+    // Source order:
+    //   1) STUDIO_STATIC_DIR env var (explicit override)
+    //   2) ../frontend/dist (Vite build output)
+    //   3) ../public (legacy vanilla JS UI — kept for backwards compat)
+    //   4) Fallback: text/html with API link
     if (req.method === "GET" && (url === "/" || url === "/index.html")) {
       const fs = await import("node:fs");
       const path = await import("node:path");
       const { fileURLToPath } = await import("node:url");
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
-      const publicDir = path.resolve(__dirname, "..", "public");
-      const indexPath = path.join(publicDir, "index.html");
-      if (fs.existsSync(indexPath)) {
-        const html = fs.readFileSync(indexPath, "utf8");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        return res.end(html);
+      const candidates = [
+        process.env.STUDIO_STATIC_DIR,
+        path.resolve(__dirname, "..", "..", "frontend", "dist"),
+        path.resolve(__dirname, "..", "public"),
+      ].filter(Boolean);
+      for (const dir of candidates) {
+        const indexPath = path.join(dir, "index.html");
+        if (fs.existsSync(indexPath)) {
+          const html = fs.readFileSync(indexPath, "utf8");
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          return res.end(html);
+        }
       }
-      // Fallback if no UI built
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      return res.end("<h1>Vireo Studio API</h1><p>UI not yet built. Set up /public/index.html.</p>");
+      return res.end("<h1>Vireo Studio API</h1><p>UI not yet built. Run <code>npm run build</code> in <code>agents/studio/frontend</code>.</p>");
+    }
+
+    // SPA fallback: serve Vite build assets (JS/CSS chunks) for any
+    // non-/api GET that's not a top-level file. Lets React Router-style
+    // navigation work even if we don't ship a router yet.
+    if (req.method === "GET" && !url.startsWith("/api/")) {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const staticDirs = [
+        process.env.STUDIO_STATIC_DIR,
+        path.resolve(__dirname, "..", "..", "frontend", "dist"),
+        path.resolve(__dirname, "..", "public"),
+      ].filter(Boolean);
+      for (const dir of staticDirs) {
+        const filePath = path.join(dir, url);
+        if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+          const ext = path.extname(filePath).toLowerCase();
+          const mime = { ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json", ".woff2": "font/woff2" }[ext] ?? "application/octet-stream";
+          res.writeHead(200, { "Content-Type": `${mime}; charset=utf-8` });
+          return res.end(fs.readFileSync(filePath));
+        }
+      }
     }
 
     // ---- public ----
