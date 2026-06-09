@@ -2,6 +2,17 @@
 
 export type TrackKind = 'video' | 'audio' | 'overlay';
 
+export interface Track {
+  id: string;
+  kind: TrackKind;
+  name: string;
+  clips: Clip[];
+  locked?: boolean;
+  muted?: boolean;
+  soloed?: boolean;
+  hidden?: boolean;
+}
+
 export interface Clip {
   id: string;
   track_id: string;
@@ -9,17 +20,10 @@ export interface Clip {
   start_sec: number;     // position on timeline
   duration_sec: number;  // length on timeline
   in_sec: number;        // in-point in source
-  thumbnail_color?: string;  // gradient color for the clip block
+  thumbnail_color?: string;
   label?: string;
   selected?: boolean;
   kind: TrackKind;
-}
-
-export interface Track {
-  id: string;
-  kind: TrackKind;
-  name: string;
-  clips: Clip[];
 }
 
 export type ProjectState = {
@@ -29,7 +33,15 @@ export type ProjectState = {
   width: number;
   height: number;
   tracks: Track[];
+  markers?: Marker[];
 };
+
+export interface Marker {
+  id: string;
+  time_sec: number;
+  label: string;
+  color: string;
+}
 
 export type ToolCallStatus = 'pending' | 'running' | 'done' | 'error';
 

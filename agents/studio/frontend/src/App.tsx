@@ -285,6 +285,12 @@ export default function App() {
                   onSeek={editor.seek}
                   zoom={editor.zoom}
                   onZoomChange={editor.setZoom}
+                  onClipMove={editor.moveClip}
+                  onClipResize={editor.resizeClip}
+                  onToggleMute={editor.toggleTrackMute}
+                  onToggleSolo={editor.toggleTrackSolo}
+                  onToggleLock={editor.toggleTrackLock}
+                  onToggleHidden={editor.toggleTrackHidden}
                 />
               </div>
               <Suspense fallback={<Fallback label="chat" />}>

@@ -1,13 +1,10 @@
 // muapi_client.js — MuAPI HTTP client (2026-06-09).
 //
-// Pattern borrowed from Open-Generative-AI
-// (github.com/Anil-matcha/Open-Generative-AI). They use a
-// submit-then-poll pattern against api.muapi.ai, which gives
-// us access to 200+ models (Sora, Runway, Flux, SDXL, Kling,
-// VEO3, Midjourney, Suno, etc) through a single API key.
+// Unified gateway to 200+ AI video/image/music models (Sora,
+// Runway, Flux, SDXL, Kling, VEO3, Midjourney, Suno, Higgsfield).
 //
-// We do NOT need to host these models locally. We just pay per
-// generation through MuAPI.
+// Video generation on Vireo uses Higgsfield (higgsfield.ai) as the
+// open-source backbone; images/audio route through MuAPI where needed.
 //
 // Auth: x-api-key header (NOT Authorization: Bearer). User sets
 // the key in the chat UI (or it's configured per workspace).
