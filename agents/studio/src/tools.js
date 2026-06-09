@@ -675,6 +675,7 @@ export const STUDIO_INPROCESS_TOOL_NAMES = new Set([
 // Vision + generation tools (2026-06-08). Dispatched in-process.
 // Handlers are imported lazily to keep module load fast.
 import { VISION_GENERATION_TOOL_NAMES } from "./vision_generation_tools.js";
+import { ENGAGEMENT_TOOL_NAMES } from "./engagement_tools.js";
 export const TIER1_TOOL_NAMES = new Set([
   "apply_color_grade",
   "apply_speed_ramp",
@@ -715,6 +716,24 @@ async function _ensureVisionHandlers() {
     inpaint_frame: vg.inpaintFrame,
   };
   return _visionHandlers;
+}
+
+// Engagement & growth handlers (lazy)
+let _engagementHandlers = null;
+async function _ensureEngagementHandlers() {
+  if (_engagementHandlers) return _engagementHandlers;
+  const eg = await import("./engagement_tools.js");
+  _engagementHandlers = {
+    analyze_hook_strength: eg.analyzeHookStrength,
+    generate_alternative_hooks: eg.generateAlternativeHooks,
+    predict_virality_score: eg.predictViralityScore,
+    generate_title_variants: eg.generateTitleVariants,
+    generate_description_with_timestamps: eg.generateDescriptionWithTimestamps,
+    schedule_optimal_posting: eg.scheduleOptimalPosting,
+    auto_respond_to_comment: eg.autoRespondToComment,
+    analyze_audience_sentiment: eg.analyzeAudienceSentiment,
+  };
+  return _engagementHandlers;
 }
 
 // ---------- System prompt ----------
@@ -1058,6 +1077,27 @@ export async function executeToolCall(call, ctx) {
       const handler = handlers[name];
       if (typeof handler !== "function") {
         return { ok: false, error: `vision_handler_missing: ${name}` };
+      }
+      return await handler(args);
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
+  // Engagement & growth tools (2026-06-09) — hook strength, virality
+  // score, title variants, posting schedule, comment auto-respond,
+  // audience sentiment. These are SYNCHRONOUS (heuristic-based v1)
+  // so they execute inline without a worker pool.
+  if (ENGAGEMENT_TOOL_NAMES.has(name)) {
+    const args = (call.args && typeof call.args === "object") ? call.args : {};
+    try {
+      if (ctx?.deps && typeof ctx.deps[name] === "function") {
+        return await ctx.deps[name]({ ...args, userId: ctx.userId });
+      }
+      const handlers = await _ensureEngagementHandlers();
+      const handler = handlers[name];
+      if (typeof handler !== "function") {
+        return { ok: false, error: `engagement_handler_missing: ${name}` };
       }
       return await handler(args);
     } catch (e) {
