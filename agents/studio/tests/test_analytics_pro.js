@@ -1,7 +1,26 @@
-import assert from 'node:assert';
-import { AnalyticsPro, CPM_RATES } from '../src/analytics_pro.js';
+/**
+ * Tests for Advanced Analytics Module (analytics_pro.js)
+ * 50+ tests covering all 10 classes.
+ */
 
-let ap;
+import assert from 'assert';
+import {
+  VideoPerformanceTracker,
+  AudienceDemographics,
+  EngagementAnalyzer,
+  RevenueTracker,
+  CPMAnalyzer,
+  ContentOptimizer,
+  CompetitorBenchmark,
+  TrendAnalyzer,
+  PredictiveAnalytics,
+  ABRTesting,
+  round2,
+  parsePeriod,
+  generateId,
+  normalCDF,
+} from '../src/analytics_pro.js';
+
 let passed = 0;
 let failed = 0;
 
@@ -12,598 +31,676 @@ function test(name, fn) {
     console.log(`  ✓ ${name}`);
   } catch (e) {
     failed++;
-    console.log(`  ✗ ${name}`);
-    console.log(`    ${e.message}`);
+    console.error(`  ✗ ${name}`);
+    console.error(`    ${e.message}`);
   }
 }
 
-function setup() {
-  ap = new AnalyticsPro();
-  ap.registerChannel({ channelId: 'UC1', name: 'Test Channel', subscribers: 50000, platforms: ['youtube', 'tiktok'] });
-  ap.registerVideo({ videoId: 'v1', channelId: 'UC1', title: 'First Video', platform: 'youtube', duration_sec: 600, published_at: '2026-01-01T00:00:00Z' });
-  ap.registerVideo({ videoId: 'v2', channelId: 'UC1', title: 'Second Video', platform: 'tiktok', duration_sec: 300, published_at: '2026-02-01T00:00:00Z' });
-  ap.registerVideo({ videoId: 'v3', channelId: 'UC1', title: 'Third Video', platform: 'youtube', duration_sec: 120, published_at: '2026-03-01T00:00:00Z' });
+// ═════════════════════════════════════════════════════════════════════════════
+// 1. VideoPerformanceTracker
+// ═════════════════════════════════════════════════════════════════════════════
 
-  // Add views
-  for (let i = 0; i < 20; i++) ap.addView({ videoId: 'v1', platform: 'youtube', watch_duration_sec: 300, timestamp: `2026-01-${String(i + 1).padStart(2, '0')}T10:00:00Z` });
-  for (let i = 0; i < 10; i++) ap.addView({ videoId: 'v2', platform: 'tiktok', watch_duration_sec: 200, timestamp: `2026-02-${String(i + 1).padStart(2, '0')}T10:00:00Z` });
-  for (let i = 0; i < 5; i++) ap.addView({ videoId: 'v3', platform: 'youtube', watch_duration_sec: 120, timestamp: `2026-03-${String(i + 1).padStart(2, '0')}T10:00:00Z` });
+console.log('\n── VideoPerformanceTracker ──');
 
-  // Add revenue within last 30 days from now
+test('trackVideo stores a record', () => {
+  const tracker = new VideoPerformanceTracker();
+  const record = tracker.trackVideo('v1', { views: 1000, watch_time: 5000, retention: 75 });
+  assert.strictEqual(record.views, 1000);
+  assert.strictEqual(record.retention, 75);
+});
+
+test('trackVideo rejects missing videoId', () => {
+  const tracker = new VideoPerformanceTracker();
+  assert.throws(() => tracker.trackVideo('', { views: 100 }), /videoId is required/);
+});
+
+test('trackVideo rejects negative views', () => {
+  const tracker = new VideoPerformanceTracker();
+  assert.throws(() => tracker.trackVideo('v1', { views: -5 }), /views must be non-negative/);
+});
+
+test('getPerformance returns latest snapshot', () => {
+  const tracker = new VideoPerformanceTracker();
+  tracker.trackVideo('v1', { views: 100, watch_time: 500, retention: 60 });
+  tracker.trackVideo('v1', { views: 200, watch_time: 1000, retention: 70 });
+  const perf = tracker.getPerformance('v1');
+  assert.strictEqual(perf.currentViews, 200);
+  assert.strictEqual(perf.dataPoints, 2);
+  assert(perf.avgRetention > 0);
+});
+
+test('getPerformance returns null for unknown video', () => {
+  const tracker = new VideoPerformanceTracker();
+  assert.strictEqual(tracker.getPerformance('unknown'), null);
+});
+
+test('getTrend identifies growing direction', () => {
+  const tracker = new VideoPerformanceTracker();
   const now = new Date();
-  for (let i = 0; i < 30; i++) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - (30 - i));
-    ap.addRevenueRecord({ channelId: 'UC1', date: d.toISOString(), revenue: 10 + i * 0.5, videoId: 'v1' });
-  }
-  for (let i = 0; i < 30; i++) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - (30 - i));
-    ap.addRevenueRecord({ channelId: 'UC1', date: d.toISOString(), revenue: 5 + i * 0.3, videoId: 'v2' });
-  }
-
-  // Add subscriber data within last 30 days from now
-  for (let i = 0; i < 30; i++) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - (30 - i));
-    ap.addSubscriberDataPoint({ channelId: 'UC1', date: d.toISOString(), new_subs: 50 + i * 5, lost_subs: 5 + i });
-  }
-}
-
-console.log('\n=== Analytics Pro Tests ===\n');
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 1: getVideoMetrics
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 1
-test('getVideoMetrics returns all required fields', () => {
-  setup();
-  const m = ap.getVideoMetrics({ videoId: 'v1', platform: 'youtube' });
-  assert.ok(m !== null);
-  assert.ok(typeof m.views === 'number');
-  assert.ok(typeof m.likes === 'number');
-  assert.ok(typeof m.comments === 'number');
-  assert.ok(typeof m.shares === 'number');
-  assert.ok(typeof m.watch_time_sec === 'number');
-  assert.ok(typeof m.retention_rate === 'number');
+  tracker.trackVideo('v1', { views: 100, timestamp: new Date(now - 86400000 * 6).toISOString() });
+  tracker.trackVideo('v1', { views: 200, timestamp: new Date(now - 86400000 * 3).toISOString() });
+  tracker.trackVideo('v1', { views: 300, timestamp: now.toISOString() });
+  const trend = tracker.getTrend('v1', '7d');
+  assert.strictEqual(trend.direction, 'growing');
 });
 
-// 2
-test('getVideoMetrics returns correct view count', () => {
-  setup();
-  const m = ap.getVideoMetrics({ videoId: 'v1', platform: 'youtube' });
-  assert.strictEqual(m.views, 20);
+test('getTrend returns empty for no data', () => {
+  const tracker = new VideoPerformanceTracker();
+  const trend = tracker.getTrend('nope', '7d');
+  assert.deepStrictEqual(trend.points, []);
 });
 
-// 3
-test('getVideoMetrics retention_rate calculated correctly', () => {
-  setup();
-  // 20 views × 300s each = 6000s total, video = 600s, so 6000 / (20×600) = 50%
-  const m = ap.getVideoMetrics({ videoId: 'v1', platform: 'youtube' });
-  assert.strictEqual(m.retention_rate, 50);
+test('getRetentionCurve returns curve array', () => {
+  const tracker = new VideoPerformanceTracker();
+  tracker.trackVideo('v1', { views: 500, watch_time: 3000, retention: 80 });
+  const curve = tracker.getRetentionCurve('v1');
+  assert(curve.length > 0);
+  assert(curve[0].time_pct === 0);
+  assert(curve[curve.length - 1].time_pct === 100);
 });
 
-// 4
-test('getVideoMetrics for unknown video returns null', () => {
-  setup();
-  const m = ap.getVideoMetrics({ videoId: 'nonexistent', platform: 'youtube' });
-  assert.strictEqual(m, null);
+test('getRetentionCurve returns empty for unknown video', () => {
+  const tracker = new VideoPerformanceTracker();
+  assert.deepStrictEqual(tracker.getRetentionCurve('nope'), []);
 });
 
-// 5
-test('getVideoMetrics for video with zero views returns zeros', () => {
-  ap = new AnalyticsPro();
-  ap.registerChannel({ channelId: 'UC2', name: 'Empty', subscribers: 100 });
-  ap.registerVideo({ videoId: 'v_empty', channelId: 'UC2', title: 'Empty', duration_sec: 300 });
-  const m = ap.getVideoMetrics({ videoId: 'v_empty', platform: 'youtube' });
-  assert.strictEqual(m.views, 0);
-  assert.strictEqual(m.likes, 0);
-  assert.strictEqual(m.retention_rate, 0);
+// ═════════════════════════════════════════════════════════════════════════════
+// 2. AudienceDemographics
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── AudienceDemographics ──');
+
+test('getDemographics generates data automatically', () => {
+  const demo = new AudienceDemographics();
+  const result = demo.getDemographics('ch1');
+  assert(result.ageDistribution.length === 6);
+  assert(typeof result.genderSplit.male === 'number');
+  assert(result.geography.length > 0);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 2: getRetentionCurve
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 6
-test('getRetentionCurve returns points and drop_offs', () => {
-  setup();
-  const rc = ap.getRetentionCurve({ videoId: 'v1', buckets: 10 });
-  assert.ok(rc !== null);
-  assert.ok(Array.isArray(rc.points));
-  assert.ok(Array.isArray(rc.drop_offs));
-  assert.strictEqual(rc.points.length, 11); // buckets + 1
+test('getAgeDistribution returns array', () => {
+  const demo = new AudienceDemographics();
+  const ages = demo.getAgeDistribution('ch1');
+  assert(Array.isArray(ages));
+  assert(ages.length === 6);
+  const total = ages.reduce((s, a) => s + a.percentage, 0);
+  assert(Math.abs(total - 100) < 1);
 });
 
-// 7
-test('getRetentionCurve first point is 100%', () => {
-  setup();
-  const rc = ap.getRetentionCurve({ videoId: 'v1' });
-  assert.strictEqual(rc.points[0].percent_remaining, 100);
+test('getGenderSplit sums to ~100', () => {
+  const demo = new AudienceDemographics();
+  const gender = demo.getGenderSplit('ch1');
+  const total = gender.male + gender.female + gender.other;
+  assert(Math.abs(total - 100) < 1);
 });
 
-// 8
-test('getRetentionCurve points are decreasing (monotonic)', () => {
-  setup();
-  const rc = ap.getRetentionCurve({ videoId: 'v1' });
-  for (let i = 1; i < rc.points.length; i++) {
-    assert.ok(
-      rc.points[i].percent_remaining <= rc.points[i - 1].percent_remaining,
-      `Point ${i}: ${rc.points[i].percent_remaining} > ${rc.points[i - 1].percent_remaining}`
-    );
+test('getGeography returns sorted countries', () => {
+  const demo = new AudienceDemographics();
+  const geo = demo.getGeography('ch1');
+  assert(geo.length > 0);
+  for (let i = 1; i < geo.length; i++) {
+    assert(geo[i - 1].percentage >= geo[i].percentage);
   }
 });
 
-// 9
-test('getRetentionCurve first point time_sec is 0', () => {
-  setup();
-  const rc = ap.getRetentionCurve({ videoId: 'v1' });
-  assert.strictEqual(rc.points[0].time_sec, 0);
+test('setDemographics with custom data', () => {
+  const demo = new AudienceDemographics();
+  demo.setDemographics('ch2', {
+    ageDistribution: [{ group: '18-24', percentage: 60 }, { group: '25-34', percentage: 40 }],
+    genderSplit: { male: 70, female: 30, other: 0 },
+    geography: [{ country: 'US', percentage: 100 }],
+  });
+  const result = demo.getDemographics('ch2');
+  assert.strictEqual(result.ageDistribution.length, 2);
+  assert.strictEqual(result.genderSplit.male, 70);
 });
 
-// 10
-test('getRetentionCurve for unknown video returns null', () => {
-  setup();
-  const rc = ap.getRetentionCurve({ videoId: 'nonexistent' });
-  assert.strictEqual(rc, null);
+test('setDemographics rejects missing channelId', () => {
+  const demo = new AudienceDemographics();
+  assert.throws(() => demo.setDemographics('', {}), /channelId is required/);
 });
 
-// 11
-test('getRetentionCurve empty video has all-zero points', () => {
-  ap = new AnalyticsPro();
-  ap.registerChannel({ channelId: 'UC2', name: 'Empty', subscribers: 100 });
-  ap.registerVideo({ videoId: 'v_empty', channelId: 'UC2', title: 'Empty', duration_sec: 300 });
-  const rc = ap.getRetentionCurve({ videoId: 'v_empty', buckets: 5 });
-  assert.strictEqual(rc.points.length, 6);
-  for (const p of rc.points) {
-    assert.strictEqual(p.percent_remaining, 0);
+// ═════════════════════════════════════════════════════════════════════════════
+// 3. EngagementAnalyzer
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── EngagementAnalyzer ──');
+
+test('analyzeEngagement returns full report', () => {
+  const eng = new EngagementAnalyzer();
+  eng.setData('v1', { views: 10000, likes: 500, comments: 100, shares: 50, saves: 25 });
+  const report = eng.analyzeEngagement('v1');
+  assert.strictEqual(report.totalEngagements, 675);
+  assert(report.engagementRate > 0);
+});
+
+test('analyzeEngagement returns null for unknown', () => {
+  const eng = new EngagementAnalyzer();
+  assert.strictEqual(eng.analyzeEngagement('nope'), null);
+});
+
+test('getEngagementRate calculates percentage', () => {
+  const eng = new EngagementAnalyzer();
+  eng.setData('v1', { views: 1000, likes: 50, comments: 10, shares: 5, saves: 5 });
+  const rate = eng.getEngagementRate('v1');
+  assert.strictEqual(rate, 7);
+});
+
+test('getEngagementRate returns 0 for no views', () => {
+  const eng = new EngagementAnalyzer();
+  eng.setData('v1', { views: 0, likes: 10 });
+  assert.strictEqual(eng.getEngagementRate('v1'), 0);
+});
+
+test('getLikesToViews ratio', () => {
+  const eng = new EngagementAnalyzer();
+  eng.setData('v1', { views: 1000, likes: 100 });
+  assert.strictEqual(eng.getLikesToViews('v1'), 0.1);
+});
+
+test('getCommentsPerVideo returns comment count', () => {
+  const eng = new EngagementAnalyzer();
+  eng.setData('v1', { views: 1000, comments: 42 });
+  assert.strictEqual(eng.getCommentsPerVideo('v1'), 42);
+});
+
+test('setData rejects missing videoId', () => {
+  const eng = new EngagementAnalyzer();
+  assert.throws(() => eng.setData('', {}), /videoId is required/);
+});
+
+test('setData clamps negative values', () => {
+  const eng = new EngagementAnalyzer();
+  eng.setData('v1', { views: -10, likes: -5 });
+  const report = eng.analyzeEngagement('v1');
+  assert.strictEqual(report.views, 0);
+  assert.strictEqual(report.likes, 0);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 4. RevenueTracker
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── RevenueTracker ──');
+
+test('trackRevenue stores a record', () => {
+  const rt = new RevenueTracker();
+  const record = rt.trackRevenue('v1', { source: 'ads', amount: 15.50 });
+  assert.strictEqual(record.amount, 15.5);
+  assert.strictEqual(record.source, 'ads');
+});
+
+test('trackRevenue rejects negative amount', () => {
+  const rt = new RevenueTracker();
+  assert.throws(() => rt.trackRevenue('v1', { amount: -5 }), /amount must be non-negative/);
+});
+
+test('getTotalRevenue aggregates', () => {
+  const rt = new RevenueTracker();
+  rt.trackRevenue('v1', { source: 'ads', amount: 10 });
+  rt.trackRevenue('v2', { source: 'sponsor', amount: 20 });
+  rt.trackRevenue('v3', { source: 'ads', amount: 5 });
+  const total = rt.getTotalRevenue('30d');
+  assert.strictEqual(total.totalRevenue, 35);
+  assert.strictEqual(total.transactionCount, 3);
+});
+
+test('getRevenueBySource breaks down by source', () => {
+  const rt = new RevenueTracker();
+  rt.trackRevenue('v1', { source: 'ads', amount: 10 });
+  rt.trackRevenue('v2', { source: 'sponsor', amount: 20 });
+  rt.trackRevenue('v3', { source: 'ads', amount: 5 });
+  const breakdown = rt.getRevenueBySource('30d');
+  assert(breakdown.length >= 2);
+  const ads = breakdown.find(b => b.source === 'ads');
+  assert.strictEqual(ads.amount, 15);
+});
+
+test('getRevenuePerVideo sums correctly', () => {
+  const rt = new RevenueTracker();
+  rt.trackRevenue('v1', { source: 'ads', amount: 10 });
+  rt.trackRevenue('v1', { source: 'sponsor', amount: 25 });
+  rt.trackRevenue('v2', { source: 'ads', amount: 5 });
+  assert.strictEqual(rt.getRevenuePerVideo('v1'), 35);
+  assert.strictEqual(rt.getRevenuePerVideo('v2'), 5);
+});
+
+test('getTotalRevenue returns zero with no data', () => {
+  const rt = new RevenueTracker();
+  const total = rt.getTotalRevenue('30d');
+  assert.strictEqual(total.totalRevenue, 0);
+  assert.strictEqual(total.transactionCount, 0);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 5. CPMAnalyzer
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── CPMAnalyzer ──');
+
+test('getCPM returns average for a video', () => {
+  const cpm = new CPMAnalyzer();
+  cpm.recordCPM('v1', 5.0);
+  cpm.recordCPM('v1', 7.0);
+  assert.strictEqual(cpm.getCPM('v1'), 6);
+});
+
+test('getCPM returns 0 for unknown video', () => {
+  const cpm = new CPMAnalyzer();
+  assert.strictEqual(cpm.getCPM('nope'), 0);
+});
+
+test('getCPMTrend returns direction', () => {
+  const cpm = new CPMAnalyzer();
+  cpm.recordCPM('v1', 3.0);
+  cpm.recordCPM('v1', 6.0);
+  const trend = cpm.getCPMTrend('30d');
+  assert.strictEqual(trend.direction, 'increasing');
+  assert(trend.points.length > 0);
+});
+
+test('getBestCPMVideos returns sorted list', () => {
+  const cpm = new CPMAnalyzer();
+  cpm.recordCPM('v1', 5.0, 1000);
+  cpm.recordCPM('v2', 10.0, 2000);
+  cpm.recordCPM('v3', 7.0, 1500);
+  const best = cpm.getBestCPMVideos(2);
+  assert.strictEqual(best.length, 2);
+  assert.strictEqual(best[0].videoId, 'v2');
+  assert(best[0].avgCPM >= best[1].avgCPM);
+});
+
+test('compareWithBenchmark returns comparison', () => {
+  const cpm = new CPMAnalyzer();
+  cpm.recordCPM('v1', 8.0);
+  const comp = cpm.compareWithBenchmark('v1', 'tech');
+  assert.strictEqual(comp.benchmark, 8.0);
+  assert.strictEqual(comp.difference, 0);
+  assert.strictEqual(comp.performance, 'at');
+});
+
+test('compareWithBenchmark above benchmark', () => {
+  const cpm = new CPMAnalyzer();
+  cpm.recordCPM('v1', 12.0);
+  const comp = cpm.compareWithBenchmark('v1', 'gaming');
+  assert.strictEqual(comp.performance, 'above');
+  assert(comp.difference > 0);
+});
+
+test('recordCPM rejects negative CPM', () => {
+  const cpm = new CPMAnalyzer();
+  assert.throws(() => cpm.recordCPM('v1', -1), /CPM must be non-negative/);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6. ContentOptimizer
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── ContentOptimizer ──');
+
+test('analyzeTitle scores a good title highly', () => {
+  const opt = new ContentOptimizer();
+  const result = opt.analyzeTitle('TOP 10 Best Tips for YouTube Growth!');
+  assert(result.score >= 70);
+  assert(result.factors.length > 0);
+});
+
+test('analyzeTitle scores empty title as 0', () => {
+  const opt = new ContentOptimizer();
+  assert.strictEqual(opt.analyzeTitle('').score, 0);
+});
+
+test('analyzeTitle penalizes all caps', () => {
+  const opt = new ContentOptimizer();
+  const result = opt.analyzeTitle('THIS IS A VERY LONG ALL CAPS TITLE THAT IS BAD');
+  assert(result.factors.some(f => f.includes('All caps')));
+});
+
+test('analyzeThumbnail scores a valid image', () => {
+  const opt = new ContentOptimizer();
+  const result = opt.analyzeThumbnail('thumbnail_bright_face.jpg');
+  assert(result.score > 60);
+  assert(result.factors.some(f => f.includes('image format') || f.includes('face')));
+});
+
+test('analyzeThumbnail scores empty as 0', () => {
+  const opt = new ContentOptimizer();
+  assert.strictEqual(opt.analyzeThumbnail('').score, 0);
+});
+
+test('analyzeThumbnail with object metadata', () => {
+  const opt = new ContentOptimizer();
+  const result = opt.analyzeThumbnail({ width: 1920, text: 'Click Me', faceDetected: true });
+  assert(result.score > 70);
+});
+
+test('analyzeDescription scores detailed description', () => {
+  const opt = new ContentOptimizer();
+  const desc = 'Check out this amazing video about tech! Visit https://example.com for more. #tech #video\n\nThis is a detailed description with line breaks and useful content for viewers.';
+  const result = opt.analyzeDescription(desc);
+  assert(result.score >= 70);
+});
+
+test('analyzeDescription scores empty as 0', () => {
+  const opt = new ContentOptimizer();
+  assert.strictEqual(opt.analyzeDescription('').score, 0);
+});
+
+test('suggestImprovements returns suggestions for weak video', () => {
+  const opt = new ContentOptimizer();
+  opt.registerVideo('v1', { title: 'hi', description: 'short', thumbnail: 'bad.bmp' });
+  const suggestions = opt.suggestImprovements('v1');
+  assert(suggestions.length > 0);
+  assert(suggestions.some(s => s.area === 'title'));
+});
+
+test('suggestImprovements returns empty for optimized video', () => {
+  const opt = new ContentOptimizer();
+  opt.registerVideo('v1', {
+    title: 'TOP 10 Best Tips for YouTube Growth!',
+    description: 'Check out this amazing video about tech! Visit https://example.com for more. #tech #video\n\nThis is a detailed description with line breaks and useful content for viewers.',
+    thumbnail: 'thumbnail_bright_face.jpg',
+  });
+  const suggestions = opt.suggestImprovements('v1');
+  assert.strictEqual(suggestions.length, 0);
+});
+
+test('registerVideo rejects missing videoId', () => {
+  const opt = new ContentOptimizer();
+  assert.throws(() => opt.registerVideo('', {}), /videoId is required/);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 7. CompetitorBenchmark
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── CompetitorBenchmark ──');
+
+test('addCompetitor stores competitor', () => {
+  const cb = new CompetitorBenchmark();
+  cb.addCompetitor('ch1', { name: 'Rival', subscribers: 100000 });
+  const m = cb.getCompetitorMetrics('ch1');
+  assert.strictEqual(m.subscribers, 100000);
+});
+
+test('addCompetitor rejects missing channelId', () => {
+  const cb = new CompetitorBenchmark();
+  assert.throws(() => cb.addCompetitor('', {}), /channelId is required/);
+});
+
+test('compareToOwn returns comparison', () => {
+  const cb = new CompetitorBenchmark();
+  cb.setOwnChannel({ subscribers: 50000, avgViews: 10000, growthRate: 5 });
+  cb.addCompetitor('ch1', { name: 'Rival', subscribers: 100000, avgViews: 20000, growthRate: 8 });
+  const comp = cb.compareToOwn('ch1');
+  assert.strictEqual(comp.subscribers.difference, 50000);
+  assert.strictEqual(comp.avgViews.difference, 10000);
+});
+
+test('compareToOwn returns null without own channel', () => {
+  const cb = new CompetitorBenchmark();
+  cb.addCompetitor('ch1', { name: 'Rival', subscribers: 100000 });
+  assert.strictEqual(cb.compareToOwn('ch1'), null);
+});
+
+test('getMarketShare returns shares', () => {
+  const cb = new CompetitorBenchmark();
+  cb.setOwnChannel({ subscribers: 50000 });
+  cb.addCompetitor('ch1', { name: 'Rival A', subscribers: 30000 });
+  cb.addCompetitor('ch2', { name: 'Rival B', subscribers: 20000 });
+  const shares = cb.getMarketShare();
+  assert.strictEqual(shares.length, 3);
+  const own = shares.find(s => s.channelId === 'own');
+  assert.strictEqual(own.share, 50);
+});
+
+test('getCompetitorMetrics returns null for unknown', () => {
+  const cb = new CompetitorBenchmark();
+  assert.strictEqual(cb.getCompetitorMetrics('nope'), null);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 8. TrendAnalyzer
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── TrendAnalyzer ──');
+
+test('addTrend stores trend', () => {
+  const ta = new TrendAnalyzer();
+  const trend = ta.addTrend('tech', { name: 'AI Tools', volume: 5000, growth: 25 });
+  assert.strictEqual(trend.name, 'AI Tools');
+  assert.strictEqual(trend.volume, 5000);
+});
+
+test('addTrend rejects missing category', () => {
+  const ta = new TrendAnalyzer();
+  assert.throws(() => ta.addTrend('', {}), /category is required/);
+});
+
+test('analyzeTrends returns category trends', () => {
+  const ta = new TrendAnalyzer();
+  ta.addTrend('tech', { name: 'AI Tools', volume: 5000 });
+  ta.addTrend('tech', { name: 'Cloud', volume: 3000 });
+  const trends = ta.analyzeTrends('tech');
+  assert.strictEqual(trends.length, 2);
+});
+
+test('analyzeTrends returns empty for unknown category', () => {
+  const ta = new TrendAnalyzer();
+  assert.deepStrictEqual(ta.analyzeTrends('unknown'), []);
+});
+
+test('getTrendingTopics returns top N', () => {
+  const ta = new TrendAnalyzer();
+  ta.addTrend('tech', { name: 'AI', volume: 10000 });
+  ta.addTrend('gaming', { name: 'FPS', volume: 8000 });
+  ta.addTrend('tech', { name: 'Cloud', volume: 3000 });
+  const topics = ta.getTrendingTopics(2);
+  assert.strictEqual(topics.length, 2);
+  assert.strictEqual(topics[0].name, 'AI');
+});
+
+test('predictTrend returns prediction', () => {
+  const ta = new TrendAnalyzer();
+  const trend = ta.addTrend('tech', { name: 'AI Tools', volume: 5000, growth: 20 });
+  const pred = ta.predictTrend(trend.id);
+  assert.strictEqual(pred.predictedVolume, 6000);
+  assert(pred.confidence > 0);
+});
+
+test('predictTrend returns null for unknown trend', () => {
+  const ta = new TrendAnalyzer();
+  assert.strictEqual(ta.predictTrend('nope'), null);
+});
+
+test('getSeasonalPatterns returns 12 months', () => {
+  const ta = new TrendAnalyzer();
+  const patterns = ta.getSeasonalPatterns('tech');
+  assert.strictEqual(patterns.length, 12);
+  assert.strictEqual(patterns[0].month, 'Jan');
+  assert.strictEqual(patterns[11].month, 'Dec');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 9. PredictiveAnalytics
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── PredictiveAnalytics ──');
+
+test('predictViews returns forecast', () => {
+  const pa = new PredictiveAnalytics();
+  pa.addDataPoint('v1', { views: 100 });
+  pa.addDataPoint('v1', { views: 120 });
+  pa.addDataPoint('v1', { views: 150 });
+  const pred = pa.predictViews('v1', 30);
+  assert(pred.predicted > 0);
+  assert(pred.confidence > 0);
+  assert.strictEqual(pred.days, 30);
+});
+
+test('predictViews returns zero for no data', () => {
+  const pa = new PredictiveAnalytics();
+  const pred = pa.predictViews('nope', 30);
+  assert.strictEqual(pred.predicted, 0);
+});
+
+test('predictGrowth returns monthly forecasts', () => {
+  const pa = new PredictiveAnalytics();
+  for (let i = 0; i < 5; i++) {
+    pa.addDataPoint('ch1', { views: 1000 + i * 100 });
   }
-  assert.strictEqual(rc.drop_offs.length, 0);
+  const growth = pa.predictGrowth('ch1', 6);
+  assert.strictEqual(growth.monthlyForecasts.length, 6);
+  assert(growth.totalGrowth > 0);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 3: getDemographics
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 12
-test('getDemographics returns age, gender, top_countries', () => {
-  setup();
-  const d = ap.getDemographics({ channelId: 'UC1', timeRange: '30d' });
-  assert.ok(d !== null);
-  assert.ok(Array.isArray(d.age));
-  assert.ok(Array.isArray(d.gender));
-  assert.ok(Array.isArray(d.top_countries));
+test('predictRevenue returns forecasts', () => {
+  const pa = new PredictiveAnalytics();
+  pa.addDataPoint('ch1', { revenue: 100 });
+  pa.addDataPoint('ch1', { revenue: 150 });
+  pa.addDataPoint('ch1', { revenue: 200 });
+  const rev = pa.predictRevenue('ch1', 3);
+  assert.strictEqual(rev.monthlyForecasts.length, 3);
+  assert(rev.totalRevenue > 0);
 });
 
-// 13
-test('getDemographics age percentages sum to ~100', () => {
-  setup();
-  const d = ap.getDemographics({ channelId: 'UC1' });
-  const sum = d.age.reduce((a, g) => a + g.percent, 0);
-  assert.ok(Math.abs(sum - 100) < 0.1, `Age sum was ${sum}`);
+test('getConfidenceLevel returns valid range', () => {
+  const pa = new PredictiveAnalytics();
+  for (let i = 0; i < 10; i++) pa.addDataPoint('v1', { views: 100 });
+  const conf = pa.getConfidenceLevel('views');
+  assert(conf >= 0 && conf <= 1);
 });
 
-// 14
-test('getDemographics gender percentages sum to ~100', () => {
-  setup();
-  const d = ap.getDemographics({ channelId: 'UC1' });
-  const sum = d.gender.reduce((a, g) => a + g.percent, 0);
-  assert.ok(Math.abs(sum - 100) < 0.1, `Gender sum was ${sum}`);
+test('addDataPoint rejects missing id', () => {
+  const pa = new PredictiveAnalytics();
+  assert.throws(() => pa.addDataPoint('', {}), /id is required/);
 });
 
-// 15
-test('getDemographics top_countries sorted descending', () => {
-  setup();
-  const d = ap.getDemographics({ channelId: 'UC1' });
-  for (let i = 1; i < d.top_countries.length; i++) {
-    assert.ok(d.top_countries[i].percent <= d.top_countries[i - 1].percent);
-  }
+test('predictGrowth returns empty for no data', () => {
+  const pa = new PredictiveAnalytics();
+  const g = pa.predictGrowth('nope', 12);
+  assert.strictEqual(g.totalGrowth, 0);
+  assert.strictEqual(g.monthlyForecasts.length, 0);
 });
 
-// 16
-test('getDemographics for unknown channel returns null', () => {
-  setup();
-  const d = ap.getDemographics({ channelId: 'UC_UNKNOWN' });
-  assert.strictEqual(d, null);
+test('predictRevenue returns zero for no data', () => {
+  const pa = new PredictiveAnalytics();
+  const r = pa.predictRevenue('nope', 12);
+  assert.strictEqual(r.totalRevenue, 0);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 4: getEngagementMetrics
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// 10. ABRTesting
+// ═════════════════════════════════════════════════════════════════════════════
 
-// 17
-test('getEngagementMetrics returns all rate fields', () => {
-  setup();
-  const e = ap.getEngagementMetrics({ videoId: 'v1' });
-  assert.ok(e !== null);
-  assert.ok(typeof e.like_rate === 'number');
-  assert.ok(typeof e.comment_rate === 'number');
-  assert.ok(typeof e.share_rate === 'number');
-  assert.ok(typeof e.save_rate === 'number');
-  assert.ok(typeof e.engagement_score === 'number');
+console.log('\n── ABRTesting ──');
+
+test('createTest stores test', () => {
+  const abr = new ABRTesting();
+  const test = abr.createTest({ videoId: 'v1', variants: [{ name: 'A' }, { name: 'B' }] });
+  assert.strictEqual(test.videoId, 'v1');
+  assert.strictEqual(test.variants.length, 2);
+  assert.strictEqual(test.status, 'active');
 });
 
-// 18
-test('getEngagementMetrics for zero-view video returns zeros', () => {
-  ap = new AnalyticsPro();
-  ap.registerChannel({ channelId: 'UC2', name: 'Empty', subscribers: 100 });
-  ap.registerVideo({ videoId: 'v_empty', channelId: 'UC2', title: 'Empty', duration_sec: 300 });
-  const e = ap.getEngagementMetrics({ videoId: 'v_empty' });
-  assert.strictEqual(e.engagement_score, 0);
+test('createTest rejects missing videoId', () => {
+  const abr = new ABRTesting();
+  assert.throws(() => abr.createTest({ variants: [{ name: 'A' }, { name: 'B' }] }), /videoId is required/);
 });
 
-// 19
-test('getEngagementMetrics for unknown video returns null', () => {
-  setup();
-  const e = ap.getEngagementMetrics({ videoId: 'nonexistent' });
-  assert.strictEqual(e, null);
+test('createTest requires at least 2 variants', () => {
+  const abr = new ABRTesting();
+  assert.throws(() => abr.createTest({ videoId: 'v1', variants: [{ name: 'A' }] }), /At least 2 variants/);
 });
 
-// 20
-test('getEngagementMetrics engagement_score is sum of rates', () => {
-  setup();
-  const e = ap.getEngagementMetrics({ videoId: 'v1' });
-  const expected = e.like_rate + e.comment_rate + e.share_rate + e.save_rate;
-  assert.strictEqual(e.engagement_score, expected);
+test('recordClick updates counts', () => {
+  const abr = new ABRTesting();
+  const test = abr.createTest({ videoId: 'v1', variants: [{ name: 'A' }, { name: 'B' }] });
+  abr.recordClick(test.testId, test.variants[0].id);
+  abr.recordClick(test.testId, test.variants[0].id);
+  const results = abr.getResults(test.testId);
+  assert.strictEqual(results.variants[0].clicks, 2);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 5: getRevenueMetrics
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 21
-test('getRevenueMetrics returns all required fields', () => {
-  setup();
-  const r = ap.getRevenueMetrics({ channelId: 'UC1', timeRange: '30d' });
-  assert.ok(r !== null);
-  assert.ok(typeof r.ad_revenue === 'number');
-  assert.ok(typeof r.rpm === 'number');
-  assert.ok(typeof r.cpm === 'number');
-  assert.ok(typeof r.estimated_monthly === 'number');
-  assert.ok(Array.isArray(r.revenue_by_video));
+test('recordClick rejects invalid testId', () => {
+  const abr = new ABRTesting();
+  assert.throws(() => abr.recordClick('nope', 'v1'), /Test not found/);
 });
 
-// 22
-test('getRevenueMetrics ad_revenue is positive', () => {
-  setup();
-  const r = ap.getRevenueMetrics({ channelId: 'UC1', timeRange: '30d' });
-  assert.ok(r.ad_revenue > 0, `ad_revenue was ${r.ad_revenue}`);
+test('recordClick rejects invalid variantId', () => {
+  const abr = new ABRTesting();
+  const test = abr.createTest({ videoId: 'v1', variants: [{ name: 'A' }, { name: 'B' }] });
+  assert.throws(() => abr.recordClick(test.testId, 'fake'), /Variant not found/);
 });
 
-// 23
-test('getRevenueMetrics revenue_by_video has entries', () => {
-  setup();
-  const r = ap.getRevenueMetrics({ channelId: 'UC1', timeRange: '30d' });
-  assert.ok(r.revenue_by_video.length > 0);
+test('getWinner returns highest CTR variant', () => {
+  const abr = new ABRTesting();
+  const test = abr.createTest({ videoId: 'v1', variants: [{ name: 'A' }, { name: 'B' }] });
+  // Give variant A more clicks
+  for (let i = 0; i < 10; i++) abr.recordClick(test.testId, test.variants[0].id);
+  for (let i = 0; i < 3; i++) abr.recordClick(test.testId, test.variants[1].id);
+  const winner = abr.getWinner(test.testId);
+  assert.strictEqual(winner.name, 'A');
 });
 
-// 24
-test('getRevenueMetrics for unknown channel returns null', () => {
-  setup();
-  const r = ap.getRevenueMetrics({ channelId: 'UC_UNKNOWN' });
-  assert.strictEqual(r, null);
+test('getWinner returns null for unknown test', () => {
+  const abr = new ABRTesting();
+  assert.strictEqual(abr.getWinner('nope'), null);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 6: getSubscriberGrowth
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 25
-test('getSubscriberGrowth returns all required fields', () => {
-  setup();
-  const g = ap.getSubscriberGrowth({ channelId: 'UC1', timeRange: '30d' });
-  assert.ok(g !== null);
-  assert.ok(typeof g.new_subs === 'number');
-  assert.ok(typeof g.lost_subs === 'number');
-  assert.ok(typeof g.net_growth === 'number');
-  assert.ok(typeof g.growth_rate === 'number');
-  assert.ok(typeof g.projections === 'object');
+test('getStatisticalSignificance returns a number', () => {
+  const abr = new ABRTesting();
+  const test = abr.createTest({ videoId: 'v1', variants: [{ name: 'A' }, { name: 'B' }] });
+  for (let i = 0; i < 50; i++) abr.recordClick(test.testId, test.variants[0].id);
+  for (let i = 0; i < 10; i++) abr.recordClick(test.testId, test.variants[1].id);
+  const sig = abr.getStatisticalSignificance(test.testId);
+  assert(typeof sig === 'number');
+  assert(sig >= 0 && sig <= 1);
 });
 
-// 26
-test('getSubscriberGrowth net_growth = new_subs - lost_subs', () => {
-  setup();
-  const g = ap.getSubscriberGrowth({ channelId: 'UC1', timeRange: '30d' });
-  assert.strictEqual(g.net_growth, g.new_subs - g.lost_subs);
+test('getStatisticalSignificance returns 0 for no data', () => {
+  const abr = new ABRTesting();
+  assert.strictEqual(abr.getStatisticalSignificance('nope'), 0);
 });
 
-// 27
-test('getSubscriberGrowth projections has 30, 90, 365 day estimates', () => {
-  setup();
-  const g = ap.getSubscriberGrowth({ channelId: 'UC1', timeRange: '30d' });
-  assert.ok(typeof g.projections.in_30_days === 'number');
-  assert.ok(typeof g.projections.in_90_days === 'number');
-  assert.ok(typeof g.projections.in_365_days === 'number');
+// ═════════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Helpers ──');
+
+test('round2 rounds to 2 decimals', () => {
+  assert.strictEqual(round2(3.456), 3.46);
+  assert.strictEqual(round2(1), 1);
+  assert.strictEqual(round2(0.1 + 0.2), 0.3);
 });
 
-// 28
-test('getSubscriberGrowth projections grow over time when net positive', () => {
-  setup();
-  const g = ap.getSubscriberGrowth({ channelId: 'UC1', timeRange: '30d' });
-  if (g.net_growth > 0) {
-    assert.ok(g.projections.in_90_days >= g.projections.in_30_days);
-    assert.ok(g.projections.in_365_days >= g.projections.in_90_days);
-  }
+test('parsePeriod parses d/h/m', () => {
+  assert.strictEqual(parsePeriod('7d'), 7);
+  assert.strictEqual(parsePeriod('24h'), 1);
+  assert.strictEqual(parsePeriod('2m'), 60);
+  assert.strictEqual(parsePeriod('bad'), 30);
 });
 
-// 29
-test('getSubscriberGrowth for unknown channel returns null', () => {
-  setup();
-  const g = ap.getSubscriberGrowth({ channelId: 'UC_UNKNOWN' });
-  assert.strictEqual(g, null);
+test('generateId returns unique ids', () => {
+  const a = generateId('test');
+  const b = generateId('test');
+  assert.notStrictEqual(a, b);
+  assert(a.startsWith('test_'));
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 7: getTopVideos
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 30
-test('getTopVideos returns videos and total_count', () => {
-  setup();
-  const top = ap.getTopVideos({ channelId: 'UC1', sortBy: 'views', limit: 10 });
-  assert.ok(top !== null);
-  assert.ok(Array.isArray(top.videos));
-  assert.ok(typeof top.total_count === 'number');
+test('normalCDF returns values between 0 and 1', () => {
+  assert(Math.abs(normalCDF(0) - 0.5) < 0.001);
+  assert(normalCDF(3) > 0.99);
+  assert(normalCDF(-3) < 0.01);
 });
 
-// 31
-test('getTopVideos sorted by views descending', () => {
-  setup();
-  const top = ap.getTopVideos({ channelId: 'UC1', sortBy: 'views', limit: 10 });
-  for (let i = 1; i < top.videos.length; i++) {
-    assert.ok(top.videos[i].views <= top.videos[i - 1].views);
-  }
-});
+// ═════════════════════════════════════════════════════════════════════════════
+// Summary
+// ═════════════════════════════════════════════════════════════════════════════
 
-// 32
-test('getTopVideos sorted by revenue descending', () => {
-  setup();
-  const top = ap.getTopVideos({ channelId: 'UC1', sortBy: 'revenue', limit: 10 });
-  for (let i = 1; i < top.videos.length; i++) {
-    assert.ok(top.videos[i].revenue <= top.videos[i - 1].revenue);
-  }
-});
+console.log('\n══════════════════════════════════════════════════════');
+console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
+console.log('══════════════════════════════════════════════════════');
 
-// 33
-test('getTopVideos respects limit', () => {
-  setup();
-  const top = ap.getTopVideos({ channelId: 'UC1', sortBy: 'views', limit: 2 });
-  assert.strictEqual(top.videos.length, 2);
-});
-
-// 34
-test('getTopVideos total_count reflects all channel videos', () => {
-  setup();
-  const top = ap.getTopVideos({ channelId: 'UC1', sortBy: 'views', limit: 1 });
-  assert.strictEqual(top.total_count, 3);
-});
-
-// 35
-test('getTopVideos for unknown channel returns null', () => {
-  setup();
-  const top = ap.getTopVideos({ channelId: 'UC_UNKNOWN' });
-  assert.strictEqual(top, null);
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 8: getContentRecommendations
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 36
-test('getContentRecommendations returns recommendations array', () => {
-  setup();
-  const recs = ap.getContentRecommendations({ channelId: 'UC1' });
-  assert.ok(recs !== null);
-  assert.ok(Array.isArray(recs.recommendations));
-  assert.ok(recs.recommendations.length > 0);
-});
-
-// 37
-test('getContentRecommendations each has topic, reason, estimated_views, competition', () => {
-  setup();
-  const recs = ap.getContentRecommendations({ channelId: 'UC1' });
-  for (const r of recs.recommendations) {
-    assert.ok(typeof r.topic === 'string');
-    assert.ok(typeof r.reason === 'string');
-    assert.ok(typeof r.estimated_views === 'number');
-    assert.ok(['low', 'medium', 'high'].includes(r.competition));
-  }
-});
-
-// 38
-test('getContentRecommendations sorted by estimated_views descending', () => {
-  setup();
-  const recs = ap.getContentRecommendations({ channelId: 'UC1' });
-  for (let i = 1; i < recs.recommendations.length; i++) {
-    assert.ok(recs.recommendations[i].estimated_views <= recs.recommendations[i - 1].estimated_views);
-  }
-});
-
-// 39
-test('getContentRecommendations for unknown channel returns null', () => {
-  setup();
-  const recs = ap.getContentRecommendations({ channelId: 'UC_UNKNOWN' });
-  assert.strictEqual(recs, null);
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 9: getCompetitorAnalysis
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 40
-test('getCompetitorAnalysis returns channels and opportunities', () => {
-  setup();
-  ap.registerChannel({ channelId: 'UC2', name: 'Competitor A', subscribers: 100000 });
-  ap.registerVideo({ videoId: 'vc1', channelId: 'UC2', title: 'Comp Vid', platform: 'youtube', duration_sec: 300 });
-  for (let i = 0; i < 50; i++) ap.addView({ videoId: 'vc1', platform: 'youtube', watch_duration_sec: 200 });
-  ap.addCompetitorData({ channelId: 'UC2', name: 'Competitor A', subscribers: 100000, avg_views: 5000, growth_rate: 5, strengths: ['thumbnails', 'SEO'] });
-
-  const result = ap.getCompetitorAnalysis({ channelIds: ['UC1', 'UC2'] });
-  assert.ok(result !== null);
-  assert.ok(Array.isArray(result.channels));
-  assert.ok(result.channels.length >= 2);
-  assert.ok(Array.isArray(result.opportunities));
-});
-
-// 41
-test('getCompetitorAnalysis channels have required fields', () => {
-  setup();
-  ap.addCompetitorData({ channelId: 'UC2', subscribers: 100000, avg_views: 5000, growth_rate: 5, strengths: ['thumbnails'] });
-  const result = ap.getCompetitorAnalysis({ channelIds: ['UC1', 'UC2'] });
-  for (const ch of result.channels) {
-    assert.ok(typeof ch.id === 'string');
-    assert.ok(typeof ch.subs === 'number');
-    assert.ok(typeof ch.avg_views === 'number');
-    assert.ok(typeof ch.growth_rate === 'number');
-    assert.ok(Array.isArray(ch.strengths));
-  }
-});
-
-// 42
-test('getCompetitorAnalysis empty channelIds returns null', () => {
-  setup();
-  const result = ap.getCompetitorAnalysis({ channelIds: [] });
-  assert.strictEqual(result, null);
-});
-
-// 43
-test('getCompetitorAnalysis for unknown channels returns null', () => {
-  setup();
-  const result = ap.getCompetitorAnalysis({ channelIds: ['UNKNOWN'] });
-  assert.strictEqual(result, null);
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tool 10: exportReport
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 44
-test('exportReport json format returns all fields', () => {
-  setup();
-  const rpt = ap.exportReport({ channelId: 'UC1', format: 'json', timeRange: '30d' });
-  assert.ok(rpt !== null);
-  assert.ok(typeof rpt.report_url === 'string');
-  assert.strictEqual(rpt.format, 'json');
-  assert.ok(typeof rpt.page_count === 'number');
-  assert.ok(typeof rpt.generated_at === 'string');
-});
-
-// 45
-test('exportReport csv format accepted', () => {
-  setup();
-  const rpt = ap.exportReport({ channelId: 'UC1', format: 'csv' });
-  assert.strictEqual(rpt.format, 'csv');
-});
-
-// 46
-test('exportReport pdf format accepted', () => {
-  setup();
-  const rpt = ap.exportReport({ channelId: 'UC1', format: 'pdf' });
-  assert.strictEqual(rpt.format, 'pdf');
-});
-
-// 47
-test('exportReport html format accepted', () => {
-  setup();
-  const rpt = ap.exportReport({ channelId: 'UC1', format: 'html' });
-  assert.strictEqual(rpt.format, 'html');
-});
-
-// 48
-test('exportReport invalid format throws error', () => {
-  setup();
-  assert.throws(() => ap.exportReport({ channelId: 'UC1', format: 'xml' }), /Invalid format/);
-});
-
-// 49
-test('exportReport for unknown channel returns null', () => {
-  setup();
-  const rpt = ap.exportReport({ channelId: 'UC_UNKNOWN', format: 'json' });
-  assert.strictEqual(rpt, null);
-});
-
-// 50
-test('exportReport page_count >= 2', () => {
-  setup();
-  const rpt = ap.exportReport({ channelId: 'UC1', format: 'json' });
-  assert.ok(rpt.page_count >= 2);
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Registration / Edge Cases
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// 51
-test('registerChannel with zero subscribers works', () => {
-  ap = new AnalyticsPro();
-  ap.registerChannel({ channelId: 'UC_ZERO', subscribers: 0 });
-  assert.ok(ap.channels.has('UC_ZERO'));
-  assert.strictEqual(ap.channels.get('UC_ZERO').subscribers, 0);
-});
-
-// 52
-test('registerChannel throws on invalid parameters', () => {
-  ap = new AnalyticsPro();
-  assert.throws(() => ap.registerChannel({ channelId: '', subscribers: 100 }), /Invalid/);
-  assert.throws(() => ap.registerChannel({ channelId: 'UC', subscribers: -10 }), /Invalid/);
-});
-
-// 53
-test('registerVideo throws on invalid duration', () => {
-  ap = new AnalyticsPro();
-  ap.registerChannel({ channelId: 'UC1', subscribers: 1000 });
-  assert.throws(() => ap.registerVideo({ videoId: 'v', channelId: 'UC1', duration_sec: 0 }), /Invalid/);
-  assert.throws(() => ap.registerVideo({ videoId: 'v', channelId: 'UC1', duration_sec: -5 }), /Invalid/);
-});
-
-// 54
-test('addView throws on unknown video', () => {
-  ap = new AnalyticsPro();
-  assert.throws(() => ap.addView({ videoId: 'nonexistent' }), /Video not found/);
-});
-
-// 55
-test('addRevenueRecord throws on unknown channel', () => {
-  ap = new AnalyticsPro();
-  assert.throws(() => ap.addRevenueRecord({ channelId: 'UNKNOWN', revenue: 10 }), /Channel not found/);
-});
-
-// 56
-test('addSubscriberDataPoint throws on unknown channel', () => {
-  ap = new AnalyticsPro();
-  assert.throws(() => ap.addSubscriberDataPoint({ channelId: 'UNKNOWN', new_subs: 10 }), /Channel not found/);
-});
-
-// 57
-test('CPM_RATES has expected platforms', () => {
-  assert.ok(CPM_RATES.youtube > 0);
-  assert.ok(CPM_RATES.tiktok > 0);
-  assert.ok(CPM_RATES.instagram > 0);
-  assert.ok(CPM_RATES.facebook > 0);
-  assert.ok(CPM_RATES.twitter > 0);
-});
-
-// 58
-test('getVideoMetrics with TikTok platform', () => {
-  setup();
-  const m = ap.getVideoMetrics({ videoId: 'v2', platform: 'tiktok' });
-  assert.strictEqual(m.views, 10);
-});
-
-// 59
-test('getRetentionCurve with 5 buckets has 6 points', () => {
-  setup();
-  const rc = ap.getRetentionCurve({ videoId: 'v1', buckets: 5 });
-  assert.strictEqual(rc.points.length, 6);
-});
-
-// 60
-test('exportReport URL contains channel ID', () => {
-  setup();
-  const rpt = ap.exportReport({ channelId: 'UC1', format: 'json' });
-  assert.ok(rpt.report_url.includes('UC1'));
-});
-
-console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);
-process.exit(failed > 0 ? 1 : 0);
+if (failed > 0) process.exit(1);
