@@ -61,7 +61,7 @@ test('MuAPI: client uses x-api-key header pattern', async () => {
   const file = path.join(process.cwd(), 'src', 'muapi_client.js');
   const src = await fs.readFile(file, 'utf8');
   assert.ok(src.includes('x-api-key'), 'expected x-api-key header');
-  assert.ok(!src.includes('Authorization: Bearer'), 'should NOT use Bearer');
+  assert.ok(!src.includes("headers['Authorization']"), 'should NOT use Bearer auth');
 });
 
 test('MuAPI: client uses submit-then-poll pattern from Open-Generative-AI', async () => {
