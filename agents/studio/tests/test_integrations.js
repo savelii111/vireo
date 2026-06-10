@@ -1,516 +1,437 @@
-// test_integrations.js — Comprehensive tests for the integrations module.
-//
-// Validates all 10 integration tools, connection management, disconnection,
-// batch connections, and edge cases.
-
-import { test } from "node:test";
-import assert from "node:assert/strict";
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
 import {
-  connectGoogleDrive,
-  connectDropbox,
-  connectOneDrive,
-  connectAWS,
-  connectSFTP,
-  connectWebDAV,
-  connectSlack,
-  connectDiscord,
-  connectNotion,
-  connectZapier,
-  listConnections,
-  getConnection,
-  disconnect,
-  connectAll,
-  _resetConnections,
-  _getConnections,
-} from "../src/integrations.js";
+  GoogleDriveIntegration,
+  DropboxIntegration,
+  OneDriveIntegration,
+  AWSS3Integration,
+  FigmaIntegration,
+  CanvaIntegration,
+  AdobeIntegration,
+  BlenderIntegration,
+  SlackIntegration,
+  ZapierIntegration,
+} from '../src/integrations.js';
 
-// Reset connection store before each test
-test.beforeEach(() => {
-  _resetConnections();
-});
+// ─── GoogleDriveIntegration ────────────────────────────────────────
 
-// =====================================================================
-// 1. connectGoogleDrive — returns all required fields
-// =====================================================================
-test("connectGoogleDrive returns all required fields", () => {
-  const result = connectGoogleDrive({
-    projectId: "proj-001",
-    folderId: "folder-abc",
+describe('GoogleDriveIntegration', () => {
+  it('connect with valid credentials', () => {
+    const gd = new GoogleDriveIntegration();
+    const res = gd.connect({ clientId: 'id', clientSecret: 'secret' });
+    assert.strictEqual(res.status, 'Connected');
+    assert.strictEqual(res.service, 'GoogleDrive');
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.folder_id, "folder-abc");
-  assert.equal(result.sync_enabled, true);
-  assert.equal(result.quota_mb, 15000);
-  assert.ok(result.connection_id.startsWith("gdrive-"));
-  assert.equal(result.project_id, "proj-001");
-});
 
-// =====================================================================
-// 2. connectGoogleDrive — throws without projectId
-// =====================================================================
-test("connectGoogleDrive throws without projectId", () => {
-  assert.throws(
-    () => connectGoogleDrive({ folderId: "f1" }),
-    /projectId is required/
-  );
-});
-
-// =====================================================================
-// 3. connectGoogleDrive — throws without folderId
-// =====================================================================
-test("connectGoogleDrive throws without folderId", () => {
-  assert.throws(
-    () => connectGoogleDrive({ projectId: "p1" }),
-    /folderId is required/
-  );
-});
-
-// =====================================================================
-// 4. connectDropbox — returns all required fields
-// =====================================================================
-test("connectDropbox returns all required fields", () => {
-  const result = connectDropbox({
-    projectId: "proj-002",
-    path: "/vireo/projects",
+  it('connect with invalid credentials throws', () => {
+    const gd = new GoogleDriveIntegration();
+    assert.throws(() => gd.connect({}), /Invalid Google Drive credentials/);
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.path, "/vireo/projects");
-  assert.equal(result.sync_enabled, true);
-  assert.equal(result.space_used_mb, 2048);
-  assert.ok(result.connection_id.startsWith("dropbox-"));
-  assert.equal(result.project_id, "proj-002");
-});
 
-// =====================================================================
-// 5. connectDropbox — normalizes path without leading slash
-// =====================================================================
-test("connectDropbox normalizes path without leading slash", () => {
-  const result = connectDropbox({
-    projectId: "proj-003",
-    path: "vireo/projects",
+  it('upload returns FileRef', () => {
+    const gd = new GoogleDriveIntegration();
+    gd.connect({ clientId: 'id', clientSecret: 'secret' });
+    const ref = gd.upload('proj1', '/assets/scene.png');
+    assert.strictEqual(ref.service, 'GoogleDrive');
+    assert.strictEqual(ref.name, 'scene.png');
+    assert.ok(ref.id);
   });
-  assert.equal(result.path, "/vireo/projects");
-});
 
-// =====================================================================
-// 6. connectDropbox — throws without path
-// =====================================================================
-test("connectDropbox throws without path", () => {
-  assert.throws(
-    () => connectDropbox({ projectId: "p1" }),
-    /path is required/
-  );
-});
-
-// =====================================================================
-// 7. connectOneDrive — returns all required fields
-// =====================================================================
-test("connectOneDrive returns all required fields", () => {
-  const result = connectOneDrive({
-    projectId: "proj-004",
-    folderId: "ms-folder-xyz",
+  it('upload when not connected throws', () => {
+    const gd = new GoogleDriveIntegration();
+    assert.throws(() => gd.upload('proj1', '/a.png'), /Not connected/);
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.folder_id, "ms-folder-xyz");
-  assert.equal(result.sync_enabled, true);
-  assert.equal(result.quota_mb, 5000);
-  assert.ok(result.connection_id.startsWith("onedrive-"));
-});
 
-// =====================================================================
-// 8. connectOneDrive — throws without folderId
-// =====================================================================
-test("connectOneDrive throws without folderId", () => {
-  assert.throws(
-    () => connectOneDrive({ projectId: "p1" }),
-    /folderId is required/
-  );
-});
-
-// =====================================================================
-// 9. connectAWS — returns all required fields
-// =====================================================================
-test("connectAWS returns all required fields", () => {
-  const result = connectAWS({
-    projectId: "proj-005",
-    bucket: "my-vireo-bucket",
-    region: "eu-west-1",
+  it('download returns local path', () => {
+    const gd = new GoogleDriveIntegration();
+    gd.connect({ clientId: 'id', clientSecret: 'secret' });
+    const ref = gd.upload('proj1', '/assets/scene.png');
+    const path = gd.download(ref.id);
+    assert.strictEqual(path, '/tmp/vireo/downloads/scene.png');
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.bucket, "my-vireo-bucket");
-  assert.equal(result.region, "eu-west-1");
-  assert.equal(result.sync_enabled, true);
-  assert.ok(result.connection_id.startsWith("aws-"));
-});
 
-// =====================================================================
-// 10. connectAWS — throws without region
-// =====================================================================
-test("connectAWS throws without region", () => {
-  assert.throws(
-    () => connectAWS({ projectId: "p1", bucket: "b1" }),
-    /region is required/
-  );
-});
-
-// =====================================================================
-// 11. connectAWS — throws without bucket
-// =====================================================================
-test("connectAWS throws without bucket", () => {
-  assert.throws(
-    () => connectAWS({ projectId: "p1", region: "us-east-1" }),
-    /bucket is required/
-  );
-});
-
-// =====================================================================
-// 12. connectSFTP — returns all required fields
-// =====================================================================
-test("connectSFTP returns all required fields", () => {
-  const result = connectSFTP({
-    projectId: "proj-006",
-    host: "sftp.example.com",
-    port: 2222,
-    username: "admin",
+  it('download unknown file throws', () => {
+    const gd = new GoogleDriveIntegration();
+    gd.connect({ clientId: 'id', clientSecret: 'secret' });
+    assert.throws(() => gd.download('bad-id'), /File not found/);
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.host, "sftp.example.com");
-  assert.equal(result.port, 2222);
-  assert.equal(result.sync_enabled, true);
-  assert.equal(result.path, "/home/admin/vireo");
-  assert.ok(result.connection_id.startsWith("sftp-"));
-});
 
-// =====================================================================
-// 13. connectSFTP — defaults port to 22
-// =====================================================================
-test("connectSFTP defaults port to 22", () => {
-  const result = connectSFTP({
-    projectId: "proj-007",
-    host: "sftp.example.com",
-    username: "user",
+  it('listFiles returns files', () => {
+    const gd = new GoogleDriveIntegration();
+    gd.connect({ clientId: 'id', clientSecret: 'secret' });
+    gd.upload('proj1', '/a.png');
+    gd.upload('proj1', '/b.png');
+    const list = gd.listFiles('proj1');
+    assert.strictEqual(list.length, 2);
   });
-  assert.equal(result.port, 22);
-});
 
-// =====================================================================
-// 14. connectSFTP — throws without username
-// =====================================================================
-test("connectSFTP throws without username", () => {
-  assert.throws(
-    () => connectSFTP({ projectId: "p1", host: "h1" }),
-    /username is required/
-  );
-});
-
-// =====================================================================
-// 15. connectWebDAV — returns all required fields
-// =====================================================================
-test("connectWebDAV returns all required fields", () => {
-  const result = connectWebDAV({
-    projectId: "proj-008",
-    url: "https://dav.example.com",
-    username: "webdav-user",
+  it('sync returns SyncResult', () => {
+    const gd = new GoogleDriveIntegration();
+    gd.connect({ clientId: 'id', clientSecret: 'secret' });
+    gd.upload('proj1', '/a.png');
+    const res = gd.sync('proj1');
+    assert.strictEqual(res.synced, 1);
+    assert.strictEqual(res.status, 'Synced');
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.url, "https://dav.example.com");
-  assert.equal(result.sync_enabled, true);
-  assert.equal(result.quota_mb, 10000);
-  assert.equal(result.username, "webdav-user");
-  assert.ok(result.connection_id.startsWith("webdav-"));
 });
 
-// =====================================================================
-// 16. connectWebDAV — throws without url
-// =====================================================================
-test("connectWebDAV throws without url", () => {
-  assert.throws(
-    () => connectWebDAV({ projectId: "p1", username: "u1" }),
-    /url is required/
-  );
-});
+// ─── DropboxIntegration ────────────────────────────────────────────
 
-// =====================================================================
-// 17. connectSlack — returns all required fields
-// =====================================================================
-test("connectSlack returns all required fields", () => {
-  const result = connectSlack({
-    workspaceId: "ws-abc",
-    channelId: "ch-123",
+describe('DropboxIntegration', () => {
+  it('connect with valid credentials', () => {
+    const db = new DropboxIntegration();
+    const res = db.connect({ accessToken: 'token123' });
+    assert.strictEqual(res.status, 'Connected');
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.workspace, "ws-abc");
-  assert.equal(result.channel, "ch-123");
-  assert.equal(result.notifications_enabled, true);
-  assert.ok(result.connection_id.startsWith("slack-"));
-  assert.equal(result.project_id, null);
-});
 
-// =====================================================================
-// 18. connectSlack — throws without workspaceId
-// =====================================================================
-test("connectSlack throws without workspaceId", () => {
-  assert.throws(
-    () => connectSlack({ channelId: "ch1" }),
-    /workspaceId is required/
-  );
-});
-
-// =====================================================================
-// 19. connectSlack — throws without channelId
-// =====================================================================
-test("connectSlack throws without channelId", () => {
-  assert.throws(
-    () => connectSlack({ workspaceId: "ws1" }),
-    /channelId is required/
-  );
-});
-
-// =====================================================================
-// 20. connectDiscord — returns all required fields
-// =====================================================================
-test("connectDiscord returns all required fields", () => {
-  const result = connectDiscord({
-    guildId: "guild-xyz",
-    channelId: "ch-discord-001",
+  it('connect without token throws', () => {
+    const db = new DropboxIntegration();
+    assert.throws(() => db.connect({}), /Invalid Dropbox credentials/);
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.guild, "guild-xyz");
-  assert.equal(result.channel, "ch-discord-001");
-  assert.equal(result.notifications_enabled, true);
-  assert.ok(result.connection_id.startsWith("discord-"));
-  assert.equal(result.project_id, null);
-});
 
-// =====================================================================
-// 21. connectDiscord — throws without guildId
-// =====================================================================
-test("connectDiscord throws without guildId", () => {
-  assert.throws(
-    () => connectDiscord({ channelId: "ch1" }),
-    /guildId is required/
-  );
-});
-
-// =====================================================================
-// 22. connectNotion — returns all required fields
-// =====================================================================
-test("connectNotion returns all required fields", () => {
-  const result = connectNotion({
-    workspaceId: "notion-ws-001",
-    databaseId: "notion-db-001",
+  it('upload and download', () => {
+    const db = new DropboxIntegration();
+    db.connect({ accessToken: 'token' });
+    const ref = db.upload('proj1', '/videos/clip.mp4');
+    assert.strictEqual(ref.name, 'clip.mp4');
+    const path = db.download(ref.id);
+    assert.strictEqual(path, '/tmp/vireo/downloads/clip.mp4');
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.workspace, "notion-ws-001");
-  assert.equal(result.database, "notion-db-001");
-  assert.equal(result.sync_enabled, true);
-  assert.ok(result.connection_id.startsWith("notion-"));
-});
 
-// =====================================================================
-// 23. connectNotion — throws without databaseId
-// =====================================================================
-test("connectNotion throws without databaseId", () => {
-  assert.throws(
-    () => connectNotion({ workspaceId: "ws1" }),
-    /databaseId is required/
-  );
-});
-
-// =====================================================================
-// 24. connectZapier — returns all required fields
-// =====================================================================
-test("connectZapier returns all required fields", () => {
-  const result = connectZapier({
-    webhookUrl: "https://hooks.zapier.com/hooks/catch/123456",
+  it('getSharedLink returns URL', () => {
+    const db = new DropboxIntegration();
+    db.connect({ accessToken: 'token' });
+    const ref = db.upload('proj1', '/doc.pdf');
+    const link = db.getSharedLink(ref.id);
+    assert.ok(link.includes('dropbox.com'));
   });
-  assert.equal(result.connected, true);
-  assert.equal(result.webhook_url, "https://hooks.zapier.com/hooks/catch/123456");
-  assert.equal(result.status, "active");
-  assert.ok(Array.isArray(result.events));
-  assert.ok(result.events.length > 0);
-  assert.ok(result.connection_id.startsWith("zapier-"));
-});
 
-// =====================================================================
-// 25. connectZapier — events include expected types
-// =====================================================================
-test("connectZapier events include expected types", () => {
-  const result = connectZapier({ webhookUrl: "https://hooks.zapier.com/test" });
-  assert.ok(result.events.includes("project.created"));
-  assert.ok(result.events.includes("export.completed"));
-  assert.ok(result.events.includes("asset.uploaded"));
-});
-
-// =====================================================================
-// 26. connectZapier — throws without webhookUrl
-// =====================================================================
-test("connectZapier throws without webhookUrl", () => {
-  assert.throws(() => connectZapier({}), /webhookUrl is required/);
-});
-
-// =====================================================================
-// 27. listConnections — returns all connections
-// =====================================================================
-test("listConnections returns all connections", () => {
-  connectGoogleDrive({ projectId: "p1", folderId: "f1" });
-  connectSlack({ workspaceId: "ws1", channelId: "ch1" });
-  const all = listConnections();
-  assert.equal(all.length, 2);
-});
-
-// =====================================================================
-// 28. listConnections — filters by type
-// =====================================================================
-test("listConnections filters by type", () => {
-  connectGoogleDrive({ projectId: "p1", folderId: "f1" });
-  connectDropbox({ projectId: "p1", path: "/test" });
-  connectSlack({ workspaceId: "ws1", channelId: "ch1" });
-  const cloudOnly = listConnections({ type: "google_drive" });
-  assert.equal(cloudOnly.length, 1);
-  assert.equal(cloudOnly[0].type, "google_drive");
-});
-
-// =====================================================================
-// 29. listConnections — filters by projectId
-// =====================================================================
-test("listConnections filters by projectId", () => {
-  connectGoogleDrive({ projectId: "proj-A", folderId: "f1" });
-  connectDropbox({ projectId: "proj-B", path: "/test" });
-  connectAWS({ projectId: "proj-A", bucket: "b1", region: "us-east-1" });
-  const projA = listConnections({ projectId: "proj-A" });
-  assert.equal(projA.length, 2);
-});
-
-// =====================================================================
-// 30. getConnection — returns specific connection
-// =====================================================================
-test("getConnection returns specific connection", () => {
-  const gdrive = connectGoogleDrive({ projectId: "p1", folderId: "f1" });
-  const conn = getConnection(gdrive.connection_id);
-  assert.ok(conn);
-  assert.equal(conn.type, "google_drive");
-  assert.equal(conn.folder_id, "f1");
-});
-
-// =====================================================================
-// 31. getConnection — returns undefined for unknown id
-// =====================================================================
-test("getConnection returns undefined for unknown id", () => {
-  const conn = getConnection("nonexistent-id");
-  assert.equal(conn, undefined);
-});
-
-// =====================================================================
-// 32. disconnect — disconnects an active connection
-// =====================================================================
-test("disconnect disconnects an active connection", () => {
-  const conn = connectSlack({ workspaceId: "ws1", channelId: "ch1" });
-  const result = disconnect(conn.connection_id);
-  assert.equal(result.ok, true);
-  assert.equal(result.connection_id, conn.connection_id);
-
-  const stored = getConnection(conn.connection_id);
-  assert.equal(stored.connected, false);
-  assert.equal(stored.notifications_enabled, false);
-  assert.ok(stored.disconnected_at);
-});
-
-// =====================================================================
-// 33. disconnect — returns error for unknown id
-// =====================================================================
-test("disconnect returns error for unknown id", () => {
-  const result = disconnect("nonexistent-id");
-  assert.equal(result.ok, false);
-  assert.ok(result.error.includes("not found"));
-});
-
-// =====================================================================
-// 34. connectAll — connects multiple services
-// =====================================================================
-test("connectAll connects multiple services", () => {
-  const result = connectAll({
-    projectId: "proj-batch",
-    services: {
-      google_drive: { folderId: "f1" },
-      slack: { workspaceId: "ws1", channelId: "ch1" },
-      zapier: { webhookUrl: "https://hooks.zapier.com/test" },
-    },
+  it('listFiles filters by path prefix', () => {
+    const db = new DropboxIntegration();
+    db.connect({ accessToken: 'token' });
+    db.upload('proj1', '/assets/a.png');
+    db.upload('proj1', '/videos/b.mp4');
+    const list = db.listFiles('/assets');
+    assert.strictEqual(list.length, 1);
   });
-  assert.equal(result.total_connected, 3);
-  assert.equal(result.failures, 0);
-  assert.equal(result.results.length, 3);
-  for (const r of result.results) {
-    assert.equal(r.success, true);
-  }
 });
 
-// =====================================================================
-// 35. connectAll — throws without projectId
-// =====================================================================
-test("connectAll throws without projectId", () => {
-  assert.throws(() => connectAll({}), /projectId is required/);
-});
+// ─── OneDriveIntegration ───────────────────────────────────────────
 
-// =====================================================================
-// 36. connectAll — empty services returns zero results
-// =====================================================================
-test("connectAll with empty services returns zero results", () => {
-  const result = connectAll({ projectId: "proj-empty", services: {} });
-  assert.equal(result.total_connected, 0);
-  assert.equal(result.failures, 0);
-  assert.equal(result.results.length, 0);
-});
-
-// =====================================================================
-// 37. Each connection gets a unique ID
-// =====================================================================
-test("Each connection gets a unique ID", () => {
-  const ids = new Set();
-  for (let i = 0; i < 10; i++) {
-    const r = connectGoogleDrive({ projectId: `p${i}`, folderId: `f${i}` });
-    ids.add(r.connection_id);
-  }
-  assert.equal(ids.size, 10);
-});
-
-// =====================================================================
-// 38. All connections have created_at timestamp
-// =====================================================================
-test("All connections have created_at timestamp", () => {
-  const gdrive = connectGoogleDrive({ projectId: "p1", folderId: "f1" });
-  const slack = connectSlack({ workspaceId: "ws1", channelId: "ch1" });
-  const zapier = connectZapier({ webhookUrl: "https://hooks.test" });
-
-  assert.ok(gdrive.created_at);
-  assert.ok(slack.created_at);
-  assert.ok(zapier.created_at);
-
-  // Should be valid ISO date strings
-  assert.ok(!isNaN(new Date(gdrive.created_at).getTime()));
-  assert.ok(!isNaN(new Date(slack.created_at).getTime()));
-  assert.ok(!isNaN(new Date(zapier.created_at).getTime()));
-});
-
-// =====================================================================
-// 39. connectSFTP — default path uses username
-// =====================================================================
-test("connectSFTP default path includes username", () => {
-  const result = connectSFTP({
-    projectId: "p1",
-    host: "sftp.test.com",
-    username: "myuser",
+describe('OneDriveIntegration', () => {
+  it('connect succeeds', () => {
+    const od = new OneDriveIntegration();
+    const res = od.connect({ accessToken: 'token' });
+    assert.strictEqual(res.status, 'Connected');
   });
-  assert.equal(result.path, "/home/myuser/vireo");
+
+  it('upload and download', () => {
+    const od = new OneDriveIntegration();
+    od.connect({ accessToken: 'token' });
+    const ref = od.upload('proj1', '/docs/readme.md');
+    assert.strictEqual(ref.service, 'OneDrive');
+    const path = od.download(ref.id);
+    assert.ok(path.includes('readme.md'));
+  });
+
+  it('listFiles filters', () => {
+    const od = new OneDriveIntegration();
+    od.connect({ accessToken: 'token' });
+    od.upload('proj1', '/images/pic.jpg');
+    od.upload('proj1', '/audio/song.mp3');
+    assert.strictEqual(od.listFiles('/images').length, 1);
+  });
 });
 
-// =====================================================================
-// 40. connectDropbox — preserves path with leading slash
-// =====================================================================
-test("connectDropbox preserves path with leading slash", () => {
-  const result = connectDropbox({
-    projectId: "p1",
-    path: "/existing/path",
+// ─── AWSS3Integration ──────────────────────────────────────────────
+
+describe('AWSS3Integration', () => {
+  it('connect with valid credentials', () => {
+    const s3 = new AWSS3Integration();
+    const res = s3.connect({ accessKeyId: 'AKIAXXX', secretAccessKey: 'secret' });
+    assert.strictEqual(res.status, 'Connected');
   });
-  assert.equal(result.path, "/existing/path");
+
+  it('connect without keys throws', () => {
+    const s3 = new AWSS3Integration();
+    assert.throws(() => s3.connect({}), /Invalid AWS credentials/);
+  });
+
+  it('upload with bucket and key', () => {
+    const s3 = new AWSS3Integration();
+    s3.connect({ accessKeyId: 'a', secretAccessKey: 'b' });
+    const ref = s3.upload('proj1', 'my-bucket', 'assets/image.png');
+    assert.strictEqual(ref.bucket, 'my-bucket');
+    assert.strictEqual(ref.key, 'assets/image.png');
+  });
+
+  it('download from bucket', () => {
+    const s3 = new AWSS3Integration();
+    s3.connect({ accessKeyId: 'a', secretAccessKey: 'b' });
+    s3.upload('proj1', 'my-bucket', 'assets/image.png');
+    const path = s3.download('my-bucket', 'assets/image.png');
+    assert.ok(path.includes('image.png'));
+  });
+
+  it('listObjects filters by bucket and prefix', () => {
+    const s3 = new AWSS3Integration();
+    s3.connect({ accessKeyId: 'a', secretAccessKey: 'b' });
+    s3.upload('proj1', 'bucket1', 'a/x.png');
+    s3.upload('proj1', 'bucket1', 'b/y.png');
+    s3.upload('proj1', 'bucket2', 'a/z.png');
+    assert.strictEqual(s3.listObjects('bucket1', 'a/').length, 1);
+    assert.strictEqual(s3.listObjects('bucket1').length, 2);
+  });
+
+  it('generatePresignedUrl returns URL', () => {
+    const s3 = new AWSS3Integration();
+    s3.connect({ accessKeyId: 'a', secretAccessKey: 'b' });
+    const url = s3.generatePresignedUrl('bucket', 'key.txt');
+    assert.ok(url.includes('s3.amazonaws.com'));
+  });
+});
+
+// ─── FigmaIntegration ──────────────────────────────────────────────
+
+describe('FigmaIntegration', () => {
+  it('connect with token', () => {
+    const fg = new FigmaIntegration();
+    const res = fg.connect('figma-token');
+    assert.strictEqual(res.status, 'Connected');
+  });
+
+  it('connect without token throws', () => {
+    const fg = new FigmaIntegration();
+    assert.throws(() => fg.connect(''), /Figma token required/);
+  });
+
+  it('importFrame returns ImportedFrame', () => {
+    const fg = new FigmaIntegration();
+    fg.connect('tok');
+    const imp = fg.importFrame('file1', 'frame1');
+    assert.strictEqual(imp.fileId, 'file1');
+    assert.strictEqual(imp.frameId, 'frame1');
+  });
+
+  it('listFrames returns frames for file', () => {
+    const fg = new FigmaIntegration();
+    fg.connect('tok');
+    fg.importFrame('file1', 'f1');
+    fg.importFrame('file1', 'f2');
+    fg.importFrame('file2', 'f3');
+    assert.strictEqual(fg.listFrames('file1').length, 2);
+  });
+
+  it('exportFrame returns ExportFile', () => {
+    const fg = new FigmaIntegration();
+    fg.connect('tok');
+    const exp = fg.exportFrame('file1', 'frame1', 'png');
+    assert.strictEqual(exp.format, 'png');
+    assert.ok(exp.path.includes('.png'));
+  });
+});
+
+// ─── CanvaIntegration ──────────────────────────────────────────────
+
+describe('CanvaIntegration', () => {
+  it('connect succeeds', () => {
+    const cv = new CanvaIntegration();
+    const res = cv.connect({ apiKey: 'canva-key' });
+    assert.strictEqual(res.status, 'Connected');
+  });
+
+  it('importDesign returns ImportedDesign', () => {
+    const cv = new CanvaIntegration();
+    cv.connect({ apiKey: 'key' });
+    const imp = cv.importDesign('design123');
+    assert.strictEqual(imp.designId, 'design123');
+    assert.strictEqual(imp.service, 'Canva');
+  });
+
+  it('listDesigns returns all', () => {
+    const cv = new CanvaIntegration();
+    cv.connect({ apiKey: 'key' });
+    cv.importDesign('d1');
+    cv.importDesign('d2');
+    assert.strictEqual(cv.listDesigns().length, 2);
+  });
+
+  it('exportDesign returns path', () => {
+    const cv = new CanvaIntegration();
+    cv.connect({ apiKey: 'key' });
+    const exp = cv.exportDesign('d1', 'pdf');
+    assert.ok(exp.path.includes('canva_d1.pdf'));
+  });
+});
+
+// ─── AdobeIntegration ──────────────────────────────────────────────
+
+describe('AdobeIntegration', () => {
+  it('connect succeeds', () => {
+    const ab = new AdobeIntegration();
+    const res = ab.connect({ apiKey: 'adobe-key' });
+    assert.strictEqual(res.status, 'Connected');
+  });
+
+  it('exportToPremiere returns AAV file', () => {
+    const ab = new AdobeIntegration();
+    ab.connect({ apiKey: 'key' });
+    const res = ab.exportToPremiere('proj1');
+    assert.ok(res.aavPath.includes('.aav'));
+  });
+
+  it('exportToAfterEffects returns AEP file', () => {
+    const ab = new AdobeIntegration();
+    ab.connect({ apiKey: 'key' });
+    const res = ab.exportToAfterEffects('proj1');
+    assert.ok(res.aepPath.includes('.aep'));
+  });
+
+  it('importFromPremiere returns Project', () => {
+    const ab = new AdobeIntegration();
+    ab.connect({ apiKey: 'key' });
+    const proj = ab.importFromPremiere('/exports/premiere.prproj');
+    assert.strictEqual(proj.service, 'AdobePremiere');
+    assert.ok(proj.name.includes('premiere'));
+  });
+});
+
+// ─── BlenderIntegration ────────────────────────────────────────────
+
+describe('BlenderIntegration', () => {
+  it('connect with endpoint', () => {
+    const bl = new BlenderIntegration();
+    const res = bl.connect('http://localhost:9090');
+    assert.strictEqual(res.status, 'Connected');
+  });
+
+  it('importScene returns Scene', () => {
+    const bl = new BlenderIntegration();
+    bl.connect('http://localhost:9090');
+    const scene = bl.importScene('/scenes/room.blend');
+    assert.ok(scene.id);
+    assert.strictEqual(scene.name, 'room.blend');
+  });
+
+  it('exportScene returns ExportFile', () => {
+    const bl = new BlenderIntegration();
+    bl.connect('http://localhost:9090');
+    const scene = bl.importScene('/scenes/room.blend');
+    const exp = bl.exportScene(scene.id, 'fbx');
+    assert.ok(exp.path.includes('.fbx'));
+  });
+
+  it('renderFrame returns RenderedFrame', () => {
+    const bl = new BlenderIntegration();
+    bl.connect('http://localhost:9090');
+    const scene = bl.importScene('/scenes/room.blend');
+    const render = bl.renderFrame(scene.id, 42);
+    assert.strictEqual(render.frame, 42);
+    assert.ok(render.path.includes('f42'));
+  });
+});
+
+// ─── SlackIntegration ──────────────────────────────────────────────
+
+describe('SlackIntegration', () => {
+  it('connect with token', () => {
+    const sl = new SlackIntegration();
+    const res = sl.connect('xoxb-token');
+    assert.strictEqual(res.status, 'Connected');
+  });
+
+  it('sendNotification returns Sent', () => {
+    const sl = new SlackIntegration();
+    sl.connect('xoxb-token');
+    const res = sl.sendNotification('general', 'Hello team!');
+    assert.strictEqual(res.status, 'Sent');
+    assert.strictEqual(sl.sentMessages.length, 1);
+  });
+
+  it('getChannels returns channels', () => {
+    const sl = new SlackIntegration();
+    sl.connect('xoxb-token');
+    const channels = sl.getChannels();
+    assert.ok(channels.length >= 3);
+    assert.strictEqual(channels[0].name, 'general');
+  });
+
+  it('uploadFile returns Uploaded', () => {
+    const sl = new SlackIntegration();
+    sl.connect('xoxb-token');
+    const res = sl.uploadFile('design', '/exports/poster.png');
+    assert.strictEqual(res.status, 'Uploaded');
+    assert.strictEqual(res.name, 'poster.png');
+  });
+});
+
+// ─── ZapierIntegration ─────────────────────────────────────────────
+
+describe('ZapierIntegration', () => {
+  it('connect with api key', () => {
+    const zp = new ZapierIntegration();
+    const res = zp.connect('zapier-key-123');
+    assert.strictEqual(res.status, 'Connected');
+  });
+
+  it('createTrigger returns Trigger', () => {
+    const zp = new ZapierIntegration();
+    zp.connect('key');
+    const trigger = zp.createTrigger('project.created', { name: 'test' });
+    assert.strictEqual(trigger.event, 'project.created');
+    assert.ok(trigger.id);
+  });
+
+  it('listTriggers returns all', () => {
+    const zp = new ZapierIntegration();
+    zp.connect('key');
+    zp.createTrigger('e1', {});
+    zp.createTrigger('e2', {});
+    assert.strictEqual(zp.listTriggers().length, 2);
+  });
+
+  it('testTrigger returns success', () => {
+    const zp = new ZapierIntegration();
+    zp.connect('key');
+    const trigger = zp.createTrigger('e1', {});
+    const res = zp.testTrigger(trigger.id);
+    assert.strictEqual(res.success, true);
+  });
+
+  it('getWebhookUrl returns URL', () => {
+    const zp = new ZapierIntegration();
+    zp.connect('zapier-key');
+    const url = zp.getWebhookUrl();
+    assert.ok(url.includes('hooks.zapier.com'));
+    assert.ok(url.includes('zapier-key'));
+  });
+});
+
+// ─── Cross-cutting: Not connected errors ───────────────────────────
+
+describe('Not-connected error paths', () => {
+  it('GoogleDrive throws when upload called before connect', () => {
+    const gd = new GoogleDriveIntegration();
+    assert.throws(() => gd.upload('p', '/a'), /Not connected/);
+  });
+
+  it('Dropbox throws when upload called before connect', () => {
+    const db = new DropboxIntegration();
+    assert.throws(() => db.upload('p', '/a'), /Not connected/);
+  });
+
+  it('OneDrive throws when upload called before connect', () => {
+    const od = new OneDriveIntegration();
+    assert.throws(() => od.upload('p', '/a'), /Not connected/);
+  });
+
+  it('Figma throws when importFrame called before connect', () => {
+    const fg = new FigmaIntegration();
+    assert.throws(() => fg.importFrame('f', 'fr'), /Not connected/);
+  });
+
+  it('Blender throws when importScene called before connect', () => {
+    const bl = new BlenderIntegration();
+    assert.throws(() => bl.importScene('/a.blend'), /Not connected/);
+  });
 });
