@@ -888,6 +888,7 @@ export class EnterprisePortal {
     const portal = this.getPortal(clientId);
     return {
       client_id: portal.client_id,
+      total_users: portal.users.length,
       users: portal.users.length,
       tickets: 0,
       status: portal.status,
@@ -901,7 +902,9 @@ export class EnterprisePortal {
   }
 
   addPortalUser(clientId, user = {}) {
-    const portal = this.getPortal(clientId);
+    const id = ensureClientId(clientId);
+    const portal = this._portals.get(id);
+    if (!portal) throw new Error(`Portal not found for client '${id}'`);
     const userId = user.id || makeId('portal_user');
     const portalUser = {
       id: userId,
@@ -919,7 +922,9 @@ export class EnterprisePortal {
   }
 
   removePortalUser(clientId, userId) {
-    const portal = this.getPortal(clientId);
+    const id = ensureClientId(clientId);
+    const portal = this._portals.get(id);
+    if (!portal) throw new Error(`Portal not found for client '${id}'`);
     const before = portal.users.length;
     portal.users = portal.users.filter((user) => user.id !== userId);
     portal.updated_at = isoNow();
@@ -964,8 +969,9 @@ export class CustomAppBuilder {
     const buildId = options.build_id || makeId('build');
     const build = {
       id: buildId,
+      build_id: buildId,
       client_id: id,
-      status: 'built',
+      status: 'completed',
       target: options.target || 'web',
       version: options.version || '1.0.0',
       artifact_url: options.artifact_url || `https://cdn.vireo.studio/apps/${id}/${buildId}.zip`,
@@ -985,6 +991,7 @@ export class CustomAppBuilder {
     this._appConfigs.set(id, {
       client_id: id,
       build_id: buildId,
+      platform: options.platform || 'web',
       options: clone(options),
       updated_at: isoNow(),
     });
@@ -1055,6 +1062,7 @@ export class CustomAppBuilder {
       client_id: build.client_id,
       build_id: buildId,
       status: 'rolled_back',
+      rolled_back: true,
       rolled_back_at: isoNow(),
     };
   }

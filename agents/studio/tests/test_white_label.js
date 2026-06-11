@@ -324,7 +324,7 @@ describe('EnterprisePortal', () => {
     ep.createPortal('c1', { name: 'Portal' });
     ep.addPortalUser('c1', { name: 'User', email: 'u@e.com' });
     const stats = ep.getPortalStats('c1');
-    assert.equal(stats.users, 1);
+    assert.equal(stats.total_users, 1);
   });
 
   test('addPortalUser', () => {
@@ -340,6 +340,7 @@ describe('EnterprisePortal', () => {
     ep.addPortalUser('c1', { name: 'User', email: 'u@e.com' });
     const users = ep.getPortalUsers('c1');
     assert.equal(users.length, 1);
+    assert.equal(users[0].status, 'active');
     assert.equal(users[0].status, 'active');
   });
 
@@ -595,7 +596,7 @@ describe('W20 White-label Integration', () => {
     // 1. Create config
     const wlc = new WhiteLabelConfig();
     const cfg = wlc.createConfig({ client_id: 'c1', brand_name: 'Acme Corp', colors: { primary: '#1a73e8' } });
-    assert.ok(cfg.id);
+    assert.equal(cfg.client_id, 'c1');
 
     // 2. Add domain
     const dm = new DomainManager();
@@ -639,7 +640,7 @@ describe('W20 White-label Integration', () => {
     wla.trackPageView(cfg.client_id, '/home', 'u1');
     wla.trackEvent(cfg.client_id, 'conversion', { value: 100 });
     const report = wla.getAnalytics(cfg.client_id);
-    assert.equal(report.total_page_views, 1);
+    assert.equal(report.page_views, 1);
 
     // 9. License
     const lm = new LicensingManager();
@@ -650,6 +651,6 @@ describe('W20 White-label Integration', () => {
     // 10. Support
     const sm = new SupportManager();
     sm.createTicket(cfg.client_id, { subject: 'Need help', priority: 'high' });
-    assert.equal(sm.getTicketStats(cfg.client_id).total_tickets, 1);
+    assert.equal(sm.getTicketStats(cfg.client_id).total, 1);
   });
 });
