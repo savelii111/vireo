@@ -935,7 +935,7 @@ export class VoiceParser {
 
     // Extract count hint (e.g., "top 5 moments")
     let max_clips = null;
-    const countMatch = lower.match(/(?:top|best|first|last|select)\s*(\d+)/);
+    const countMatch = lower.match(/(?:top|best|first|select)\s*(\d+)/);
     if (countMatch) {
       max_clips = parseInt(countMatch[1], 10);
       max_clips = clamp(max_clips, 2, 20);

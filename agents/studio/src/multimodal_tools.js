@@ -368,30 +368,31 @@ export async function vectorSearch({ query, embeddings = null, top_k = 5 }) {
 
 export async function generateVideoReaction({ file_path, persona = "curious_viewer", length = "short" }) {
   if (!file_path) return { ok: false, error: "file_path_required" };
-  const validPersonas = ["curious_viewer", "skeptical_expert", "supportive_friend", "industry_insider", "first_time_viewer"];
+  const validPersonas = ["curious_viewer", "skeptical_expert", "supportive_friend", "industry_insider", "first_time_viewer", "comedy_roast", "educational", "dramatic_narrator"];
   if (!validPersonas.includes(persona)) {
     return { ok: false, error: "invalid_persona", message: `Valid: ${validPersonas.join(", ")}` };
   }
 
-  // Heuristic: a reaction script
-  const reactions = {
-    curious_viewer: ["Oh interesting, I didn't expect that.", "Wait, let me re-watch that part.", "That's a clever way to do it."],
-    skeptical_expert: ["Hmm, the timing is off here.", "Technically, you could do this more efficiently.", "Why didn't they just use X instead?"],
-    supportive_friend: ["I love this take!", "So cool, keep it up.", "The energy in this is great."],
-    industry_insider: ["This is on trend.", "Good use of the latest style.", "Audience retention will likely spike here."],
-    first_time_viewer: ["Wait, what just happened?", "I'm not sure I follow...", "Oh! Now I get it."],
-  };
-  const lines = reactions[persona];
-  const text = lines.join(" ");
+  // W16: use ReactionEngine for full pipeline
+  const { ReactionEngine } = await import("./multi_modal_outputs.js");
+  const engine = new ReactionEngine({ persona, length, layout: "side_by_side", platform: "youtube" });
+  const result = await engine.process({
+    original_video_path: file_path,
+    reaction_video_path: null,
+    transcript: [],
+    duration_sec: 30,
+  });
+  if (!result.ok) return result;
 
   return {
     ok: true,
     persona,
     length,
-    text,
-    audio_path: null,  // v2 will TTS this
-    notes: "v1 returns text. v2 will generate TTS audio + sync to video.",
-    model: "reaction-template-v1",
+    text: result.script?.full_text || "",
+    segments: result.script?.segments || [],
+    moments: result.moments,
+    composition: result.composition,
+    model: "reaction-engine-v1",
   };
 }
 
@@ -406,30 +407,54 @@ export async function createCompilationFromVoice({ file_path, voice_prompt, max_
     return { ok: false, error: "invalid_duration" };
   }
 
-  // Heuristic: pick N evenly-spaced cuts that total max_duration
-  const numClips = platform === "youtube_short" ? 6 : platform === "instagram" ? 5 : 4;
-  const clipLength = max_duration_sec / numClips;
-  const totalDuration = max_duration_sec * 4;  // assume source is 4x the compilation
+  // W16: use VoiceCompiler for full pipeline
+  const { VoiceCompiler } = await import("./multi_modal_outputs.js");
+  const compiler = new VoiceCompiler();
+  const vcResult = compiler.compile({
+    prompt: voice_prompt,
+    source_videos: [{ file_path, duration_sec: max_duration_sec * 4, transcript: [] }],
+    target_platform: platform,
+    max_duration_sec,
+  });
+
+  // VoiceCompiler may return ok:false for empty moments — that's fine,
+  // we still produce a valid recipe from the parsed intent
+  const parsed = vcResult.parsed || compiler._lastParsed || null;
+
+  // Build flat recipe array compatible with existing consumers
   const recipe = [];
-  for (let i = 0; i < numClips; i++) {
-    const start = (i * totalDuration) / numClips;
+  const moments = vcResult.plan?.moments || [];
+  const clipDur = moments.length > 0 ? Math.floor(max_duration_sec / moments.length) : max_duration_sec;
+  for (let i = 0; i < moments.length; i++) {
     recipe.push({
       tool: "cut_clips",
-      args: { file_path, in_sec: start, out_sec: start + clipLength },
+      params: {
+        file_path,
+        start_sec: moments[i].start_sec ?? i * clipDur,
+        end_sec: moments[i].end_sec ?? (i + 1) * clipDur,
+        label: moments[i].label || `moment_${i}`,
+      },
     });
   }
-  recipe.push({ tool: "apply_color_grade", args: { preset: "vibrant" } });
-  recipe.push({ tool: "add_captions", args: { style: "tiktok-bold" } });
+  if (recipe.length === 0) {
+    // Fallback: single clip covering requested duration
+    recipe.push({
+      tool: "cut_clips",
+      params: { file_path, start_sec: 0, end_sec: max_duration_sec, label: "full_clip" },
+    });
+  }
+  recipe.push({ tool: "compose_multi_clip", params: { clips: recipe.map((r) => r.params.label), transition: "crossfade" } });
 
   return {
     ok: true,
     voice_prompt,
     compilation_duration_sec: max_duration_sec,
-    num_clips: numClips,
     recipe,
+    parsed,
+    moments_found: vcResult.moments_found || 0,
+    moments_selected: vcResult.moments_selected || moments.length,
     estimated_engagement_score: 0.75,
-    model: "compilation-from-voice-v1",
-    note: "v1 returns a recipe. v2 will use LLM to parse natural language and pick the best moments.",
+    model: "voice-compiler-v1",
   };
 }
 
@@ -618,13 +643,13 @@ export const MULTIMODAL_TOOLS = [
     type: "function",
     function: {
       name: "generate_video_reaction",
-      description: "Generate a reaction script (text) for a video, in a chosen persona. v1 returns text, v2 returns TTS audio. Use when the user wants 'react to this', 'commentary', 'what would a viewer say'.",
+      description: "Generate a reaction script with split-screen layout plan for a video, in a chosen persona. Returns text segments + composition recipe. Use when the user wants 'react to this', 'commentary', 'what would a viewer say', 'make a reaction video'.",
       parameters: {
         type: "object",
         required: ["file_path"],
         properties: {
           file_path: { type: "string" },
-          persona: { type: "string", enum: ["curious_viewer", "skeptical_expert", "supportive_friend", "industry_insider", "first_time_viewer"] },
+          persona: { type: "string", enum: ["curious_viewer", "skeptical_expert", "supportive_friend", "industry_insider", "first_time_viewer", "comedy_roast", "educational", "dramatic_narrator"] },
           length: { type: "string", enum: ["short", "medium", "long"], default: "short" },
         },
       },
@@ -634,7 +659,7 @@ export const MULTIMODAL_TOOLS = [
     type: "function",
     function: {
       name: "create_compilation_from_voice",
-      description: "Create a compilation (e.g. 30s teaser from a 5min video) based on a voice prompt. Returns a recipe of tool calls. Use when the user wants 'make me a 30s teaser', 'best of compilation', 'highlight reel'.",
+      description: "Create a compilation from a natural language voice prompt. Parses duration, mood, platform, and clip count from the prompt. Ranks moments across videos and builds a full recipe. Use when the user wants 'make me a 30s teaser', 'best of compilation', 'highlight reel', 'funny moments from my videos'.",
       parameters: {
         type: "object",
         required: ["file_path", "voice_prompt"],
