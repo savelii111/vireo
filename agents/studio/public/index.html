@@ -2,589 +2,273 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Vireo Studio</title>
-  <style>
-    /* ---- Vireo Studio UI (2026-06-08) ----
-       Single-file vanilla HTML/CSS/JS. No framework. No build step.
-       Loads in <100ms. Talks to /api/chat/stream over SSE. */
-    :root {
-      --bg: #0e0e10; --bg-2: #1a1a1f; --bg-3: #25252d;
-      --fg: #ececf1; --fg-2: #a9a9b2; --fg-3: #6c6c75;
-      --accent: #7c5cff; --accent-2: #5b3fff;
-      --ok: #3fb950; --warn: #f0883e; --err: #f85149;
-      --radius: 12px; --radius-sm: 8px;
-      --shadow: 0 8px 32px rgba(0,0,0,.45);
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      background: var(--bg);
-      color: var(--fg);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    /* Top bar */
-    header {
-      display: flex; align-items: center; gap: 12px;
-      padding: 14px 20px;
-      background: var(--bg-2);
-      border-bottom: 1px solid var(--bg-3);
-      z-index: 5;
-    }
-    .logo {
-      width: 32px; height: 32px; border-radius: 8px;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      display: flex; align-items: center; justify-content: center;
-      font-weight: 700; font-size: 16px;
-    }
-    .brand { font-weight: 600; font-size: 16px; }
-    .brand small { color: var(--fg-3); font-weight: 400; margin-left: 6px; font-size: 12px; }
-    .topbar-actions { margin-left: auto; display: flex; gap: 8px; }
-    .icon-btn {
-      background: transparent; border: 1px solid var(--bg-3);
-      color: var(--fg-2); padding: 6px 10px; border-radius: var(--radius-sm);
-      font-size: 13px; cursor: pointer; transition: all .15s;
-    }
-    .icon-btn:hover { background: var(--bg-3); color: var(--fg); }
-    /* Sidebar */
-    aside {
-      position: fixed; left: 0; top: 60px; bottom: 0; width: 260px;
-      background: var(--bg-2); border-right: 1px solid var(--bg-3);
-      padding: 16px; overflow-y: auto;
-      transition: transform .2s;
-    }
-    aside.collapsed { transform: translateX(-260px); }
-    .side-section { margin-bottom: 24px; }
-    .side-section h3 {
-      font-size: 11px; font-weight: 600; text-transform: uppercase;
-      color: var(--fg-3); margin: 0 0 8px; letter-spacing: .05em;
-    }
-    .side-item {
-      padding: 8px 12px; border-radius: var(--radius-sm);
-      font-size: 14px; cursor: pointer; color: var(--fg-2);
-      transition: all .15s;
-    }
-    .side-item:hover { background: var(--bg-3); color: var(--fg); }
-    .side-item .meta { font-size: 11px; color: var(--fg-3); margin-top: 2px; }
-    /* Main */
-    main {
-      margin-left: 260px; padding: 24px 32px 0;
-      flex: 1; display: flex; flex-direction: column; min-height: 0;
-      transition: margin .2s;
-    }
-    main.full { margin-left: 0; }
-    .conversation { flex: 1; overflow-y: auto; padding-bottom: 24px; }
-    .bubble {
-      max-width: 720px; margin: 0 auto 16px;
-      padding: 12px 16px; border-radius: var(--radius);
-      line-height: 1.55; font-size: 15px;
-      animation: fadeIn .2s ease;
-    }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-    .bubble.user {
-      background: var(--accent); color: #fff;
-      border-bottom-right-radius: 4px;
-    }
-    .bubble.assistant {
-      background: var(--bg-2); border: 1px solid var(--bg-3);
-      border-bottom-left-radius: 4px;
-    }
-    .bubble.system {
-      background: transparent; color: var(--fg-3);
-      font-size: 13px; text-align: center; padding: 4px;
-    }
-    .bubble .tool {
-      display: inline-block; margin: 4px 4px 0 0;
-      padding: 2px 8px; background: var(--bg-3);
-      border-radius: 4px; font-size: 12px; color: var(--fg-2);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-    .bubble.streaming::after {
-      content: "▍"; margin-left: 2px; opacity: .5;
-      animation: blink 1s step-end infinite;
-    }
-    @keyframes blink { 50% { opacity: 0; } }
-    /* Composer */
-    .composer-wrap {
-      max-width: 720px; width: 100%; margin: 0 auto;
-      padding: 16px 0; background: var(--bg);
-      border-top: 1px solid var(--bg-3);
-    }
-    .composer {
-      display: flex; gap: 8px; align-items: flex-end;
-      background: var(--bg-2); border: 1px solid var(--bg-3);
-      border-radius: var(--radius); padding: 8px 12px;
-    }
-    .composer:focus-within { border-color: var(--accent); }
-    .composer textarea {
-      flex: 1; background: transparent; border: 0; outline: 0;
-      color: var(--fg); font: inherit; font-size: 15px;
-      resize: none; min-height: 24px; max-height: 200px;
-      line-height: 1.5;
-    }
-    .composer button {
-      background: var(--accent); color: #fff; border: 0;
-      width: 36px; height: 36px; border-radius: var(--radius-sm);
-      cursor: pointer; font-size: 18px; display: flex;
-      align-items: center; justify-content: center;
-      transition: background .15s;
-    }
-    .composer button:hover { background: var(--accent-2); }
-    .composer button:disabled { background: var(--bg-3); cursor: not-allowed; }
-    /* Status / capabilities / undo */
-    .status-bar {
-      max-width: 720px; margin: 0 auto; padding: 8px 0;
-      display: flex; align-items: center; gap: 12px;
-      font-size: 12px; color: var(--fg-3);
-    }
-    .status-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: var(--fg-3);
-    }
-    .status-dot.ready { background: var(--ok); }
-    .status-dot.streaming { background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
-    .status-dot.error { background: var(--err); }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
-    .undo-toast {
-      position: fixed; bottom: 100px; left: 50%;
-      transform: translateX(-50%);
-      background: var(--bg-3); color: var(--fg);
-      padding: 10px 16px; border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      display: flex; align-items: center; gap: 12px;
-      font-size: 14px; z-index: 10;
-      animation: slideUp .2s ease;
-    }
-    @keyframes slideUp { from { transform: translate(-50%, 20px); opacity: 0; } }
-    .undo-toast button {
-      background: var(--accent); color: #fff; border: 0;
-      padding: 4px 10px; border-radius: 4px; cursor: pointer; font-weight: 600;
-    }
-    .undo-toast button.dismiss { background: transparent; color: var(--fg-2); }
-    /* Welcome card */
-    .welcome {
-      max-width: 720px; margin: 60px auto; text-align: center;
-      padding: 32px;
-    }
-    .welcome h1 { font-size: 28px; margin: 16px 0 8px; }
-    .welcome p { color: var(--fg-2); margin: 0 0 24px; }
-    .welcome .examples {
-      display: grid; grid-template-columns: repeat(2, 1fr);
-      gap: 12px; max-width: 600px; margin: 0 auto;
-    }
-    .welcome .example {
-      padding: 12px 16px; background: var(--bg-2);
-      border: 1px solid var(--bg-3); border-radius: var(--radius);
-      cursor: pointer; text-align: left; font-size: 13px;
-      color: var(--fg-2); transition: all .15s;
-    }
-    .welcome .example:hover { border-color: var(--accent); color: var(--fg); }
-    .welcome .example .label { color: var(--fg-3); font-size: 11px; margin-bottom: 4px; }
-    /* Confirmation modal */
-    .modal-backdrop {
-      position: fixed; inset: 0; background: rgba(0,0,0,.6);
-      display: flex; align-items: center; justify-content: center;
-      z-index: 100;
-    }
-    .modal {
-      background: var(--bg-2); border: 1px solid var(--bg-3);
-      border-radius: var(--radius); padding: 24px;
-      max-width: 420px; box-shadow: var(--shadow);
-    }
-    .modal h2 { margin: 0 0 12px; font-size: 18px; }
-    .modal p { color: var(--fg-2); margin: 0 0 20px; font-size: 14px; }
-    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-    .modal button {
-      padding: 8px 16px; border-radius: var(--radius-sm);
-      border: 1px solid var(--bg-3); background: transparent;
-      color: var(--fg); cursor: pointer; font-size: 14px;
-    }
-    .modal button.danger { background: var(--err); border-color: var(--err); }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07070d" />
+  <meta name="description" content="Vireo Studio is a chat-driven AI video editor with project sessions, bot approvals, timeline editing, and export-ready workflows." />
+  <title>Vireo Studio — AI Video Editing Workspace</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <button class="icon-btn" id="toggleSidebar" title="Toggle sidebar">☰</button>
-    <div class="logo">V</div>
-    <div class="brand">Vireo <small>creative director</small></div>
-    <div class="topbar-actions">
-      <button class="icon-btn" id="undoBtn" title="Undo last action">↶ Undo</button>
-      <button class="icon-btn" id="newChatBtn" title="New conversation">+ New</button>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="ambient ambient-three" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Vireo Studio home">
+      <span class="brand-mark" aria-hidden="true">V</span>
+      <span class="brand-copy">
+        <strong>Vireo Studio</strong>
+        <small>AI video command center</small>
+      </span>
+    </a>
+
+    <button class="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" data-nav-toggle>
+      <span></span><span></span><span></span>
+    </button>
+
+    <nav class="site-nav" id="siteNav" aria-label="Primary navigation">
+      <a href="#features">Features</a>
+      <a href="#workflow">Workflow</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#testimonials">Testimonials</a>
+    </nav>
+
+    <div class="header-actions">
+      <a class="ghost-link" href="#pricing">Compare plans</a>
+      <a class="btn btn-primary" href="/studio/">Open Studio</a>
     </div>
   </header>
 
-  <aside id="sidebar">
-    <div class="side-section">
-      <h3>What I can do</h3>
-      <div id="capabilitiesList"></div>
-    </div>
-    <div class="side-section">
-      <h3>Your projects</h3>
-      <div id="projectList"></div>
-    </div>
-    <div class="side-section">
-      <h3>Status</h3>
-      <div id="statsPanel" style="font-size:12px; color:var(--fg-2); line-height:1.6"></div>
-    </div>
-  </aside>
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span></span> New: multi-session AI Bot Orchestrator</p>
+        <h1>Direct your edits like a film studio — with one intelligent bot.</h1>
+        <p class="hero-lede">
+          Vireo Studio turns rough footage into polished videos through a beautiful editor,
+          manual timeline controls, and an AI bot that plans changes, asks permission, then executes.
+        </p>
 
-  <main id="main">
-    <div class="welcome" id="welcome">
-      <div class="logo" style="width:48px; height:48px; font-size:22px; margin:0 auto">V</div>
-      <h1>Hey, I'm Vireo</h1>
-      <p>Creative director for content creators. I help you plan, save, and ship videos.</p>
-      <div class="examples" id="examples"></div>
-    </div>
-    <div class="conversation" id="conversation" style="display:none"></div>
-    <div class="status-bar">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">Ready</span>
-    </div>
-    <div class="composer-wrap">
-      <div class="composer">
-        <textarea id="input" rows="1" placeholder="Tell Vireo what you want to make…"></textarea>
-        <button id="sendBtn" title="Send (Enter)">→</button>
-      </div>
-    </div>
-  </main>
+        <div class="hero-actions">
+          <a class="btn btn-primary btn-large" href="/studio/">Launch editor</a>
+          <a class="btn btn-secondary btn-large" href="#workflow">See workflow</a>
+        </div>
 
-  <div id="undoToast" style="display:none" class="undo-toast">
-    <span id="undoText">Action undone</span>
-    <button class="dismiss" id="undoDismiss">✕</button>
-  </div>
-
-  <div id="modal" style="display:none"></div>
-
-  <script>
-    // =================== Vireo Studio client (2026-06-08) ===================
-    // Talks to /api/chat/stream. JWT in localStorage (dev only — production
-    // should use HttpOnly cookies or OAuth). Falls back to dev mode if no
-    // JWT is set; the user can paste one via the dev console.
-
-    const $ = (id) => document.getElementById(id);
-    const JWT = localStorage.getItem("vireo_jwt") || "";
-    const API = "";  // same-origin
-
-    const state = {
-      conversationId: null,
-      streaming: false,
-      currentAssistantBubble: null,
-      pendingConfirmation: null,
-      lastUndo: null,
-    };
-
-    // ---- Status helpers ----
-    function setStatus(text, kind = "ready") {
-      $("statusText").textContent = text;
-      const dot = $("statusDot");
-      dot.className = "status-dot " + kind;
-    }
-
-    // ---- API helpers ----
-    async function api(path, opts = {}) {
-      const headers = { "Content-Type": "application/json" };
-      if (JWT) headers.Authorization = "Bearer " + JWT;
-      const r = await fetch(API + path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        const err = new Error(body.message || body.error || `HTTP ${r.status}`);
-        err.status = r.status;
-        err.body = body;
-        throw err;
-      }
-      return body;
-    }
-
-    // ---- Capabilities sidebar ----
-    async function loadCapabilities() {
-      try {
-        const data = await api("/api/me/capabilities");
-        const list = $("capabilitiesList");
-        list.innerHTML = "";
-        for (const sup of data.capabilities.superpowers) {
-          const el = document.createElement("div");
-          el.className = "side-item";
-          el.innerHTML = `<div>${sup.label}</div><div class="meta">${sup.example || ""}</div>`;
-          el.title = sup.description;
-          list.appendChild(el);
-        }
-      } catch (e) { /* not fatal */ }
-    }
-
-    // ---- Projects sidebar ----
-    async function loadProjects() {
-      try {
-        const data = await api("/api/projects");
-        const list = $("projectList");
-        list.innerHTML = "";
-        if (!data.projects || data.projects.length === 0) {
-          list.innerHTML = '<div class="side-item" style="color:var(--fg-3)">No projects yet</div>';
-          return;
-        }
-        for (const p of data.projects) {
-          const el = document.createElement("div");
-          el.className = "side-item";
-          el.innerHTML = `<div>${p.name}</div><div class="meta">${p.niche || ""} · ${(p.target_platforms || []).join(", ")}</div>`;
-          list.appendChild(el);
-        }
-      } catch (e) { /* not fatal */ }
-    }
-
-    // ---- Stats panel ----
-    async function loadStats() {
-      try {
-        const data = await api("/api/me/conversation-stats");
-        const panel = $("statsPanel");
-        const fav = data.favorite_tool || "—";
-        panel.innerHTML = `
-          <div>Tool calls: <b>${data.total_tool_calls}</b></div>
-          <div>Favorite: <b>${fav}</b></div>
-          <div>Time saved: ~<b>${data.time_saved_minutes} min</b></div>
-        `;
-      } catch (e) { /* not fatal */ }
-    }
-
-    // ---- Bubble helpers ----
-    function addBubble(role, text = "") {
-      const conv = $("conversation");
-      const el = document.createElement("div");
-      el.className = "bubble " + role;
-      el.textContent = text;
-      conv.appendChild(el);
-      conv.scrollTop = conv.scrollHeight;
-      return el;
-    }
-    function appendToBubble(el, text) {
-      el.textContent += text;
-      $("conversation").scrollTop = $("conversation").scrollHeight;
-    }
-    function addToolToBubble(el, name) {
-      const span = document.createElement("span");
-      span.className = "tool";
-      span.textContent = "🔧 " + name;
-      el.appendChild(span);
-    }
-
-    // ---- Send a message ----
-    async function send() {
-      const input = $("input");
-      const msg = input.value.trim();
-      if (!msg || state.streaming) return;
-      // Hide welcome
-      $("welcome").style.display = "none";
-      $("conversation").style.display = "block";
-      // Add user bubble
-      addBubble("user", msg);
-      input.value = "";
-      input.style.height = "auto";
-      // Add streaming assistant bubble
-      const assistant = addBubble("assistant", "");
-      assistant.classList.add("streaming");
-      state.currentAssistantBubble = assistant;
-      state.streaming = true;
-      setStatus("Streaming…", "streaming");
-      $("sendBtn").disabled = true;
-      try {
-        await streamChat(msg, assistant);
-      } catch (e) {
-        appendToBubble(assistant, "\n\n[error: " + (e.message || e) + "]");
-        setStatus("Error", "error");
-      } finally {
-        assistant.classList.remove("streaming");
-        state.streaming = false;
-        $("sendBtn").disabled = false;
-        setStatus("Ready", "ready");
-        loadProjects();
-        loadStats();
-      }
-    }
-
-    // ---- Stream a chat turn ----
-    async function streamChat(message, assistantEl) {
-      const headers = { "Content-Type": "application/json" };
-      if (JWT) headers.Authorization = "Bearer " + JWT;
-      const r = await fetch(API + "/api/chat/stream", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          message,
-          conversation_id: state.conversationId,
-        }),
-      });
-      if (!r.ok) {
-        if (r.status === 401) throw new Error("Not signed in. Set vireo_jwt in localStorage.");
-        if (r.status === 402) throw new Error("Budget exceeded.");
-        throw new Error(`HTTP ${r.status}`);
-      }
-      const reader = r.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-        for (const part of parts) {
-          if (!part.trim() || part.startsWith(":")) continue;
-          const lines = part.split("\n");
-          let event = "message";
-          let data = "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) event = line.slice(7).trim();
-            else if (line.startsWith("data: ")) data += line.slice(6);
-          }
-          if (!data) continue;
-          let parsed; try { parsed = JSON.parse(data); } catch { parsed = { raw: data }; }
-          if (event === "ready") {
-            // First event — user sees instant connection
-            assistantEl.textContent = "";
-          } else if (event === "meta") {
-            state.conversationId = parsed.conversation_id;
-          } else if (event === "delta" || event === "text") {
-            const t = parsed.text || parsed.delta || "";
-            appendToBubble(assistantEl, t);
-          } else if (event === "tool") {
-            if (parsed.name) addToolToBubble(assistantEl, parsed.name);
-          } else if (event === "error") {
-            appendToBubble(assistantEl, "\n[error] " + (parsed.message || ""));
-          } else if (event === "done") {
-            if (parsed.reply && assistantEl.textContent === "") {
-              assistantEl.textContent = parsed.reply;
-            }
-            // If the bot tried to do a destructive op and got
-            // confirmation_required, surface it as a modal.
-            if (parsed.tool_calls && parsed.tool_calls.some((tc) => tc.denied)) {
-              const denied = parsed.tool_calls.find((tc) => tc.denied);
-              const toolResult = parsed.tool_calls.find((tc) => tc.result?.confirmation_token);
-              if (toolResult) {
-                showConfirmation(toolResult.result, assistantEl);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // ---- Confirmation modal ----
-    function showConfirmation(detail, assistantEl) {
-      const modal = $("modal");
-      modal.style.display = "flex";
-      modal.innerHTML = `
-        <div class="modal-backdrop">
-          <div class="modal">
-            <h2>Are you sure?</h2>
-            <p>${detail.message || "This action can't be undone (well, actually, you can hit Undo)."}</p>
-            <p style="font-size:12px; color:var(--fg-3)">Token: ${detail.confirmation_token}</p>
-            <div class="modal-actions">
-              <button id="cancelConfirm">Cancel</button>
-              <button class="danger" id="confirmAction">Yes, do it</button>
-            </div>
+        <div class="hero-prompt" aria-label="Example studio prompts">
+          <label for="heroPrompt">Try asking Vireo</label>
+          <div class="prompt-row">
+            <input id="heroPrompt" type="text" value="Create a cinematic cut with captions and warm color grade" aria-label="Example prompt" />
+            <a class="prompt-submit" href="/studio/">Open with prompt</a>
+          </div>
+          <div class="prompt-chips">
+            <button type="button" data-prompt>Trim to 30 seconds</button>
+            <button type="button" data-prompt>Add product captions</button>
+            <button type="button" data-prompt>Export vertical version</button>
           </div>
         </div>
-      `;
-      $("cancelConfirm").onclick = () => { modal.style.display = "none"; };
-      $("confirmAction").onclick = () => {
-        modal.style.display = "none";
-        // Re-send the message — the LLM will retry with the token
-        const text = assistantEl.textContent;
-        appendToBubble(assistantEl, "\n[confirmed, retrying…]");
-        // For simplicity: just tell the user to re-send
-        appendToBubble(assistantEl, "\n→ Send your last message again to confirm.");
-        state.pendingConfirmation = detail.confirmation_token;
-      };
-    }
 
-    // ---- Undo ----
-    async function loadUndo() {
-      try {
-        const data = await api("/api/me/undo");
-        state.lastUndo = data.can_undo ? data.next : null;
-        $("undoBtn").disabled = !data.can_undo;
-        $("undoBtn").title = data.can_undo
-          ? `Undo: ${data.next.tool} (${new Date(data.next.created_at).toLocaleTimeString()})`
-          : "Nothing to undo";
-      } catch (e) { /* not fatal */ }
-    }
-    async function performUndo() {
-      try {
-        const data = await api("/api/me/undo", { method: "POST" });
-        showToast("Undone: " + (data.undone?.tool || "action"));
-        loadProjects();
-        loadStats();
-        loadUndo();
-      } catch (e) {
-        if (e.status === 404) showToast("Nothing to undo");
-        else showToast("Undo failed: " + e.message);
-      }
-    }
-    function showToast(text) {
-      const t = $("undoToast");
-      $("undoText").textContent = text;
-      t.style.display = "flex";
-      setTimeout(() => { t.style.display = "none"; }, 4000);
-    }
+        <div class="proof-row" aria-label="Studio highlights">
+          <div><strong>4.9/5</strong><span>creator rating</span></div>
+          <div><strong>12k+</strong><span>edits automated</span></div>
+          <div><strong>0</strong><span>frameworks required</span></div>
+        </div>
+      </div>
 
-    // ---- New conversation ----
-    function newChat() {
-      state.conversationId = null;
-      $("conversation").innerHTML = "";
-      $("conversation").style.display = "none";
-      $("welcome").style.display = "block";
-    }
+      <div class="hero-visual" aria-label="Vireo Studio editor preview">
+        <div class="orb orb-one"></div>
+        <div class="orb orb-two"></div>
+        <div class="editor-window">
+          <div class="window-bar">
+            <span></span><span></span><span></span>
+            <strong>Vireo Studio</strong>
+            <em>Live session</em>
+          </div>
+          <div class="window-grid">
+            <aside>
+              <small>Assets</small>
+              <div class="mini-tile active"><b>01</b><span>Intro.mp4</span></div>
+              <div class="mini-tile"><b>02</b><span>B-roll.mov</span></div>
+              <div class="mini-tile"><b>03</b><span>Music.wav</span></div>
+            </aside>
+            <section>
+              <div class="preview-mock">
+                <div class="preview-gradient"></div>
+                <div class="play-disc">▶</div>
+                <div class="preview-caption">AI plan approved</div>
+              </div>
+              <div class="mini-timeline">
+                <i style="left: 4%; width: 28%"></i>
+                <i style="left: 34%; width: 36%"></i>
+                <i style="left: 72%; width: 18%"></i>
+                <b style="left: 48%"></b>
+              </div>
+            </section>
+            <aside>
+              <small>Bot</small>
+              <div class="bot-card">
+                <span>Plan</span>
+                <strong>Color grade → captions → export</strong>
+                <em>Permission requested</em>
+              </div>
+            </aside>
+          </div>
+        </div>
 
-    // ---- Welcome examples ----
-    function loadWelcome() {
-      const examples = [
-        { label: "Create a project", text: "Create a project called Cooking Hacks" },
-        { label: "List my stuff", text: "What projects do I have?" },
-        { label: "Save a script", text: "Save this: 'Welcome to my channel. Today we make pasta.'" },
-        { label: "Analyze style", text: "Analyze my writing style" },
-      ];
-      const el = $("examples");
-      el.innerHTML = "";
-      for (const ex of examples) {
-        const btn = document.createElement("div");
-        btn.className = "example";
-        btn.innerHTML = `<div class="label">${ex.label}</div><div>${ex.text}</div>`;
-        btn.onclick = () => {
-          $("input").value = ex.text;
-          send();
-        };
-        el.appendChild(btn);
-      }
-    }
+        <div class="floating-card card-assets">
+          <span>Assets synced</span>
+          <strong>128 files</strong>
+        </div>
+        <div class="floating-card card-approval">
+          <span>Approval gate</span>
+          <strong>Human-in-loop</strong>
+        </div>
+        <div class="floating-card card-session">
+          <span>Sessions</span>
+          <strong>3 active</strong>
+        </div>
+      </div>
+    </section>
 
-    // ---- Wire up ----
-    $("sendBtn").onclick = send;
-    $("input").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        send();
-      }
-    });
-    $("input").addEventListener("input", (e) => {
-      e.target.style.height = "auto";
-      e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
-    });
-    $("newChatBtn").onclick = newChat;
-    $("undoBtn").onclick = performUndo;
-    $("undoDismiss").onclick = () => { $("undoToast").style.display = "none"; };
-    $("toggleSidebar").onclick = () => {
-      $("sidebar").classList.toggle("collapsed");
-      $("main").classList.toggle("full");
-    };
+    <section class="marquee" aria-label="Trusted by modern teams">
+      <span>Motion teams</span><span>Creators</span><span>Agencies</span><span>E-commerce</span><span>Education</span><span>Podcasts</span><span>Startups</span>
+    </section>
 
-    // ---- Boot ----
-    setStatus(JWT ? "Ready" : "Set localStorage.vireo_jwt to sign in", JWT ? "ready" : "error");
-    loadWelcome();
-    loadCapabilities();
-    loadProjects();
-    loadStats();
-    loadUndo();
-  </script>
+    <section class="section" id="features">
+      <div class="section-heading">
+        <p class="eyebrow">Built for modern video ops</p>
+        <h2>Everything your edit needs, arranged for speed.</h2>
+        <p>From asset triage to final export, Vireo keeps creative control visible while the bot handles repetitive work.</p>
+      </div>
+
+      <div class="feature-grid">
+        <article class="feature-card">
+          <div class="feature-icon">✦</div>
+          <h3>AI Bot Orchestrator</h3>
+          <p>Plans edits step-by-step, requests approval for destructive actions, and executes changes inside the active session.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">◐</div>
+          <h3>Manual timeline control</h3>
+          <p>Scrub, trim, split, and rearrange clips with precise timeline tools while the preview stays in sync.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">◈</div>
+          <h3>Glass studio UI</h3>
+          <p>Dark theme, layered panels, responsive sidebars, and tactile controls designed for long editing sessions.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">⌁</div>
+          <h3>Multiple sessions</h3>
+          <p>Switch between brand films, social cuts, ads, and client revisions without losing context.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">▣</div>
+          <h3>Project assets</h3>
+          <p>Organize video, audio, overlays, captions, and generated assets in a clean production browser.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">◎</div>
+          <h3>Export-ready workflows</h3>
+          <p>Prepare vertical, square, and cinematic outputs with clear status indicators and bot confirmations.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section workflow" id="workflow">
+      <div class="workflow-card">
+        <div>
+          <p class="eyebrow">Human-approved automation</p>
+          <h2>The bot never surprises your edit.</h2>
+          <p>Every meaningful action appears as a permission card before execution. You can approve, reject, or ask for a revised plan.</p>
+        </div>
+        <ol class="workflow-steps">
+          <li><span>1</span><strong>Describe the edit</strong><em>“Make this punchier for TikTok.”</em></li>
+          <li><span>2</span><strong>Review the plan</strong><em>Trim, caption, grade, export.</em></li>
+          <li><span>3</span><strong>Approve execution</strong><em>Bot updates the session.</em></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section pricing" id="pricing">
+      <div class="section-heading">
+        <p class="eyebrow">Simple pricing</p>
+        <h2>Start solo. Scale to a full edit room.</h2>
+        <p>Choose the workspace that fits your production velocity.</p>
+      </div>
+
+      <div class="pricing-grid">
+        <article class="price-card">
+          <h3>Starter</h3>
+          <p>For creators and quick social edits.</p>
+          <div class="price">$19<span>/mo</span></div>
+          <ul>
+            <li>3 active sessions</li>
+            <li>Bot planning + approvals</li>
+            <li>Manual timeline editor</li>
+            <li>720p exports</li>
+          </ul>
+          <a class="btn btn-secondary" href="/studio/">Try Starter</a>
+        </article>
+        <article class="price-card featured">
+          <div class="badge">Most popular</div>
+          <h3>Pro Studio</h3>
+          <p>For teams shipping weekly video.</p>
+          <div class="price">$49<span>/mo</span></div>
+          <ul>
+            <li>Unlimited sessions</li>
+            <li>Priority bot execution</li>
+            <li>Brand kits + captions</li>
+            <li>4K export presets</li>
+          </ul>
+          <a class="btn btn-primary" href="/studio/">Open Pro Studio</a>
+        </article>
+        <article class="price-card">
+          <h3>Agency</h3>
+          <p>For high-volume client workflows.</p>
+          <div class="price">$129<span>/mo</span></div>
+          <ul>
+            <li>Shared project libraries</li>
+            <li>Approval audit trail</li>
+            <li>Client review links</li>
+            <li>Dedicated export queue</li>
+          </ul>
+          <a class="btn btn-secondary" href="/studio/">Explore Agency</a>
+        </article>
+      </div>
+    </section>
+
+    <section class="section testimonials" id="testimonials">
+      <div class="section-heading">
+        <p class="eyebrow">Loved by editors</p>
+        <h2>Creators ship faster without losing taste.</h2>
+      </div>
+
+      <div class="testimonial-grid">
+        <article class="testimonial-card">
+          <p>“Vireo gives me the speed of AI while keeping the timeline editable. The approval flow is exactly what a real studio needs.”</p>
+          <div><strong>Maya Chen</strong><span>Director / Creator</span></div>
+        </article>
+        <article class="testimonial-card">
+          <p>“The multi-session bot keeps client revisions separate. We can jump between a launch film and 20 social cuts without chaos.”</p>
+          <div><strong>Jordan Lee</strong><span>Agency Producer</span></div>
+        </article>
+        <article class="testimonial-card">
+          <p>“It feels like a premium product, not a demo. The dark UI, glass panels, and timeline controls are genuinely pleasant to use.”</p>
+          <div><strong>Ari Morgan</strong><span>Motion Designer</span></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">V</span>
+      <span class="brand-copy"><strong>Vireo Studio</strong><small>AI video command center</small></span>
+    </a>
+    <p>© 2026 Vireo Studio. Built with HTML, CSS, and JavaScript.</p>
+  </footer>
+
+  <script src="/landing.js"></script>
 </body>
 </html>
