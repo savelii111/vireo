@@ -12,7 +12,7 @@ function makeLLM(behavior) {
   return {
     model: "test",
     isMock: () => behavior.isMock ?? true,
-    costUsd: () => 0,
+    costUsd: behavior.costUsd || (() => 0),
     chat: behavior.chat,
     streamChat: behavior.streamChat,
     getUsage: () => ({}),
@@ -32,7 +32,12 @@ test("run_chat_turn: simple text reply returns reply and messages", async () => 
 });
 
 test("run_chat_turn: tool call is executed via deps[name]", async () => {
-  const llm = makeLLM({ chat: async () => ({ content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "create_project", arguments: JSON.stringify({ name: "X" }) } }], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } }) });
+  let n = 0;
+  const llm = makeLLM({ chat: async () => {
+    n++;
+    if (n === 1) return { content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "create_project", arguments: JSON.stringify({ name: "X" }) } }], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } };
+    return { content: "done", tool_calls: null, usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } };
+  } });
   let called = false;
   const deps = {
     create_project: async ({ userId, name }) => {
@@ -75,7 +80,12 @@ test("run_chat_turn: chat tool dispatched via deps[name] (no executeEditTool hoo
 });
 
 test("run_chat_turn: hooks.onToolCall fires for every tool call", async () => {
-  const llm = makeLLM({ chat: async () => ({ content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "create_project", arguments: "{}" } }, { id: "t2", type: "function", function: { name: "list_projects", arguments: "{}" } }], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } }) });
+  let n = 0;
+  const llm = makeLLM({ chat: async () => {
+    n++;
+    if (n === 1) return { content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "create_project", arguments: "{}" } }, { id: "t2", type: "function", function: { name: "list_projects", arguments: "{}" } }], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } };
+    return { content: "done", tool_calls: null, usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } };
+  } });
   const deps = { create_project: async () => ({ ok: true }), list_projects: async () => ({ ok: true }) };
   const calls = [];
   const hooks = { onToolCall: (info) => calls.push(info) };

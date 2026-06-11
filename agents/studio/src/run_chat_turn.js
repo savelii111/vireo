@@ -94,7 +94,6 @@ export async function runChatTurn({
   if (Array.isArray(tools) && tools.length > 0) {
     for (const t of tools) {
       if (t?.kind === "chat") chatToolNames.add(t.name || t.function?.name);
-      else if (t?.function?.name) chatToolNames.delete(t.function.name);
     }
   }
   // Always seed with CHAT_TOOLS module names (the source of
@@ -142,6 +141,10 @@ export async function runChatTurn({
       // onTextDelta and no tools, call streamChat.
       resp = await llm.chat({ system, messages, tools, signal });
     } catch (e) {
+      if (e?.message?.includes("aborted") || signal?.aborted) {
+        error = "aborted";
+        break;
+      }
       if (e instanceof LLMError) {
         return { reply: `LLM error: ${e.message}`, messages, usage: lastUsage, costUsd: cost, toolCalls: allToolCalls, error: e.code || "llm_error" };
       }
@@ -214,7 +217,7 @@ export async function runChatTurn({
         const confirmToken = args.confirmation_token;
         if (!confirmToken) {
           // First call: ask for confirmation
-          const result = hooks.confirmationCheck({ userId, create: true, tool: tc.function.name, args });
+          const result = await hooks.confirmationCheck({ userId, create: true, tool: tc.function.name, args });
           if (result?.needsConfirmation) {
             allToolCalls.push({ name: tc.function.name, args, kind: "chat", needs_confirmation: true });
             allToolResults.push({ name: tc.function.name, result: { ok: false, error: "confirmation_required", ...result } });
