@@ -21,7 +21,14 @@ import { fileURLToPath } from "node:url";
 import { newId, nowIso, PLATFORMS } from "@vireo/shared";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, "..");
+const ROOT = path.resolve(__dirname, "..", "..");
+const PYTHONPATH = [
+  ROOT,
+  path.join(ROOT, "packages", "shared", "python"),
+  path.join(ROOT, "agents", "style-learner"),
+  path.join(ROOT, "agents", "editor"),
+  process.env.PYTHONPATH,
+].filter(Boolean).join(path.delimiter);
 
 // ---------------------------------------------------------------------------
 // In-process Python agents (spawn a child Python process and call it).
@@ -32,7 +39,10 @@ const ROOT = path.resolve(__dirname, "..");
 function pythonAgent(scriptPath, args = []) {
   return spawn("python", ["-m", scriptPath, ...args], {
     cwd: ROOT,
-    env: process.env,
+    env: {
+      ...process.env,
+      PYTHONPATH,
+    },
     stdio: ["pipe", "pipe", "pipe"],
   });
 }
