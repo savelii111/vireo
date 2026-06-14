@@ -285,6 +285,38 @@ function createSetEffectOpFromDoc(doc: import('../types').TimelineDocument, effe
   });
 }
 
+function createSetTransformOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, transform: Record<string, number>) {
+  const located = findClipInDoc(doc, clipId);
+  if (!located) return null;
+  const patch: Record<string, number> = {};
+  if (Object.prototype.hasOwnProperty.call(transform, 'x')) patch.x = Number(transform.x);
+  if (Object.prototype.hasOwnProperty.call(transform, 'y')) patch.y = Number(transform.y);
+  if (Object.prototype.hasOwnProperty.call(transform, 'scale')) patch.scale = Math.max(0, Number(transform.scale));
+  if (Object.prototype.hasOwnProperty.call(transform, 'opacity')) patch.opacity = Math.max(0, Math.min(1, Number(transform.opacity)));
+  if (Object.keys(patch).length === 0) return null;
+  return makeTimelineOp({
+    op: 'setTransform',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: located.track.id,
+    clipId,
+    payload: { transform: patch },
+  });
+}
+
+function createSetVolumeOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, volume: number) {
+  const located = findClipInDoc(doc, clipId);
+  if (!located) return null;
+  return makeTimelineOp({
+    op: 'setVolume',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: located.track.id,
+    clipId,
+    payload: { volume: Math.max(0, Math.min(1, Number(volume) || 0)) },
+  });
+}
+
 function rebaseOp(doc: import('../types').TimelineDocument, op: import('../types').TimelineOp) {
   const track = doc.tracks.find((item) => item.id === op.trackId);
   const clip = track ? track.clips.find((item) => item.id === op.clipId) : null;
@@ -347,6 +379,16 @@ function rebaseOp(doc: import('../types').TimelineDocument, op: import('../types
           id: existing?.id || (op.payload as Record<string, unknown> | undefined)?.effectId || newClipId('fx'),
         },
       },
+    };
+  }
+
+  if (op.op === 'setTransform' || op.op === 'setVolume') {
+    if (!track || !clip) return null;
+    return {
+      ...op,
+      timelineId: doc.timelineId,
+      trackId: track.id,
+      clipId: clip.id,
     };
   }
 
@@ -710,6 +752,18 @@ export function useEditor() {
     commitOp(createSetEffectOpFromDoc(current.doc, effect, clipId ?? selectedClipId));
   }, [commitOp, selectedClipId]);
 
+  const setTransform = useCallback((clipId: string, transform: Record<string, number>) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createSetTransformOpFromDoc(current.doc, clipId, transform));
+  }, [commitOp]);
+
+  const setVolume = useCallback((clipId: string, volume: number) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createSetVolumeOpFromDoc(current.doc, clipId, volume));
+  }, [commitOp]);
+
   const undo = useCallback(async () => {
     const projectId = serverRef.current?.doc.projectId || getActiveProjectId();
     if (!projectId) return;
@@ -758,6 +812,8 @@ export function useEditor() {
     addText,
     addEffect,
     setEffect,
+    setTransform,
+    setVolume,
     splitAtPlayhead,
     deleteSelected,
     duplicateSelected,

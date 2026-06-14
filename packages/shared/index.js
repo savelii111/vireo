@@ -70,3 +70,5 @@ export const PLATFORM_SPECS = {
   substack: { ratio: "longform", max_chars: 100000, min_chars: 500, hook_window_chars: 200 },
   podcast: { ratio: "audio", max_sec: 7200, min_sec: 600, hook_window_sec: 30 },
 };
+
+export * from './timeline.js';

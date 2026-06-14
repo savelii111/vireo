@@ -34,9 +34,7 @@ STATUS_REVERTED = "reverted"
 
 def _utc_now_iso() -> str:
   """Return current UTC time as an ISO 8601 string with 'Z' suffix."""
-  # datetime.isoformat() with explicit UTC gives "+00:00"; normalize to "Z"
-  # for the common ISO 8601 representation.
-  return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+  return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 @dataclass
@@ -133,6 +131,8 @@ class EditHistory:
 
   def __init__(self, store: dict[str, EditVersion] | None = None) -> None:
     self.store: dict[str, EditVersion] = store if store is not None else {}
+    self._order: dict[str, int] = {version_id: index for index, version_id in enumerate(self.store)}
+    self._counter = len(self.store)
     self._lock = threading.RLock()
 
   # ------------------------------------------------------------------ record
@@ -151,6 +151,8 @@ class EditHistory:
         version.created_at = _utc_now_iso()
       # Copy the params dict so external mutations don't leak into storage.
       version.params = copy.deepcopy(version.params)
+      self._counter += 1
+      self._order[version.id] = self._counter
       self.store[version.id] = version
 
   # --------------------------------------------------------------------- get
@@ -176,7 +178,7 @@ class EditHistory:
       # copy-on-read: snapshot the values list under the lock.
       matching = [v for v in self.store.values() if v.file_id == file_id]
     # Sort outside the lock; we already have a snapshot.
-    matching.sort(key=lambda v: v.created_at, reverse=True)
+    matching.sort(key=lambda v: (v.created_at, self._order.get(v.id, 0)), reverse=True)
     return [self._copy_version(v) for v in matching[:safe_limit]]
 
   # ------------------------------------------------------------------ latest
@@ -192,7 +194,7 @@ class EditHistory:
       for v in self.store.values():
         if v.file_id != file_id:
           continue
-        if best is None or v.created_at > best.created_at:
+        if best is None or (v.created_at, self._order.get(v.id, 0)) > (best.created_at, self._order.get(best.id, 0)):
           best = v
       if best is None:
         return None
@@ -228,6 +230,8 @@ class EditHistory:
         parent_version_id=version_id,
         status=STATUS_APPLIED,
       )
+      self._counter += 1
+      self._order[revert_version.id] = self._counter
       self.store[revert_version.id] = revert_version
 
     return self._copy_version(revert_version)
@@ -242,6 +246,8 @@ class EditHistory:
     """Drop all stored versions. Mostly useful in tests."""
     with self._lock:
       self.store.clear()
+      self._order.clear()
+      self._counter = 0
 
   # ----------------------------------------------------------- private bits
 

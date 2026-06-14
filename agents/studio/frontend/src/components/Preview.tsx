@@ -29,6 +29,17 @@ function SourceBadge({ children }: { children: ReactNode }) {
   );
 }
 
+function transformStyle(clip: Clip) {
+  const x = Number(clip.transform?.x ?? 0);
+  const y = Number(clip.transform?.y ?? 0);
+  const scale = Math.max(0, Number(clip.transform?.scale ?? 1));
+  const opacity = Math.max(0, Math.min(1, Number(clip.transform?.opacity ?? 1)));
+  return {
+    transform: `translate(${Number.isFinite(x) ? x : 0}px, ${Number.isFinite(y) ? y : 0}px) scale(${Number.isFinite(scale) ? scale : 1})`,
+    opacity: Number.isFinite(opacity) ? opacity : 1,
+  };
+}
+
 export function Preview({
   tab, onTabChange, playing, onTogglePlay, playhead, duration, fps, width, height,
   activeVideoClip = null,
@@ -38,6 +49,7 @@ export function Preview({
   const activeMode = activeVideoClip ? previewModeForClip(activeVideoClip) : 'empty';
   const activeText = activeTextClips;
   const sourceLabel = activeVideoClip?.source ?? 'upload';
+  const videoTransform = activeVideoClip ? transformStyle(activeVideoClip) : {};
 
   return (
     <section className="flex flex-col bg-bg-0 border-b border-border-1 min-h-0">
@@ -102,6 +114,7 @@ export function Preview({
               src={activeVideoClip.source_file}
               muted
               playsInline
+              style={videoTransform}
             />
           ) : null}
 
@@ -109,6 +122,7 @@ export function Preview({
             <div
               data-testid="preview-placeholder"
               className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center"
+              style={videoTransform}
             >
               <div className="rounded-2xl border border-dashed border-border-2 bg-bg-1/80 p-8 shadow-inner">
                 <div className="text-[11px] uppercase tracking-[0.3em] text-accent font-bold mb-2">Simulated media</div>
@@ -131,7 +145,8 @@ export function Preview({
           ) : null}
 
           {activeText.map((clip) => {
-            const { x, y } = transformPosition(clip);
+            const textTransform = transformStyle(clip);
+            const position = transformPosition(clip);
             return (
               <div
                 key={clip.id}
@@ -139,11 +154,11 @@ export function Preview({
                 data-clip-id={clip.id}
                 className="absolute z-[3] whitespace-pre-wrap text-ink-1 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
                 style={{
-                  left: `${x}px`,
-                  top: `${y}px`,
+                  ...textTransform,
+                  left: `${position.x}px`,
+                  top: `${position.y}px`,
                   fontSize: 'clamp(18px, 4vw, 44px)',
                   fontWeight: 700,
-                  transform: 'translate(0, 0)',
                 }}
               >
                 {clip.text || clip.label || clip.source_file}

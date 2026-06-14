@@ -7,7 +7,7 @@
 //   - Auto-save on a configurable interval
 
 import { useCallback, useRef, useState } from 'react';
-import type { ProjectState, Clip, Track, Marker } from '../types';
+import type { ProjectState, Clip } from '../types';
 
 // ── Public types ──────────────────────────────────────────────
 

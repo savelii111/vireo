@@ -14,7 +14,14 @@ const SUGGESTION_CHIPS = [
   'export to mp4',
 ];
 
-export function ChatPanel() {
+export interface ChatPanelProps {
+  projectId?: string;
+  conversationId?: string;
+  onBotInsertClip?: (payload: Record<string, unknown>) => void;
+}
+
+export function ChatPanel(props: ChatPanelProps) {
+  void props;
   const {
     messages, addUserMessage, startStreamingAssistant,
     appendChunk, addToolCall, finalizeAssistant,

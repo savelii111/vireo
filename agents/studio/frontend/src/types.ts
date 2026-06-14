@@ -14,6 +14,8 @@ export type TimelineOpName =
   | 'addEffect'
   | 'addText'
   | 'setEffect'
+  | 'setTransform'
+  | 'setVolume'
   | 'replaceAsset'
   | 'setTrackFlag'
   | 'duplicateClip';
@@ -43,6 +45,7 @@ export interface Clip {
   kind: TrackKind;
   effects?: Array<Record<string, unknown>>;
   transform?: Record<string, unknown>;
+  volume?: number;
   text?: string;
 }
 
@@ -71,6 +74,7 @@ export interface TimelineClip {
   end: number;
   in: number;
   out: number;
+  volume?: number;
   transform?: Record<string, unknown>;
   effects?: Array<Record<string, unknown>>;
   source: TimelineClipSource;

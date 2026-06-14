@@ -285,6 +285,7 @@ export default function App() {
                 />
                 <Inspector
                   clip={editor.selectedClip}
+                  clipId={editor.selectedClipId}
                   track={selectedTrack}
                   onQuickAction={(action) => {
                     if (action === 'split') editor.splitAtPlayhead();
@@ -292,6 +293,12 @@ export default function App() {
                   }}
                   onAddEffect={(effect) => editor.addEffect(effect)}
                   onSetEffect={(effect) => editor.setEffect(effect)}
+                  onTransformChange={(transform) => {
+                    if (editor.selectedClipId) editor.setTransform(editor.selectedClipId, transform);
+                  }}
+                  onVolumeChange={(volume) => {
+                    if (editor.selectedClipId) editor.setVolume(editor.selectedClipId, volume);
+                  }}
                 />
                 <Timeline
                   project={editor.project}

@@ -1,12 +1,12 @@
 # VIREO_STATE.md
 
 **Обновлено:** 2026-06-14  
-**Последний коммит:** `61d7ac5` — `stop-task: restore test suite and anchor Vireo state`  
-**Текущий Day 9 commit:** pending — `studio: Day 9 preview/playback/inspector`  
-**Месяц/день по плану:** Месяц 2 / День 9 — preview/playback поверх timeline-doc + read-only inspector.  
-**Текущая задача:** Day 9: реальный preview/playback + inspector, без новых write-путей; все будущие правки клипов только через существующий `useEditor` op-путь.  
-**run-all итог:** `TOTAL: 1315 passed, 0 failed across 28 suites`.  
-**frontend vitest итог:** `3 passed (3 files), 19 passed (19 tests)`.  
+**Последний коммит:** `19acfcd` — `studio: Day 9 preview playback inspector`  
+**Текущий Day 10 commit:** pending — `studio: Day 10 inspector controls transitions effects text`  
+**Месяц/день по плану:** Месяц 2 / День 10 — live Inspector controls + timeline controls for transitions/effects/text через `useEditor` op-путь.  
+**Текущая задача:** Day 10: добавить transform/volume controls в Inspector, controls для transitions/effects/text в Timeline, vitest на op-контракт и зафиксировать результат.  
+**run-all итог:** `TOTAL: 1248 passed, 0 failed across 26 suites`.  
+**frontend vitest итог:** `2 passed (2 files), 18 passed (18 tests)`.  
 **frontend typecheck:** `tsc --noEmit` — exit 0.
 
 ## Что готово
@@ -33,11 +33,31 @@
   - click по ruler и track area вызывает `seek`;
   - drag/move/resize остаются на существующем `useEditor` op-пути.
 
+- Day 10 Inspector live controls:
+  - добавлены shared ops `setTransform` / `setVolume` в `packages/shared/timeline.js`;
+  - `useEditor` экспортирует `setTransform(clipId, transform)` и `setVolume(clipId, volume)` через тот же op-путь: optimistic local op → `POST /api/timelines/:projectId/ops` с `baseVersion` и `actor:"human"` → `409` rebase → undo/redo;
+  - `Inspector.tsx` показывает live sliders для X/Y/Scale/Opacity/Volume и не пишет напрямую в state;
+  - `Preview.tsx` применяет transform к video/placeholder/text overlay.
+
+- Day 10 Timeline controls:
+  - Timeline controls для transitions/effects/text подключены к `useEditor` op-методам;
+  - добавлены `data-testid` для transition/effect/text controls и Inspector props/callbacks.
+
+- Day 10 tests:
+  - в `agents/studio/frontend/tests/useEditor.day5.test.tsx` добавлены tests на `setTransform`/`setVolume`;
+  - покрыты optimistic apply, `baseVersion`, `actor:"human"`, undo/redo и `409` rebase retry;
+  - frontend `package.json` добавляет `npm test` / `npm run test:watch` с jsdom environment.
+
+- Verification fixes:
+  - `packages/shared/index.js` экспортирует `timeline.js`, чтобы frontend shared-timeline import работал через общий shared index;
+  - `agents/video/vireo_video/history.py` получил deterministic record order для `EditHistory.list/latest`, чтобы revert всегда был newest;
+  - typecheck fixes for ChatPanel props and unused `Track`/`Marker` imports.
+
 - Day 9 tests:
   - добавлен `agents/studio/frontend/tests/playback.test.tsx`;
   - покрыты active clip lookup, playhead advance/seek, real vs simulated media, Preview real media, Preview placeholder, text overlay, Inspector read-only properties/effects.
 
 ## Что следующее
 
-- Не начинать переходы/эффекты/текст-controls, мультитрек-drag, кейфреймы, экспорт.
-- После Day 9 commit перейти к следующему подтверждённому шагу из `docs/VIREO_STUDIO_12_MONTH_PLAN_2026-06-11.md`.
+- После Day 10 commit перейти к следующему подтверждённому шагу из `docs/VIREO_STUDIO_12_MONTH_PLAN_2026-06-11.md`.
+- Не начинать мультитрек-drag, keyframes, export или Desktop App без отдельного подтверждения.

@@ -253,13 +253,15 @@ export function Timeline({
           </button>
           <div className="w-px h-4 bg-border-2 mx-1" />
           <button
-            data-tip="Add transition between selected clip and next clip"
+            data-testid="timeline-transition-control"
+            data-tip="Add transition at selected clip boundary"
             onClick={() => setTransitionOpen((v) => !v)}
             className="h-[26px] rounded px-2 text-[11px] font-semibold text-ink-2 hover:text-ink-1 hover:bg-bg-2"
           >
             Переход
           </button>
           <button
+            data-testid="timeline-text-control"
             data-tip="Add text on trk_t1"
             onClick={() => setTextOpen((v) => !v)}
             className="h-[26px] rounded px-2 text-[11px] font-semibold text-ink-2 hover:text-ink-1 hover:bg-bg-2"
@@ -293,6 +295,7 @@ export function Timeline({
             <div className="flex items-center gap-2">
               <span className="text-ink-3">Переход</span>
               <select
+                data-testid="transition-kind"
                 value={transitionKind}
                 onChange={(e) => setTransitionKind(e.target.value)}
                 className="rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
@@ -302,6 +305,7 @@ export function Timeline({
                 <option value="wipe">wipe</option>
               </select>
               <input
+                data-testid="transition-duration"
                 type="number"
                 min={0.1}
                 step={0.1}
@@ -311,6 +315,7 @@ export function Timeline({
               />
               <span className="text-ink-3">сек</span>
               <button
+                data-testid="add-transition"
                 disabled={!selectedClip || !nextTransitionClip}
                 onClick={() => selectedClip && onAddTransition?.(selectedClip.id, transitionKind, transitionDuration)}
                 className="rounded-md bg-accent px-2 py-1 font-semibold text-white disabled:opacity-40"
@@ -328,12 +333,14 @@ export function Timeline({
             <div className="flex items-center gap-2">
               <span className="text-ink-3">Текст trk_t1</span>
               <input
+                data-testid="text-body"
                 value={textBody}
                 onChange={(e) => setTextBody(e.target.value)}
                 placeholder="Введите текст"
                 className="w-40 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
               />
               <input
+                data-testid="text-start"
                 type="number"
                 min={0}
                 step={0.1}
@@ -342,6 +349,7 @@ export function Timeline({
                 className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
               />
               <input
+                data-testid="text-duration"
                 type="number"
                 min={0.1}
                 step={0.1}
@@ -350,6 +358,7 @@ export function Timeline({
                 className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
               />
               <input
+                data-testid="text-x"
                 type="number"
                 value={textX}
                 onChange={(e) => setTextX(Number(e.target.value))}
@@ -357,6 +366,7 @@ export function Timeline({
                 className="w-14 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
               />
               <input
+                data-testid="text-y"
                 type="number"
                 value={textY}
                 onChange={(e) => setTextY(Number(e.target.value))}
@@ -364,6 +374,7 @@ export function Timeline({
                 className="w-14 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
               />
               <button
+                data-testid="add-text"
                 onClick={() => {
                   onAddText?.(textBody, textStart, textDuration, { x: textX, y: textY });
                   setTextOpen(false);

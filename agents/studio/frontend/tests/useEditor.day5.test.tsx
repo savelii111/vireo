@@ -85,6 +85,16 @@ function docWithClipAt(version: number, start: number, label = 'Intro'): Timelin
   };
 }
 
+function docWithTransformAndVolume(version: number, x = 30, y = -20, scale = 1.25, opacity = 0.8, volume = 0.5): TimelineDocument {
+  const doc = docWithClipAt(version, 0);
+  doc.tracks[0].clips[0] = {
+    ...doc.tracks[0].clips[0],
+    transform: { x, y, scale, opacity },
+    volume,
+  };
+  return doc;
+}
+
 function json(payload: unknown, status = 200) {
   return {
     ok: status >= 200 && status < 300,
@@ -511,6 +521,109 @@ describe('Day 5 useEditor real timeline contract', () => {
       await window.__editor?.redo();
     });
     expect(clipTexts().some((text) => /^txt_[a-z0-9_]+:2-3:Hello$/.test(text))).toBe(true);
+  });
+
+  it('sets transform and volume through the useEditor op path with optimistic apply and undo/redo', async () => {
+    const withTransformAndVolume = docWithTransformAndVolume(2);
+    const withoutTransformAndVolume = docWithClipAt(1, 0);
+
+    fetchMock
+      .mockResolvedValueOnce(json({ timeline: { doc: withoutTransformAndVolume, version: 1, timelineId: 'tl1', projectId: 'p1' } }))
+      .mockResolvedValueOnce(json({ doc: withTransformAndVolume, version: 2, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 2, can_redo: true }))
+      .mockResolvedValueOnce(json({ doc: withTransformAndVolume, version: 3, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 3, can_redo: true }))
+      .mockResolvedValueOnce(json({ doc: withoutTransformAndVolume, version: 4, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 4, can_redo: true }))
+      .mockResolvedValueOnce(json({ doc: withTransformAndVolume, version: 5, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 5, can_redo: false }));
+
+    await renderHarness();
+
+    await act(async () => {
+      window.__editor?.setTransform('clp1', { x: 30, y: -20, scale: 1.25, opacity: 0.8 });
+    });
+    await act(async () => {
+      window.__editor?.setVolume('clp1', 0.5);
+    });
+
+    expect(window.__editor?.project.tracks[0].clips[0].transform).toEqual({ x: 30, y: -20, scale: 1.25, opacity: 0.8 });
+    expect(window.__editor?.project.tracks[0].clips[0].volume).toBe(0.5);
+
+    const transformPost = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+    const volumePost = JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string);
+    expect(fetchMock.mock.calls.slice(1, 3).map((call) => call[0])).toEqual([
+      '/api/timelines/p1/ops',
+      '/api/timelines/p1/ops',
+    ]);
+    expect(transformPost).toMatchObject({
+      baseVersion: 1,
+      actor: 'human',
+      ops: [{
+        op: 'setTransform',
+        actor: 'human',
+        timelineId: 'tl1',
+        trackId: 'v1',
+        clipId: 'clp1',
+        payload: { transform: { x: 30, y: -20, scale: 1.25, opacity: 0.8 } },
+      }],
+    });
+    expect(volumePost).toMatchObject({
+      baseVersion: 2,
+      actor: 'human',
+      ops: [{
+        op: 'setVolume',
+        actor: 'human',
+        timelineId: 'tl1',
+        trackId: 'v1',
+        clipId: 'clp1',
+        payload: { volume: 0.5 },
+      }],
+    });
+
+    await act(async () => {
+      await window.__editor?.undo();
+    });
+    expect(window.__editor?.project.tracks[0].clips[0].transform).toBeUndefined();
+    expect(window.__editor?.project.tracks[0].clips[0].volume).toBeUndefined();
+
+    await act(async () => {
+      await window.__editor?.redo();
+    });
+    expect(window.__editor?.project.tracks[0].clips[0].transform).toEqual({ x: 30, y: -20, scale: 1.25, opacity: 0.8 });
+    expect(window.__editor?.project.tracks[0].clips[0].volume).toBe(0.5);
+  });
+
+  it('rebases setTransform on 409 and retries POST /ops with the fresh baseVersion', async () => {
+    const fresh = docWithTransformAndVolume(2, 10, 0, 1, 1, 1);
+    const retryCommitted = docWithTransformAndVolume(3);
+
+    fetchMock
+      .mockResolvedValueOnce(json({ timeline: { doc: docWithClipAt(1, 0), version: 1, timelineId: 'tl1', projectId: 'p1' } }))
+      .mockResolvedValueOnce(json({ error: { code: 'timeline_version_conflict' }, message: 'timeline_version_conflict' }, 409))
+      .mockResolvedValueOnce(json({ timeline: { doc: fresh, version: 2, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 2, can_redo: false } }))
+      .mockResolvedValueOnce(json({ doc: retryCommitted, version: 3, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 3, can_redo: false }));
+
+    await renderHarness();
+
+    await act(async () => {
+      window.__editor?.setTransform('clp1', { x: 30, y: -20, scale: 1.25, opacity: 0.8 });
+    });
+    await waitFor(() => clipTexts().length > 0 && window.__editor?.project.tracks[0].clips[0].transform?.scale === 1.25);
+
+    const firstPost = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+    const secondPost = JSON.parse((fetchMock.mock.calls[3][1] as RequestInit).body as string);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/timelines/p1',
+      '/api/timelines/p1/ops',
+      '/api/timelines/p1',
+      '/api/timelines/p1/ops',
+    ]);
+    expect(firstPost.baseVersion).toBe(1);
+    expect(secondPost.baseVersion).toBe(2);
+    expect((secondPost.ops as TimelineOp[])[0]).toMatchObject({
+      op: 'setTransform',
+      clipId: 'clp1',
+      trackId: 'v1',
+      payload: { transform: { x: 30, y: -20, scale: 1.25, opacity: 0.8 } },
+    });
+    expect(window.__editor?.project.tracks[0].clips[0].transform).toEqual({ x: 30, y: -20, scale: 1.25, opacity: 0.8 });
   });
 
   it('adds and sets clip effects through the useEditor op path', async () => {

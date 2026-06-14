@@ -10,10 +10,13 @@ import { hasRealMediaPath } from '../timelinePlayback';
 
 interface Props {
   clip: Clip | null;
+  clipId?: string | null;
   track?: Track | null;
   onQuickAction: (action: string) => void;
   onAddEffect?: (effect: Record<string, unknown>) => void;
   onSetEffect?: (effect: Record<string, unknown>) => void;
+  onTransformChange?: (transform: Record<string, number>) => void;
+  onVolumeChange?: (volume: number) => void;
 }
 
 type Tab = 'clip' | 'effect' | 'audio';
@@ -25,28 +28,32 @@ interface ParamSliderProps {
   max: number;
   step?: number;
   display?: string;
+  disabled?: boolean;
+  testId?: string;
   onChange?: (v: number) => void;
 }
 
-function ParamSlider({ label, value, min, max, step = 1, display, onChange }: ParamSliderProps) {
+function ParamSlider({ label, value, min, max, step = 1, display, disabled = false, testId, onChange }: ParamSliderProps) {
   const pct = ((value - min) / (max - min)) * 100;
   return (
     <div className="grid grid-cols-[90px_1fr_60px] items-center gap-3 py-1.5">
       <div className="text-[11px] text-ink-3 uppercase tracking-wider font-semibold">{label}</div>
       <div className="relative h-1 bg-bg-3 rounded-full cursor-pointer group">
-        <div className="absolute left-0 top-0 h-full bg-accent rounded-full" style={{ width: `${pct}%` }} />
+        <div className="absolute left-0 top-0 h-full bg-accent rounded-full" style={{ width: `${disabled ? 0 : pct}%` }} />
         <input
+          data-testid={testId}
           type="range"
           min={min}
           max={max}
           step={step}
           value={value}
+          disabled={disabled}
           onChange={(e) => onChange?.(Number(e.target.value))}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
         />
         <div
           className="absolute top-1/2 w-3 h-3 bg-white rounded-full -translate-y-1/2 -translate-x-1/2 shadow-[0_0_0_3px_rgba(99,102,241,0.1)] pointer-events-none"
-          style={{ left: `${pct}%` }}
+          style={{ left: `${disabled ? 0 : pct}%` }}
         />
       </div>
       <div className="font-mono text-[11px] text-ink-1 text-right tabular-nums">
@@ -75,7 +82,16 @@ function Property({ label, children }: { label: string; children: React.ReactNod
   );
 }
 
-export function Inspector({ clip, track, onQuickAction, onAddEffect, onSetEffect }: Props) {
+export function Inspector({
+  clip,
+  clipId,
+  track,
+  onQuickAction,
+  onAddEffect,
+  onSetEffect,
+  onTransformChange,
+  onVolumeChange,
+}: Props) {
   const [tab, setTab] = useState<Tab>('clip');
   const [effectKind, setEffectKind] = useState('colorGrade');
   const [effectIndex, setEffectIndex] = useState(0);
@@ -92,6 +108,10 @@ export function Inspector({ clip, track, onQuickAction, onAddEffect, onSetEffect
   const transformX = Number(clip?.transform?.x ?? 0);
   const transformY = Number(clip?.transform?.y ?? 0);
   const transformScale = Number(clip?.transform?.scale ?? 1);
+  const transformOpacity = Number(clip?.transform?.opacity ?? 1);
+  const volume = Number(clip?.volume ?? 1);
+  const transformDisabled = !clipId;
+  const volumeDisabled = !clipId;
 
   return (
     <section className="grid grid-cols-[260px_1fr_240px] bg-bg-1 border-b border-border-1 min-h-0 max-h-full overflow-hidden">
@@ -249,15 +269,60 @@ export function Inspector({ clip, track, onQuickAction, onAddEffect, onSetEffect
             </Property>
 
             <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mt-3 mb-2">Transform</div>
-            <ParamSlider label="X" value={transformX} min={-2000} max={2000} display={String(transformX)} />
-            <ParamSlider label="Y" value={transformY} min={-1200} max={1200} display={String(transformY)} />
-            <ParamSlider label="Scale" value={transformScale * 100} min={0} max={300} display={`${Math.round(transformScale * 100)}%`} />
-            <ParamSlider label="Opacity" value={100} min={0} max={100} display="100%" />
+            <ParamSlider
+              label="X"
+              value={transformX}
+              min={-2000}
+              max={2000}
+              display={String(transformX)}
+              disabled={transformDisabled}
+              testId="inspector-transform-x"
+              onChange={(x) => onTransformChange?.({ x })}
+            />
+            <ParamSlider
+              label="Y"
+              value={transformY}
+              min={-1200}
+              max={1200}
+              display={String(transformY)}
+              disabled={transformDisabled}
+              testId="inspector-transform-y"
+              onChange={(y) => onTransformChange?.({ y })}
+            />
+            <ParamSlider
+              label="Scale"
+              value={Math.round(transformScale * 100)}
+              min={0}
+              max={300}
+              display={`${Math.round(transformScale * 100)}%`}
+              disabled={transformDisabled}
+              testId="inspector-transform-scale"
+              onChange={(scalePct) => onTransformChange?.({ scale: scalePct / 100 })}
+            />
+            <ParamSlider
+              label="Opacity"
+              value={Math.round(transformOpacity * 100)}
+              min={0}
+              max={100}
+              display={`${Math.round(transformOpacity * 100)}%`}
+              disabled={transformDisabled}
+              testId="inspector-transform-opacity"
+              onChange={(opacityPct) => onTransformChange?.({ opacity: opacityPct / 100 })}
+            />
 
             <div className="border-t border-border-1 mt-3 pt-3">
               <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Audio</div>
-              <ParamSlider label="Volume" value={100} min={0} max={200} display="100%" />
-              <ParamSlider label="Voice EQ" value={50} min={0} max={100} display="flat" />
+              <ParamSlider
+                label="Volume"
+                value={Math.round(volume * 100)}
+                min={0}
+                max={100}
+                display={`${Math.round(volume * 100)}%`}
+                disabled={volumeDisabled}
+                testId="inspector-volume"
+                onChange={(volumePct) => onVolumeChange?.(volumePct / 100)}
+              />
+              <ParamSlider label="Voice EQ" value={50} min={0} max={100} display="flat" disabled />
             </div>
           </>
         )}
