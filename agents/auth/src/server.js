@@ -1,7 +1,6 @@
 // Vireo Auth — HTTP server with /signup, /login, /me, /verify, /health.
 
 import { createServer } from "node:http";
-import { randomBytes } from "node:crypto";
 import { sign } from "./tokens.js";
 import { UserStore, ValidationError, EmailTakenError } from "./users.js";
 import { authMiddleware, readJsonBody } from "./middleware.js";
@@ -10,11 +9,6 @@ import { PasswordTooShortError } from "./password.js";
 const DEFAULT_PORT = Number(process.env.PORT || 8005);
 const DEFAULT_HOST = process.env.HOST || "127.0.0.1";
 const TOKEN_TTL_SEC = Number(process.env.TOKEN_TTL_SEC || 24 * 60 * 60);
-
-function makeSecret() {
-  if (process.env.VIREO_JWT_SECRET) return process.env.VIREO_JWT_SECRET;
-  return randomBytes(32).toString("hex");
-}
 
 function publicUser(u) {
   return { id: u.id, email: u.email, name: u.name, createdAt: u.createdAt };
@@ -105,9 +99,12 @@ async function handleHealth(_req, res, _store) {
   res.end(JSON.stringify({ status: "ok", agent: "auth", users: count }));
 }
 
-const DEFAULT_SECRET = makeSecret();
+const DEFAULT_SECRET = process.env.VIREO_JWT_SECRET;
 
 export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret = DEFAULT_SECRET, store = null } = {}) {
+  if (!secret) {
+    throw new Error("VIREO_JWT_SECRET is required; secrets must come from the environment, not a generated fallback");
+  }
   const userStore = store || new UserStore();
   const auth = authMiddleware(secret);
   const signToken = (claims) => sign(claims, secret, TOKEN_TTL_SEC);

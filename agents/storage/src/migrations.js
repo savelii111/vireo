@@ -438,6 +438,80 @@ export const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS vireo_dsr_status_idx ON vireo_dsr_requests(status, requested_at);
     `,
   },
+  {
+    name: "012_studio_timeline",
+    sql: `
+      -- Studio timeline persistence (Day 2, 2026-06-11) ----------------------
+      -- Assets are lightweight metadata records. The bytes live in video-agent/TUS storage.
+      CREATE TABLE IF NOT EXISTS vireo_assets (
+        id text PRIMARY KEY,
+        user_id text NOT NULL,
+        project_id text,
+        kind text NOT NULL DEFAULT 'video',         -- video | audio | image
+        source text NOT NULL DEFAULT 'upload',       -- upload | higgsfield | stock
+        filename text,
+        mime text,
+        storage_path text,                           -- путь/URL у video-agent (TUS)
+        duration_sec numeric,
+        width int, height int,
+        size_bytes bigint,
+        status text NOT NULL DEFAULT 'ready',        -- pending | ready | failed
+        metadata jsonb DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS vireo_assets_user_idx ON vireo_assets(user_id);
+      CREATE INDEX IF NOT EXISTS vireo_assets_project_idx ON vireo_assets(project_id);
+
+
+      CREATE TABLE IF NOT EXISTS vireo_timelines (
+        id text PRIMARY KEY,                          -- tl_...
+        project_id text NOT NULL,
+        user_id text NOT NULL,
+        doc jsonb NOT NULL,                           -- весь TimelineDocument из shared-контракта
+        version int NOT NULL DEFAULT 1,               -- optimistic concurrency
+        undo_cursor_seq bigint,                       -- stack cursor for undo/redo
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS vireo_timelines_project_uidx ON vireo_timelines(project_id);
+      CREATE INDEX IF NOT EXISTS vireo_timelines_user_idx ON vireo_timelines(user_id);
+
+
+      CREATE TABLE IF NOT EXISTS vireo_timeline_ops (
+        id text PRIMARY KEY,
+        timeline_id text NOT NULL,
+        project_id text NOT NULL,
+        user_id text NOT NULL,
+        seq bigint NOT NULL,                           -- монотонно в пределах timeline_id
+        op jsonb NOT NULL,                             -- один TimelineOp
+        inverse jsonb,                                 -- обратная op для undo
+        actor text NOT NULL DEFAULT 'human',           -- human | bot
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS vireo_timeline_ops_seq_uidx ON vireo_timeline_ops(timeline_id, seq);
+      CREATE INDEX IF NOT EXISTS vireo_timeline_ops_project_idx ON vireo_timeline_ops(project_id);
+
+
+      CREATE TABLE IF NOT EXISTS vireo_generations (
+        id text PRIMARY KEY,
+        user_id text NOT NULL,
+        project_id text,
+        timeline_id text,
+        provider text NOT NULL DEFAULT 'higgsfield',
+        model text,
+        status text NOT NULL DEFAULT 'pending',        -- pending | running | done | failed | canceled
+        params jsonb DEFAULT '{}'::jsonb,
+        asset_id text,                                  -- результат → vireo_assets.id
+        credits_cost numeric DEFAULT 0,
+        error text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS vireo_generations_user_idx ON vireo_generations(user_id);
+      CREATE INDEX IF NOT EXISTS vireo_generations_status_idx ON vireo_generations(status);
+    `,
+  },
 ];
 
 export async function applyMigrations(pool) {

@@ -289,6 +289,17 @@ function client(server) {
   };
 }
 
+test("server: buildServer requires VIREO_JWT_SECRET when secret is omitted", () => {
+  const previous = process.env.VIREO_JWT_SECRET;
+  delete process.env.VIREO_JWT_SECRET;
+  try {
+    assert.throws(() => buildServer({ port: 0 }), /VIREO_JWT_SECRET/);
+  } finally {
+    if (previous === undefined) delete process.env.VIREO_JWT_SECRET;
+    else process.env.VIREO_JWT_SECRET = previous;
+  }
+});
+
 test("server: GET /health returns 200 with user count", async () => {
   const { server } = buildServer({ port: 0, secret: "test-secret" });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));

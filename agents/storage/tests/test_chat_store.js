@@ -25,6 +25,10 @@ function makeMockPool() {
     async query(sql, params = []) {
       // Normalize whitespace so regexes below match across line breaks.
       const trimmed = sql.replace(/\s+/g, " ").trim();
+      // Transaction control used by timeline op-runner.
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/i.test(trimmed)) {
+        return { rows: [], rowCount: 0 };
+      }
       // INSERT INTO table (cols) VALUES (...)
       let m = trimmed.match(/^INSERT INTO (\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
       if (m) {
@@ -50,6 +54,22 @@ function makeMockPool() {
         }
         table(tname).set(row.id, row);
         return { rows: [row], rowCount: 1 };
+      }
+      // SELECT seq FROM vireo_timeline_ops WHERE project_id/user_id ... ORDER BY seq ... LIMIT ...
+      m = trimmed.match(/^SELECT seq FROM vireo_timeline_ops(?:\s+WHERE\s+(.+?))?(?:\s+ORDER BY seq\s+(ASC|DESC))?(?:\s+LIMIT \$(\d+))?$/i);
+      if (m) {
+        const where = m[1] || "";
+        const orderDir = (m[2] || "ASC").toUpperCase();
+        let rows = [...table("vireo_timeline_ops").values()];
+        if (where.includes("project_id = $1")) rows = rows.filter((r) => r.project_id === params[0]);
+        if (where.includes("user_id = $2")) rows = rows.filter((r) => r.user_id === params[1]);
+        if (where.includes("undone_at IS NULL")) rows = rows.filter((r) => r.undone_at === null);
+        if (where.includes("seq < $3")) rows = rows.filter((r) => Number(r.seq) < Number(params[2]));
+        if (where.includes("seq > $3")) rows = rows.filter((r) => Number(r.seq) > Number(params[2]));
+        rows.sort((a, b) => orderDir === "DESC" ? Number(b.seq) - Number(a.seq) : Number(a.seq) - Number(b.seq));
+        const limitIdx = m[3] ? Number(m[3]) - 1 : null;
+        if (limitIdx != null) rows = rows.slice(0, Number(params[limitIdx]));
+        return { rows: rows.map((r) => ({ seq: r.seq })), rowCount: rows.length };
       }
       // SELECT * FROM table WHERE ...
       // Capture ORDER BY clause (any column) so we can honor the
@@ -109,6 +129,46 @@ function makeMockPool() {
         if (rows.length > limit) rows = rows.slice(0, limit);
         return { rows, rowCount: rows.length };
       }
+      // UPDATE vireo_timelines SET undo_cursor_seq WHERE id = $2 AND user_id = $3 RETURNING *
+      m = trimmed.match(/^UPDATE vireo_timelines SET (.+?) WHERE id = \$2 AND user_id = \$3(?:\s+RETURNING \*)?$/i);
+      if (m) {
+        const row = table("vireo_timelines").get(params[1]);
+        if (!row || row.user_id !== params[2]) return { rows: [], rowCount: 0 };
+        for (const p of m[1].split(/,(?![^()]*\))/).map((part) => part.trim())) {
+          const sm = p.match(/^(\w+)\s*=\s*(\$(\d+)|now\(\))$/i);
+          if (!sm) continue;
+          row[sm[1]] = sm[2] === "now()" ? new Date().toISOString() : params[Number(sm[3]) - 1];
+        }
+        return { rows: [row], rowCount: 1 };
+      }
+      // UPDATE vireo_timeline_ops SET undone_at/redone_at WHERE project_id = $1 AND user_id = $2 [AND undone_at IS NOT NULL]
+      m = trimmed.match(/^UPDATE vireo_timeline_ops SET (.+?) WHERE project_id = \$1 AND user_id = \$2(?: AND undone_at IS NOT NULL)?$/i);
+      if (m) {
+        let n = 0;
+        for (const r of table("vireo_timeline_ops").values()) {
+          if (r.project_id !== params[0] || r.user_id !== params[1]) continue;
+          if (m[0].includes("undone_at IS NOT NULL") && r.undone_at === null) continue;
+          for (const p of m[1].split(/,(?![^()]*\))/).map((part) => part.trim())) {
+            const sm = p.match(/^(\w+)\s*=\s*(NULL|\$(\d+))$/i);
+            if (!sm) continue;
+            r[sm[1]] = sm[2] === "NULL" ? null : params[Number(sm[3]) - 1];
+          }
+          n++;
+        }
+        return { rows: [], rowCount: n };
+      }
+      // UPDATE vireo_timeline_ops SET undone_at/redone_at WHERE id = $1 AND project_id = $2 AND user_id = $3 RETURNING *
+      m = trimmed.match(/^UPDATE vireo_timeline_ops SET (.+?) WHERE id = \$1 AND project_id = \$2 AND user_id = \$3(?:\s+RETURNING \*)?$/i);
+      if (m) {
+        const row = table("vireo_timeline_ops").get(params[0]);
+        if (!row || row.project_id !== params[1] || row.user_id !== params[2]) return { rows: [], rowCount: 0 };
+        for (const p of m[1].split(/,(?![^()]*\))/).map((part) => part.trim())) {
+          const sm = p.match(/^(\w+)\s*=\s*(NULL|now\(\)|\$(\d+))$/i);
+          if (!sm) continue;
+          row[sm[1]] = sm[2] === "NULL" ? null : sm[2] === "now()" ? new Date().toISOString() : params[Number(sm[3]) - 1];
+        }
+        return { rows: [row], rowCount: 1 };
+      }
       // UPDATE table SET ... WHERE id = $1 AND user_id = $N
       m = trimmed.match(/^UPDATE (\w+) SET (.+?) WHERE id = \$1(?: AND user_id = \$(\d+))?/i);
       if (m) {
@@ -145,7 +205,25 @@ function makeMockPool() {
         table(tname).delete(params[0]);
         return { rowCount: 1 };
       }
-      // DELETE FROM vireo_messages WHERE id = ANY($1::uuid[]) AND conversation_id = $2 AND user_id = $3
+      // DELETE FROM vireo_timeline_ops WHERE project_id/user_id (with optional seq/undone filters)
+      m = trimmed.match(/^DELETE FROM vireo_timeline_ops WHERE project_id = \$1 AND user_id = \$2(?: AND seq > \$3)?(?: AND undone_at IS NOT NULL)?/i);
+      if (m) {
+        const seqLimit = params[2] ?? null;
+        const requireUndone = m[0].includes("undone_at IS NOT NULL");
+        let n = 0;
+        for (const [id, r] of table("vireo_timeline_ops").entries()) {
+          const matches = r.project_id === params[0]
+            && r.user_id === params[1]
+            && (seqLimit == null || Number(r.seq) > seqLimit)
+            && (!requireUndone || r.undone_at !== null);
+          if (matches) {
+            table("vireo_timeline_ops").delete(id);
+            n++;
+          }
+        }
+        return { rowCount: n };
+      }
+      // DELETE FROM table WHERE conversation_id = $1 AND user_id = $2
       // Legacy form (pre-008): used by the old list-then-delete-after
       // implementation. Kept here so the test_chat_store tests that
       // exercise that code path still pass.

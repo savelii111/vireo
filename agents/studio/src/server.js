@@ -7,6 +7,12 @@
 //   GET    /api/projects/:id             — read
 //   PATCH  /api/projects/:id             — update
 //   DELETE /api/projects/:id             — delete
+//   GET    /api/assets                   — list user's assets (query: project_id)
+//   POST   /api/assets                   — register asset metadata
+//   GET    /api/assets/:id               — read
+//   DELETE /api/assets/:id               — delete (requires confirmation_token)
+//   GET    /api/timelines/:projectId     — read or lazy-create timeline
+//   PUT    /api/timelines/:projectId     — save whole timeline doc
 //   GET    /api/content-pieces            — list (query: project_id, source, limit)
 //   POST   /api/content-pieces            — save
 //   GET    /api/content-pieces/:id        — read
@@ -23,9 +29,17 @@
 
 import { createServer, request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
+import { createEmptyTimelineDocument, validateTimelineDocument, applyOp, PUBLIC_TIMELINE_OPS, createTimelineOp, TIMELINE_OPS } from "@vireo/shared";
 import { authMiddleware, corsHeaders, readJsonBody, RateLimiter } from "../../../packages/auth-middleware/index.js";
 import { MessageFeedbackStore, WelcomeAnswersStore, UserPreferencesStore } from "../../storage/src/feedback_store.js";
-import { ProjectStore, ContentPieceStorePg, ConversationStore, MessageStore } from "../../storage/src/chat_store.js";
+import {
+  ProjectStore,
+  ContentPieceStorePg,
+  ConversationStore,
+  MessageStore,
+  StudioAssetStore,
+  StudioTimelineStore,
+} from "../../storage/src/chat_store.js";
 import { PostgresStyleDNAStore } from "../../storage/src/extended.js";
 import { applyMigrations, listAppliedMigrations } from "../../storage/src/migrations.js";
 import { AuditStore, InMemoryAuditStore, GdprExportStore, GdprDeleteStore, recordDsrRequest, completeDsrRequest, runRetentionCron, startRetentionScheduler } from "../../storage/src/gdpr_store.js";
@@ -34,6 +48,7 @@ import { LLMClient, LLMError } from "./llm_client.js";
 import { createLLMClient, SmartRouter, PROVIDER_DEFAULTS } from "./llm_providers.js";
 import { EDIT_TOOLS, executeToolCall, buildEditToolContext } from "./tools.js";
 import { CHAT_TOOLS, executeChatToolCall } from "./chat_tools.js";
+import { OneShotEngine } from "./one_shot.js";
 import {
   TIER1_EDIT_TOOLS,
   applyColorGrade,
@@ -207,11 +222,12 @@ export function validateDistributePlatforms(platforms) {
   }
   return { platforms };
 }
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const LLM_PROVIDER = process.env.VIREO_LLM_PROVIDER || "gemini";
-const LLM_CHEAP_MODEL = process.env.VIREO_LLM_CHEAP_MODEL || "";
-const LLM_EXPENSIVE_MODEL = process.env.VIREO_LLM_EXPENSIVE_MODEL || "";
+
+export function resolveStudioLlmConfig() {
+  const provider = process.env.VIREO_LLM_PROVIDER || "anthropic";
+  const model = process.env.VIREO_LLM_CHEAP_MODEL || process.env.OPENAI_MODEL || undefined;
+  return { provider, model };
+}
 // CORS allow-list. Read fresh on every request (via parseCorsOrigins below)
 // so a runtime env change is picked up without a server restart.
 // Comma-separated origins; "*" echoes the request origin (so credentialled
@@ -347,11 +363,91 @@ function _secToSRT(sec) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
 }
 
+function normalizeOneShotPlatforms(platforms) {
+  if (Array.isArray(platforms) && platforms.length > 0) return platforms.map((p) => String(p)).filter(Boolean);
+  return ["tiktok"];
+}
+
+function normalizeOneShotClip(raw, index, trackId) {
+  const duration = Math.max(0.1, Number.isFinite(Number(raw?.duration_sec ?? raw?.duration)) ? Number(raw.duration_sec ?? raw.duration) : 5);
+  const start = Number.isFinite(Number(raw?.start_sec ?? raw?.start)) ? Number(raw.start_sec ?? raw.start) : index * duration;
+  const rawId = String(raw?.id || `one_shot_${index}`);
+  const clipId = `clp_${rawId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48)}`;
+  const name = [raw?.scene_type, raw?.mood].filter(Boolean).join(" · ") || `One-shot ${index + 1}`;
+  return {
+    id: clipId,
+    assetId: String(raw?.path ?? raw?.assetId ?? raw?.asset_id ?? rawId),
+    start,
+    end: start + duration,
+    in: 0,
+    out: duration,
+    transform: {},
+    effects: [],
+    source: "higgsfield_simulated",
+    name,
+    selected: false,
+    locked: false,
+    muted: false,
+    text: "",
+  };
+}
+
+function buildOneShotInsertOps({ timeline, clips, targetTrackId = "trk_v1" }) {
+  const track = timeline?.doc?.tracks?.find((t) => t.id === targetTrackId);
+  if (!track) return [];
+  const timelineId = timeline?.id || `tl_${randomUUID().replace(/-/g, "")}`;
+  const clipCount = track.clips.length;
+
+  return clips.map((raw, index) => {
+    const clip = normalizeOneShotClip(raw, index, targetTrackId);
+    return createTimelineOp({
+      op: TIMELINE_OPS.INSERT_CLIP,
+      actor: "bot",
+      timelineId,
+      clipId: clip.id,
+      trackId: targetTrackId,
+      payload: { clip, index: clipCount + index },
+    });
+  });
+}
+
+function buildOneShotPreview({ idea, clips, durationSec, style, version, platforms, thumbnailUrl, seoHint }) {
+  const duration = Number.isFinite(Number(durationSec)) ? Number(durationSec) : 0;
+  const clipNames = Array.isArray(clips)
+    ? clips
+        .map((clip) => clip?.name || clip?.scene_type || clip?.mood || clip?.title || clip?.label || clip?.assetId || clip?.id)
+        .map((name) => String(name || "").trim())
+        .filter(Boolean)
+        .slice(0, 6)
+    : [];
+  return {
+    title: idea,
+    idea,
+    duration_sec: duration,
+    style: style || "",
+    platforms: Array.isArray(platforms) && platforms.length ? platforms : ["tiktok"],
+    clip_count: Array.isArray(clips) ? clips.length : 0,
+    clip_names: clipNames,
+    thumbnail_url: thumbnailUrl || null,
+    seo_hint: seoHint || null,
+    version,
+  };
+}
+
+function budget402Result(budgetCheck) {
+  return {
+    ok: false,
+    error: budgetCheck.reason,
+    httpStatus: 402,
+    message: `You have exceeded your ${budgetCheck.reason.replace(/_/g, " ")} (used ${budgetCheck.used}, budget ${budgetCheck.budget}). Upgrade or wait for the next billing cycle.`,
+  };
+}
+
 /**
  * Builds a set of "in-process" tool handlers that don't need a separate service but
  * talks to the underlying stores / services.
  */
-function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, llm, fetchImpl, authHeadersFn, upstreamTimeoutMs }) {
+function buildToolDeps({ pool, projects, timelines, pieces, conversations, messages, styleDNA, llm, fetchImpl, authHeadersFn, upstreamTimeoutMs }) {
   const _fetch = fetchWithTimeout(fetchImpl || globalThis.fetch, upstreamTimeoutMs || UPSTREAM_TIMEOUT_MS);
   const authHeaders = authHeadersFn || (() => ({ "Content-Type": "application/json" }));
 
@@ -467,6 +563,120 @@ function buildToolDeps({ projects, pieces, conversations, messages, styleDNA, ll
         await projects.update(project_id, { userId, styleDnaId: saved.id });
       }
       return { ok: true, style_dna: saved, corpus_size: corpus.length, merged: !!existing };
+    },
+    insertClip: async ({ userId, project_id, track_id, track_kind, start_sec, duration_sec, asset_id, source_file, name, in_sec }) => {
+      if (!project_id) return { ok: false, error: "project_id_required" };
+      const timeline = pool
+        ? await getOrCreateTimelineInTx(pool, project_id, userId)
+        : await timelines.getOrCreate(project_id, userId);
+      const start = Math.max(0, Number.isFinite(Number(start_sec)) ? Number(start_sec) : 0);
+      const duration = Math.max(0.1, Number.isFinite(Number(duration_sec)) ? Number(duration_sec) : 5);
+      const inPoint = Math.max(0, Number.isFinite(Number(in_sec)) ? Number(in_sec) : 0);
+      const kind = ["video", "audio", "overlay", "text"].includes(track_kind) ? track_kind : "video";
+      let targetTrack = timeline.doc.tracks.find((t) => t.id === track_id) || timeline.doc.tracks.find((t) => t.kind === kind) || timeline.doc.tracks.find((t) => t.kind === "video") || timeline.doc.tracks[0];
+      if (!targetTrack) return { ok: false, error: "timeline_has_no_tracks" };
+      const clip = {
+        id: `clp_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+        assetId: String(asset_id || source_file || "stock_placeholder"),
+        start,
+        end: start + duration,
+        in: inPoint,
+        out: inPoint + duration,
+        transform: {},
+        effects: [],
+        source: "stock",
+        name: String(name || "AI clip"),
+        selected: false,
+        locked: false,
+        muted: false,
+        text: "",
+      };
+      const op = createTimelineOp({
+        op: TIMELINE_OPS.INSERT_CLIP,
+        actor: "bot",
+        timelineId: timeline.id,
+        clipId: clip.id,
+        trackId: targetTrack.id,
+        payload: { clip, index: targetTrack.clips.length },
+      });
+      if (pool) {
+        const result = await applyTimelineOpBatch(pool, project_id, userId, { baseVersion: timeline.version, actor: "bot", ops: [op] });
+        const savedTimeline = await getOrCreateTimelineInTx(pool, project_id, userId);
+        return { ok: true, clip, track_id: targetTrack.id, op, doc: result.doc, version: result.version, undo_cursor_seq: savedTimeline.undo_cursor_seq || null };
+      }
+      const { doc: nextDoc, inverse } = applyOp(timeline.doc, op);
+      const saved = await timelines.save(project_id, userId, { doc: nextDoc, version: timeline.version });
+      if (!saved) return { ok: false, error: "timeline_version_conflict", status: 409 };
+      return { ok: true, clip, track_id: targetTrack.id, op, doc: saved.doc, inverse, version: saved.version, undo_cursor_seq: saved.undo_cursor_seq || null };
+    },
+    one_shot_create_video: async ({ userId, project_id, idea, duration_sec, style, platforms, text_overlay, music_mood }) => {
+      try {
+        if (!project_id) return { ok: false, error: "project_id_required" };
+        const project = await projects.get(project_id);
+        if (!project || project.user_id !== userId) return { ok: false, error: "project_not_found" };
+        if (!idea || !String(idea).trim()) return { ok: false, error: "idea_required" };
+
+        const requestedPlatforms = normalizeOneShotPlatforms(platforms);
+        const styleResult = style ? null : await get_style_dna({ userId, project_id });
+        const engineStyle = style || styleResult?.style_dna?.tone || undefined;
+        const duration = Number.isFinite(Number(duration_sec)) ? Number(duration_sec) : 60;
+        const engine = new OneShotEngine();
+        const estimatedCredits = engine.estimateCredits(String(idea));
+        const budgetCheck = usageTracker.checkBudget(userId);
+        if (!budgetCheck.ok) return budget402Result(budgetCheck);
+        const engineResult = await engine.createFromIdea(String(idea), {
+          duration_sec: duration,
+          style: engineStyle,
+          platforms: requestedPlatforms,
+          text_overlay,
+          music_mood,
+        });
+
+        const oneShotTimeline = engineResult?.video?.timeline || {};
+        const clips = Array.isArray(oneShotTimeline.clips) ? oneShotTimeline.clips : [];
+        if (!clips.length) return { ok: false, error: "one_shot_empty_timeline" };
+
+        const timeline = pool
+          ? await getOrCreateTimelineInTx(pool, project_id, userId)
+          : await timelines.getOrCreate(project_id, userId);
+        const baseVersion = timeline.version;
+        const ops = buildOneShotInsertOps({ timeline, clips });
+        if (!ops.length) return { ok: false, error: "timeline_has_no_video_track" };
+
+        let applied;
+        if (pool) {
+          applied = await applyTimelineOpBatch(pool, project_id, userId, { baseVersion, actor: "bot", ops });
+        } else {
+          applied = await applyTimelineOpBatch(pool, project_id, userId, { baseVersion, actor: "bot", ops }, timelines);
+        }
+
+        const metadata = engineResult?.metadata || {};
+        const seo = engineResult?.seo || {};
+        const clipIds = ops.map((op) => op.clipId);
+        const trackIds = Array.from(new Set(ops.map((op) => op.trackId)));
+        return {
+          ok: true,
+          plan_preview: buildOneShotPreview({
+            idea: String(idea).trim(),
+            clips,
+            durationSec: duration,
+            style: engineStyle || "",
+            version: applied.version,
+            platforms: requestedPlatforms,
+            thumbnailUrl: metadata.thumbnail_url || null,
+            seoHint: seo.description || seo.title || (Array.isArray(seo.hashtags) ? seo.hashtags.join(" ") : null) || null,
+          }),
+          version: applied.version,
+          clip_ids: clipIds,
+          track_ids: trackIds,
+          doc: applied.doc,
+          undo_cursor_seq: applied.undo_cursor_seq || null,
+          credits_used: engineResult?.credits_used || 0,
+          estimated_credits: estimatedCredits.total,
+        };
+      } catch (error) {
+        return { ok: false, error: error?.code || "one_shot_create_failed", message: error?.message || String(error) };
+      }
     },
 
     // ---- DESTRUCTIVE TOOLS (require confirmation_token + record undo) ----
@@ -1138,6 +1348,7 @@ When the user says "save this" or "create a project" or "what do I have", USE th
 - "save / remember / запомни / запиши / сохрани / write down" + text → **save_content** (REQUIRED: text; project_id optional, defaults to most recent)
 - "what projects / list / show me / мои проекты / I have" → **list_projects**
 - "my style / analyze style / style DNA / analyze my writing" → **get_style_dna**
+- "insert / add / place a clip / add b-roll / add a generated shot / add placeholder" + active project → **insertClip** with start_sec, duration_sec, asset_id/source_file and optional track_id
 - "cut / edit / shorten / trim / cut for TikTok" (and there's a video) → **cut_video** (check style first)
 - Unclear / empty / gibberish → ask ONE short clarifying question, do NOT guess
 
@@ -1197,6 +1408,90 @@ function buildProjectContextBlock(proj) {
   if (!proj) return "";
   const platformList = (proj.target_platforms || []).join(", ") || "any platform";
   return `\n\nCurrent project: "${proj.name}" (id: ${proj.id})${proj.niche ? `, niche: ${proj.niche}` : ""}, target platforms: ${platformList}. Prefer tool calls and examples that fit this project's niche.`;
+}
+
+function buildStyleDNAInstructionBlock(compactDNA, proj) {
+  if (!compactDNA) return "";
+  const tone = compactDNA.tone ? ` Tone: ${compactDNA.tone}.` : "";
+  const pacing = compactDNA.pacing ? ` Pacing: ${compactDNA.pacing}.` : "";
+  const niche = proj?.niche ? ` Niche: ${sanitizeForLLM(proj.niche)}.` : "";
+  const platforms = Array.isArray(proj?.target_platforms) && proj.target_platforms.length
+    ? ` Platforms: ${(proj.target_platforms || []).join(", ")}.`
+    : "";
+  const hooks = Array.isArray(compactDNA.hooks) && compactDNA.hooks.length
+    ? ` Hooks to favour: ${(compactDNA.hooks || []).slice(0, 5).join("; ")}.`
+    : "";
+  const ctas = Array.isArray(compactDNA.ctas) && compactDNA.ctas.length
+    ? ` CTAs to favour: ${(compactDNA.ctas || []).slice(0, 5).join("; ")}.`
+    : "";
+  return `\nStyleDNA for this project (active style — answer in this style; do not call get_style_dna unless the user explicitly asks for style analysis):${tone}${pacing}${niche}${platforms}${hooks}${ctas}`;
+}
+
+export async function buildActiveProjectContextBlock({ projects, timelines, styleDNA, pool, userId, projectId }) {
+  if (!projectId) return "";
+  const proj = await projects.get(projectId);
+  if (!proj || proj.user_id !== userId) return "";
+
+  let dna = null;
+  if (proj.style_dna_id) {
+    const all = await styleDNA.listForUser(userId);
+    dna = all.find((d) => d.id === proj.style_dna_id) || null;
+  }
+  if (!dna) {
+    const all = await styleDNA.listForUser(userId);
+    dna = all.find((d) => d.name === `project-${projectId}`) || null;
+  }
+
+  let timeline = null;
+  if (pool) {
+    const r = await pool.query("SELECT * FROM vireo_timelines WHERE project_id = $1 AND user_id = $2", [projectId, userId]);
+    timeline = r.rows.length > 0 ? timelineFromRow(r.rows[0]) : null;
+  } else {
+    timeline = await timelines.get(projectId);
+  }
+
+  const compactDNA = dna ? {
+    name: dna.name,
+    tone: dna.tone,
+    pacing: dna.pacing,
+    vocabulary: dna.vocabulary || [],
+    hooks: dna.hooks || dna.hook_patterns || [],
+    ctas: dna.ctas || dna.cta_patterns || [],
+    topics: dna.topics || [],
+  } : null;
+
+  const compactTimeline = timeline ? {
+    version: timeline.version,
+    undo_cursor_seq: timeline.undo_cursor_seq || null,
+    tracks: timeline.doc.tracks.map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      name: t.name,
+      muted: Boolean(t.muted),
+      locked: Boolean(t.locked),
+      clip_count: t.clips.length,
+      clips: t.clips.slice(0, 20).map((c) => ({
+        id: c.id,
+        assetId: c.assetId || c.asset_id || c.source_file || "",
+        start: c.start ?? c.start_sec ?? 0,
+        end: c.end ?? (c.start ?? c.start_sec ?? 0) + (c.duration_sec ?? c.duration ?? 1),
+        name: c.name || c.label || "",
+        kind: c.kind || t.kind,
+      })),
+    })),
+  } : null;
+
+  const platformList = (proj.target_platforms || []).join(", ") || "any platform";
+  const context = {
+    id: proj.id,
+    name: sanitizeForLLM(proj.name),
+    niche: proj.niche ? sanitizeForLLM(proj.niche) : null,
+    target_platforms: proj.target_platforms || [],
+    style_dna: compactDNA,
+    timeline: compactTimeline,
+  };
+  const styleInstruction = buildStyleDNAInstructionBlock(compactDNA, proj);
+  return `\n\nActive project workspace (source of truth for tool calls; use insertClip for timeline edits):\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n${styleInstruction}\nPrefer tool calls that fit the active project. If the user asks to insert/add/place a clip, call insertClip with start_sec/duration_sec and asset_id or source_file. Do not invent a clip id or claim a video is rendered unless insertClip returned a version.`;
 }
 
 // runChatTurn is now imported from ./run_chat_turn.js (extracted 2026-06-08
@@ -1259,6 +1554,314 @@ function makeChatHooks({ userId, deps, llmClient, audit }) {
   };
 }
 
+async function withTimelineTransaction(pool, fn) {
+  if (!pool || typeof pool.query !== "function") {
+    throw Object.assign(new Error("timeline ops require a Postgres-backed pool"), { code: "not_available", httpStatus: 503 });
+  }
+  await pool.query("BEGIN");
+  try {
+    const result = await fn();
+    await pool.query("COMMIT");
+    return result;
+  } catch (error) {
+    await pool.query("ROLLBACK").catch(() => {});
+    throw error;
+  }
+}
+
+function parseTimelineJson(value) {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+function timelineFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    user_id: row.user_id,
+    doc: parseTimelineJson(row.doc),
+    version: Number(row.version),
+    undo_cursor_seq: row.undo_cursor_seq == null ? null : Number(row.undo_cursor_seq),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function opError(code, message) {
+  return Object.assign(new Error(message), { code, httpStatus: 400 });
+}
+
+function validateTimelineOpBatch(body) {
+  const baseVersion = Number(body.baseVersion);
+  if (!Number.isInteger(baseVersion) || baseVersion < 1) throw opError("validation", "baseVersion must be a positive integer");
+  if (!Array.isArray(body.ops)) throw opError("validation", "ops must be an array");
+  if (!["human", "bot"].includes(body.actor || "human")) throw opError("validation", "actor must be human or bot");
+  return {
+    baseVersion,
+    actor: body.actor || "human",
+    ops: body.ops.map((raw, index) => {
+      if (!raw || typeof raw !== "object" || !PUBLIC_TIMELINE_OPS.includes(raw.op)) {
+        throw opError("validation", `ops[${index}] is not a supported timeline op`);
+      }
+      return { ...raw };
+    }),
+  };
+}
+
+async function getOwnedProject(pool, projectId, userId) {
+  const r = await pool.query("SELECT * FROM vireo_projects WHERE id = $1 AND user_id = $2", [projectId, userId]);
+  return r.rows[0] || null;
+}
+
+async function getTimelineInTx(pool, projectId, userId) {
+  const r = await pool.query("SELECT * FROM vireo_timelines WHERE project_id = $1 AND user_id = $2", [projectId, userId]);
+  return r.rows[0] ? timelineFromRow(r.rows[0]) : null;
+}
+
+async function getOrCreateTimelineInTx(pool, projectId, userId) {
+  let r = await pool.query("SELECT * FROM vireo_timelines WHERE project_id = $1 AND user_id = $2", [projectId, userId]);
+  if (r.rows.length > 0) return timelineFromRow(r.rows[0]);
+
+  const doc = createEmptyTimelineDocument({ projectId, userId, timelineId: `tl_${randomUUID().replace(/-/g, "")}` });
+  await pool.query(
+    `INSERT INTO vireo_timelines (id, project_id, user_id, doc, version)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [doc.timelineId, projectId, userId, JSON.stringify(doc), 1],
+  );
+  return { id: doc.timelineId, project_id: projectId, user_id: userId, doc, version: 1 };
+}
+
+async function saveTimelineInTx(pool, timeline, doc, version, baseVersion) {
+  const previousVersion = baseVersion ?? version - 1;
+  const r = await pool.query(
+    `UPDATE vireo_timelines
+     SET doc = $2, version = $3, updated_at = now()
+     WHERE id = $1 AND user_id = $4 AND version = $5
+     RETURNING *`,
+    [timeline.id, JSON.stringify(doc), version, timeline.user_id, previousVersion],
+  );
+  if (r.rows.length === 0) {
+    throw Object.assign(new Error("timeline version mismatch"), { code: "timeline_version_conflict", httpStatus: 409 });
+  }
+  return timelineFromRow(r.rows[0]);
+}
+
+async function updateTimelineCursorInTx(pool, timeline, cursorSeq) {
+  const r = await pool.query(
+    `UPDATE vireo_timelines
+     SET undo_cursor_seq = $1, updated_at = now()
+     WHERE id = $2 AND user_id = $3
+     RETURNING *`,
+    [cursorSeq, timeline.id, timeline.user_id],
+  );
+  if (r.rows.length === 0) {
+    throw Object.assign(new Error("timeline not found"), { code: "timeline_not_found", httpStatus: 404 });
+  }
+  return timelineFromRow(r.rows[0]);
+}
+
+async function previousActiveSeq(pool, projectId, userId, seq) {
+  const r = await pool.query(
+    `SELECT seq FROM vireo_timeline_ops
+     WHERE project_id = $1 AND user_id = $2 AND undone_at IS NULL AND seq < $3
+     ORDER BY seq DESC LIMIT $4`,
+    [projectId, userId, seq, 1],
+  );
+  return r.rows[0]?.seq ?? null;
+}
+
+async function nextRedoSeq(pool, projectId, userId, cursorSeq) {
+  const params = [projectId, userId];
+  let where = "undone_at IS NOT NULL AND redone_at IS NULL";
+  if (cursorSeq != null) {
+    where += " AND seq > $3";
+    params.push(cursorSeq);
+  }
+  params.push(1);
+  const r = await pool.query(
+    `SELECT seq FROM vireo_timeline_ops
+     WHERE project_id = $1 AND user_id = $2 AND ${where}
+     ORDER BY seq ASC LIMIT $${params.length}`,
+    params,
+  );
+  return r.rows[0]?.seq ?? null;
+}
+
+async function getTimelineOpBySeq(pool, projectId, userId, seq) {
+  const r = await pool.query(
+    `SELECT * FROM vireo_timeline_ops
+     WHERE project_id = $1 AND user_id = $2 AND seq = $3`,
+    [projectId, userId, seq],
+  );
+  return r.rows[0] ? { ...r.rows[0], op: parseTimelineJson(r.rows[0].op), inverse: parseTimelineJson(r.rows[0].inverse) } : null;
+}
+
+async function insertTimelineOp(pool, timeline, seq, forwardOp, inverseOp, actor) {
+  await pool.query(
+    `INSERT INTO vireo_timeline_ops (
+       id, timeline_id, project_id, user_id, seq, op, inverse, actor, created_at, undone_at, redone_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), NULL, NULL)`,
+    [
+      `top_${randomUUID().replace(/-/g, "")}`,
+      timeline.id,
+      timeline.project_id,
+      timeline.user_id,
+      seq,
+      JSON.stringify(forwardOp),
+      JSON.stringify(inverseOp),
+      actor,
+    ],
+  );
+}
+
+async function applyTimelineOpBatchInMemory(timelineStore, projectId, userId, { baseVersion, actor, ops }) {
+  const timeline = await timelineStore.getOrCreate(projectId, userId);
+  if (timeline.version !== baseVersion) {
+    throw Object.assign(new Error("timeline version mismatch"), { code: "timeline_version_conflict", httpStatus: 409 });
+  }
+
+  let doc = timeline.doc;
+  for (const op of ops) {
+    const forward = normalizeJournalOp(op, actor, timeline.id);
+    let result;
+    try {
+      result = applyOp(doc, forward);
+    } catch (error) {
+      throw Object.assign(new Error(error.message || "timeline op failed"), { code: "op_apply_failed", httpStatus: 400, cause: error });
+    }
+    doc = result.doc;
+  }
+
+  try {
+    validateTimelineDocument(doc);
+  } catch (error) {
+    throw Object.assign(new Error(error.message || "timeline validation failed"), { code: "op_apply_failed", httpStatus: 400, cause: error });
+  }
+
+  const nextVersion = baseVersion + ops.length;
+  doc = { ...doc, projectId, userId, version: nextVersion, updatedAt: new Date().toISOString() };
+  validateTimelineDocument(doc);
+  await timelineStore.save(projectId, userId, { doc, version: baseVersion });
+
+  return { doc, version: nextVersion, applied: ops.length, undo_cursor_seq: timeline.undo_cursor_seq || null };
+}
+
+async function applyTimelineOpBatch(pool, projectId, userId, body, timelineStore = null) {
+  const { baseVersion, actor, ops } = validateTimelineOpBatch(body);
+  if (!pool || typeof pool.query !== "function") {
+    if (!timelineStore || typeof timelineStore.getOrCreate !== "function" || typeof timelineStore.save !== "function") {
+      throw Object.assign(new Error("timeline ops require a Postgres-backed pool"), { code: "not_available", httpStatus: 503 });
+    }
+    return await applyTimelineOpBatchInMemory(timelineStore, projectId, userId, { baseVersion, actor, ops });
+  }
+
+  return await withTimelineTransaction(pool, async () => {
+    if (!await getOwnedProject(pool, projectId, userId)) throw Object.assign(new Error("project not found"), { code: "project_not_found", httpStatus: 404 });
+    const timeline = await getOrCreateTimelineInTx(pool, projectId, userId);
+    if (timeline.version !== baseVersion) {
+      throw Object.assign(new Error("timeline version mismatch"), { code: "timeline_version_conflict", httpStatus: 409 });
+    }
+
+    let doc = timeline.doc;
+    const journal = [];
+    for (let i = 0; i < ops.length; i += 1) {
+      const forward = normalizeJournalOp(ops[i], actor, timeline.id);
+      let result;
+      try {
+        result = applyOp(doc, forward);
+      } catch (error) {
+        throw Object.assign(new Error(error.message || "timeline op failed"), { code: "op_apply_failed", httpStatus: 400, cause: error });
+      }
+      doc = result.doc;
+      journal.push({ forward, inverse: result.inverse });
+    }
+
+    try {
+      validateTimelineDocument(doc);
+    } catch (error) {
+      throw Object.assign(new Error(error.message || "timeline validation failed"), { code: "op_apply_failed", httpStatus: 400, cause: error });
+    }
+
+    const nextVersion = baseVersion + ops.length;
+    doc = { ...doc, projectId, userId, version: nextVersion, updatedAt: new Date().toISOString() };
+    validateTimelineDocument(doc);
+    await saveTimelineInTx(pool, timeline, doc, nextVersion, baseVersion);
+
+    const cursorSeq = timeline.undo_cursor_seq ?? null;
+    if (cursorSeq == null) {
+      await pool.query("DELETE FROM vireo_timeline_ops WHERE project_id = $1 AND user_id = $2", [projectId, userId]);
+    } else {
+      await pool.query("DELETE FROM vireo_timeline_ops WHERE project_id = $1 AND user_id = $2 AND seq > $3", [projectId, userId, cursorSeq]);
+    }
+
+    for (let i = 0; i < journal.length; i += 1) {
+      await insertTimelineOp(pool, timeline, baseVersion + i + 1, journal[i].forward, journal[i].inverse, actor);
+    }
+    const lastSeq = baseVersion + journal.length;
+    if (journal.length > 0) {
+      await pool.query("UPDATE vireo_timeline_ops SET undone_at = NULL, redone_at = NULL WHERE project_id = $1 AND user_id = $2 AND undone_at IS NOT NULL", [projectId, userId]);
+      await updateTimelineCursorInTx(pool, timeline, lastSeq);
+    }
+
+    return { doc, version: nextVersion, applied: ops.length, undo_cursor_seq: lastSeq };
+  });
+}
+
+function normalizeJournalOp(raw, actor, timelineId) {
+  return {
+    op: raw.op,
+    actor,
+    timelineId: raw.timelineId || timelineId,
+    clipId: raw.clipId || "",
+    trackId: raw.trackId || "",
+    payload: raw.payload || {},
+    createdAt: raw.createdAt || "",
+  };
+}
+async function applyJournalEntry(pool, projectId, userId, entry, inverseMode) {
+  const timeline = await getOrCreateTimelineInTx(pool, projectId, userId);
+  const op = inverseMode ? entry.inverse : entry.op;
+  const result = applyOp(timeline.doc, { ...op, actor: entry.actor || "human", timelineId: timeline.id });
+  const nextVersion = timeline.version + 1;
+  const doc = { ...result.doc, projectId, userId, version: nextVersion, updatedAt: new Date().toISOString() };
+  validateTimelineDocument(doc);
+  await saveTimelineInTx(pool, timeline, doc, nextVersion);
+
+  if (inverseMode) {
+    await pool.query("UPDATE vireo_timeline_ops SET undone_at = now(), redone_at = NULL WHERE id = $1 AND project_id = $2 AND user_id = $3 RETURNING *", [entry.id, projectId, userId]);
+    const previousSeq = await previousActiveSeq(pool, projectId, userId, entry.seq);
+    await updateTimelineCursorInTx(pool, timeline, previousSeq);
+    return { doc, version: nextVersion, applied: 1, undo_cursor_seq: previousSeq };
+  } else {
+    await pool.query("UPDATE vireo_timeline_ops SET redone_at = now(), undone_at = NULL WHERE id = $1 AND project_id = $2 AND user_id = $3 RETURNING *", [entry.id, projectId, userId]);
+    await updateTimelineCursorInTx(pool, timeline, entry.seq);
+    return { doc, version: nextVersion, applied: 1, undo_cursor_seq: entry.seq };
+  }
+}
+
+async function undoTimeline(pool, projectId, userId) {
+  return await withTimelineTransaction(pool, async () => {
+    if (!await getOwnedProject(pool, projectId, userId)) throw Object.assign(new Error("project not found"), { code: "project_not_found", httpStatus: 404 });
+    const timeline = await getOrCreateTimelineInTx(pool, projectId, userId);
+    const seq = timeline.undo_cursor_seq ?? null;
+    const entry = seq ? await getTimelineOpBySeq(pool, projectId, userId, seq) : null;
+    if (!entry || entry.undone_at) throw Object.assign(new Error("no timeline ops to undo"), { code: "no_timeline_ops", httpStatus: 404 });
+    return await applyJournalEntry(pool, projectId, userId, entry, true);
+  });
+}
+
+async function redoTimeline(pool, projectId, userId) {
+  return await withTimelineTransaction(pool, async () => {
+    if (!await getOwnedProject(pool, projectId, userId)) throw Object.assign(new Error("project not found"), { code: "project_not_found", httpStatus: 404 });
+    const timeline = await getOrCreateTimelineInTx(pool, projectId, userId);
+    const seq = await nextRedoSeq(pool, projectId, userId, timeline.undo_cursor_seq);
+    const entry = seq ? await getTimelineOpBySeq(pool, projectId, userId, seq) : null;
+    if (!entry || !entry.undone_at || entry.redone_at) throw Object.assign(new Error("no timeline ops to redo"), { code: "no_timeline_ops", httpStatus: 404 });
+    return await applyJournalEntry(pool, projectId, userId, entry, false);
+  });
+}
+
 export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret = JWT_SECRET, pool, llm, fetchImpl, upstreamTimeoutMs } = {}) {
   const auth = secret ? authMiddleware(secret) : null;
   const cors = corsHeaders();
@@ -1274,24 +1877,27 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
   let resolvedLlm;
   if (llm) {
     resolvedLlm = llm;
-  } else if (LLM_CHEAP_MODEL && LLM_EXPENSIVE_MODEL) {
-    // Smart router: cheap model for tool selection, expensive for generation
-    const cheap = createLLMClient({ provider: LLM_PROVIDER, model: LLM_CHEAP_MODEL, fetchImpl });
-    const expensive = createLLMClient({ provider: LLM_PROVIDER, model: LLM_EXPENSIVE_MODEL, fetchImpl });
-    resolvedLlm = new SmartRouter({ cheapClient: cheap, expensiveClient: expensive });
   } else {
-    // Single-model mode. Default to LLM_CHEAP_MODEL if set (so
-    // operators can use a non-OpenAI default model via env
-    // without having to also set LLM_EXPENSIVE_MODEL). Falls back
-    // to OPENAI_MODEL ("gpt-4o-mini") when neither is set, for
-    // the original OpenAI-by-default behavior.
-    const singleModel = LLM_CHEAP_MODEL || OPENAI_MODEL;
-    resolvedLlm = createLLMClient({ provider: LLM_PROVIDER, model: singleModel, apiKey: OPENAI_API_KEY, fetchImpl });
+    const { provider, model } = resolveStudioLlmConfig();
+    const cheapModel = process.env.VIREO_LLM_CHEAP_MODEL || "";
+    const expensiveModel = process.env.VIREO_LLM_EXPENSIVE_MODEL || "";
+    if (cheapModel && expensiveModel) {
+      // Smart router: cheap model for tool selection, expensive for generation
+      const cheap = createLLMClient({ provider, model: cheapModel, fetchImpl });
+      const expensive = createLLMClient({ provider, model: expensiveModel, fetchImpl });
+      resolvedLlm = new SmartRouter({ cheapClient: cheap, expensiveClient: expensive });
+    } else {
+      // Single-model mode. If no explicit model is set, pass undefined so
+      // createLLMClient() uses the selected provider's own default model.
+      resolvedLlm = createLLMClient({ provider, model, fetchImpl });
+    }
   }
   const llmClient = resolvedLlm;
 
   // Stores (require pool if Postgres, otherwise in-memory)
   const projects = pool ? new ProjectStore(pool) : new InMemoryProjectStore();
+  const assets = pool ? new StudioAssetStore(pool) : new InMemoryStudioAssetStore();
+  const timelines = pool ? new StudioTimelineStore(pool) : new InMemoryStudioTimelineStore();
   const pieces = pool ? new ContentPieceStorePg(pool) : new InMemoryPieceStore();
   const conversations = pool ? new ConversationStore(pool) : new InMemoryConvStore();
   const messages = pool ? new MessageStore(pool) : new InMemoryMsgStore();
@@ -1325,7 +1931,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       return h;
     };
     return buildToolDeps({
-      projects, pieces, conversations, messages, styleDNA,
+      pool, projects, timelines, pieces, conversations, messages, styleDNA,
       llm: llmClient, fetchImpl, authHeadersFn,
       upstreamTimeoutMs: effectiveTimeout,
     });
@@ -1552,6 +2158,136 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         if (req.method === "DELETE") {
           const ok = await projects.delete(id, userId);
           return json(res, ok ? 200 : 404, { ok, deleted: ok });
+        }
+      }
+
+      // ---- studio assets ----
+      if (key === "GET /api/assets") {
+        const projectId = u.searchParams.get("project_id") || null;
+        const limit = Number(u.searchParams.get("limit") || 100);
+        if (projectId) {
+          const p = await projects.get(projectId);
+          if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
+        }
+        const list = await assets.listForUser(userId, { projectId, limit });
+        return json(res, 200, { ok: true, assets: list });
+      }
+      if (key === "POST /api/assets") {
+        if (await guardBody(req, res)) return;
+        let body; try { body = await readJsonBody(req, MAX_BODY_BYTES); } catch (e) { return err(res, 400, "bad_json", e.message); }
+        if (body.project_id) {
+          const p = await projects.get(body.project_id);
+          if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
+        }
+        let meta = {}; try { meta = capMetadata(body.metadata || {}); } catch (e) { return err(res, e.httpStatus || 400, e.code || "validation", e.message); }
+        const asset = await assets.create({
+          userId,
+          projectId: body.project_id || null,
+          kind: body.kind || "video",
+          source: body.source || "upload",
+          filename: body.filename || null,
+          mime: body.mime || null,
+          storagePath: body.storage_path || null,
+          durationSec: body.duration_sec ?? null,
+          width: body.width ?? null,
+          height: body.height ?? null,
+          sizeBytes: body.size_bytes ?? null,
+          status: body.status || "ready",
+          metadata: meta,
+        });
+        return json(res, 201, { ok: true, asset });
+      }
+      const assetMatch = url.match(/^\/api\/assets\/([^/]+)$/);
+      if (assetMatch) {
+        const id = decodeURIComponent(assetMatch[1]);
+        if (req.method === "GET") {
+          const asset = await assets.get(id);
+          if (!asset || asset.user_id !== userId) return err(res, 404, "asset_not_found");
+          return json(res, 200, { ok: true, asset });
+        }
+        if (req.method === "DELETE") {
+          if (await guardBody(req, res)) return;
+          let body = {}; try { body = await readJsonBody(req, MAX_BODY_BYTES); } catch (e) { body = {}; }
+          if (!body.confirmation_token) return err(res, 400, "confirmation_required", "confirmation_token required");
+          const ok = await assets.delete(id, userId);
+          return json(res, ok ? 200 : 404, { ok, deleted: ok });
+        }
+      }
+
+      // ---- studio timeline op-runner ----
+      const timelineOpsMatch = url.match(/^\/api\/timelines\/([^/]+)\/(ops|undo|redo)$/);
+      if (timelineOpsMatch) {
+        const projectId = decodeURIComponent(timelineOpsMatch[1]);
+        const action = timelineOpsMatch[2];
+        if (req.method === "POST") {
+          if (await guardBody(req, res)) return;
+          let body; try { body = await readJsonBody(req, MAX_BODY_BYTES); } catch (e) { return err(res, 400, "bad_json", e.message); }
+          try {
+            if (action === "ops") {
+              const result = await applyTimelineOpBatch(pool, projectId, userId, body, timelines);
+              return json(res, 200, { ok: true, ...result });
+            }
+            if (action === "undo") {
+              const result = await undoTimeline(pool, projectId, userId);
+              return json(res, 200, { ok: true, ...result });
+            }
+            if (action === "redo") {
+              const result = await redoTimeline(pool, projectId, userId);
+              return json(res, 200, { ok: true, ...result });
+            }
+          } catch (e) {
+            return err(res, e.httpStatus || 400, e.code || "timeline_op_failed", e.message);
+          }
+        }
+      }
+
+      // ---- studio timeline ----
+      const timelineMatch = url.match(/^\/api\/timelines\/([^/]+)$/);
+      if (timelineMatch) {
+        const projectId = decodeURIComponent(timelineMatch[1]);
+        if (req.method === "GET") {
+          const p = await projects.get(projectId);
+          if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
+          const timeline = await timelines.getOrCreate(projectId, userId);
+          const canRedo = pool
+            ? Boolean(await nextRedoSeq(pool, projectId, userId, timeline.undo_cursor_seq))
+            : false;
+          return json(res, 200, {
+            ok: true,
+            timeline: {
+              id: timeline.id,
+              project_id: projectId,
+              doc: timeline.doc,
+              version: timeline.version,
+              undo_cursor_seq: timeline.undo_cursor_seq || null,
+              can_redo: canRedo,
+            },
+          });
+        }
+        if (req.method === "PUT") {
+          if (await guardBody(req, res)) return;
+          let body; try { body = await readJsonBody(req, MAX_BODY_BYTES); } catch (e) { return err(res, 400, "bad_json", e.message); }
+          const p = await projects.get(projectId);
+          if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
+          const version = Number(body.version);
+          if (!Number.isInteger(version) || version < 1) return err(res, 400, "validation", "version must be a positive integer");
+          if (!body.doc || typeof body.doc !== "object" || Array.isArray(body.doc)) return err(res, 400, "validation", "doc object required");
+          let saved;
+          try {
+            saved = await timelines.save(projectId, userId, { doc: body.doc, version });
+          } catch (e) {
+            return err(res, e.httpStatus || 400, e.code || "timeline_validation", e.message);
+          }
+          if (!saved) return err(res, 409, "timeline_version_conflict", "timeline version mismatch");
+          return json(res, 200, {
+            ok: true,
+            timeline: {
+              id: saved.id,
+              project_id: projectId,
+              doc: saved.doc,
+              version: saved.version,
+            },
+          });
         }
       }
 
@@ -1807,12 +2543,9 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         // Project context: if the chat is bound to a project, append its context
         // to the system prompt so the LLM knows what niche/topic it's working in.
         const projectId = body.project_id || conv.project_id || null;
-        let proj = null;
         if (projectId) {
-          proj = await projects.get(projectId);
-          if (proj && proj.user_id === userId) {
-            system += buildProjectContextBlock(proj);
-          }
+          const projectContext = await buildActiveProjectContextBlock({ projects, timelines, styleDNA, pool, userId, projectId });
+          system += projectContext;
         }
 
         // D4: cache user preferences. The prefs change rarely
@@ -2056,10 +2789,8 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         let system = conv.system_prompt || SYSTEM_PROMPT;
         const projectId2 = body.project_id || conv.project_id || null;
         if (projectId2) {
-          const proj = await projects.get(projectId2);
-          if (proj && proj.user_id === userId) {
-            system += buildProjectContextBlock(proj);
-          }
+          const projectContext = await buildActiveProjectContextBlock({ projects, timelines, styleDNA, pool, userId, projectId: projectId2 });
+          system += projectContext;
         }
         // D4: cache user preferences in the streaming path too.
         // Same TTL/key strategy as the non-streaming path.
@@ -2628,7 +3359,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
     }
   });
 
-  return { server, port, host, pool, llm: llmClient, stores: { projects, pieces, conversations, messages, styleDNA } };
+  return { server, port, host, pool, llm: llmClient, stores: { projects, assets, timelines, pieces, conversations, messages, styleDNA } };
 }
 
 export async function start(opts = {}) {
@@ -2657,8 +3388,9 @@ export async function start(opts = {}) {
     // the optional chain short-circuited on `opts.llm === undefined` and
     // the server claimed to be "real" even when running on the mock.
     const resolvedLlm = opts.llm || llmClient;
+    const { provider, model } = resolveStudioLlmConfig();
     const isSmart = resolvedLlm instanceof SmartRouter;
-    console.log(`[studio] llm: ${resolvedLlm?.isMock() ? "MOCK" : "real"} provider=${LLM_PROVIDER} model=${resolvedLlm?.model || OPENAI_MODEL}${isSmart ? " (smart router)" : ""}`);
+    console.log(`[studio] llm: ${resolvedLlm?.isMock() ? "MOCK" : "real"} provider=${provider} model=${resolvedLlm?.model || model || "provider-default"}${isSmart ? " (smart router)" : ""}`);
     console.log(`[studio] postgres: ${pool ? "connected" : "in-memory"}`);
 
     // ---- A1: Auto-start retention scheduler (opt-in) ----
@@ -2725,6 +3457,60 @@ class InMemoryPieceStore {
   async listForUser(uid, { projectId = null, source = null, limit = 100 } = {}) { let list = [...this.items.values()].filter((p) => p.user_id === uid); if (projectId) list = list.filter((p) => p.project_id === projectId); if (source) list = list.filter((p) => p.source === source); return list.sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map((p) => this._row(p)); }
   async delete(id, uid) { const p = this.items.get(id); if (!p || p.user_id !== uid) return false; this.items.delete(id); return true; }
   _row(p) { return { ...p }; }
+}
+
+class InMemoryStudioAssetStore {
+  constructor() { this.items = new Map(); }
+  async create(data) {
+    const a = {
+      id: `ast_${newId("a")}`,
+      user_id: data.userId,
+      project_id: data.projectId,
+      kind: data.kind || "video",
+      source: data.source || "upload",
+      filename: data.filename || null,
+      mime: data.mime || null,
+      storage_path: data.storagePath || null,
+      duration_sec: data.durationSec ?? null,
+      width: data.width ?? null,
+      height: data.height ?? null,
+      size_bytes: data.sizeBytes ?? null,
+      status: data.status || "ready",
+      metadata: data.metadata || {},
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    this.items.set(a.id, a);
+    return this._row(a);
+  }
+  async get(id) { const a = this.items.get(id); return a ? this._row(a) : null; }
+  async listForUser(uid, { projectId = null, limit = 100 } = {}) { let list = [...this.items.values()].filter((a) => a.user_id === uid); if (projectId) list = list.filter((a) => a.project_id === projectId); return list.sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map((a) => this._row(a)); }
+  async delete(id, uid) { const a = this.items.get(id); if (!a || a.user_id !== uid) return false; this.items.delete(id); return true; }
+  _row(a) { return { ...a }; }
+}
+
+class InMemoryStudioTimelineStore {
+  constructor() { this.items = new Map(); }
+  async get(projectId) { const t = [...this.items.values()].find((x) => x.project_id === projectId); return t ? this._row(t) : null; }
+  async getOrCreate(projectId, userId) {
+    const existing = await this.get(projectId);
+    if (existing) return existing;
+    const t = { id: `tl_${newId("t")}`, project_id: projectId, user_id: userId, doc: createEmptyTimelineDocument({ projectId, userId, timelineId: `tl_${newId("t")}` }), version: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    t.id = t.doc.timelineId;
+    this.items.set(t.id, t);
+    return this._row(t);
+  }
+  async save(projectId, userId, { doc, version }) {
+    const expectedVersion = Number(version);
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw Object.assign(new Error("version must be a positive integer"), { code: "validation", httpStatus: 400 });
+    validateTimelineDocument(doc);
+    const t = await this.get(projectId);
+    if (!t || t.user_id !== userId || t.version !== expectedVersion) return null;
+    const next = { ...t, doc: { ...doc, projectId, userId, version: expectedVersion }, version: expectedVersion + 1, updated_at: new Date().toISOString() };
+    this.items.set(t.id, next);
+    return this._row(next);
+  }
+  _row(t) { return { ...t, doc: { ...t.doc } }; }
 }
 
 class InMemoryConvStore {

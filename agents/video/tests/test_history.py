@@ -91,6 +91,19 @@ def test_list_orders_newest_first():
   assert [v.params["i"] for v in ordered] == [3, 2, 1]
 
 
+def test_list_uses_append_order_when_timestamps_tie():
+  history = EditHistory()
+  same_time = "2025-01-01T00:00:00Z"
+  v1 = make_version(file_id="file-1", operation="cut", params={"i": 1}, created_at=same_time)
+  v2 = make_version(file_id="file-1", operation="cut", params={"i": 2}, created_at=same_time)
+  v3 = make_version(file_id="file-1", operation="cut", params={"i": 3}, created_at=same_time)
+  for v in (v1, v2, v3):
+    history.record(v)
+
+  assert [v.params["i"] for v in history.list("file-1")] == [3, 2, 1]
+  assert history.latest("file-1").params["i"] == 3
+
+
 def test_list_respects_limit():
   history = EditHistory()
   for i in range(5):

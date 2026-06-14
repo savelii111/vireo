@@ -26,21 +26,23 @@ const SUITES = [
   { name: "Distributor server (Node)", cmd: "node", args: ["--test", "agents/distributor/tests/test_server.js"] },
   { name: "Analyst (Node)",         cmd: "node",   args: ["--test", "agents/analyst/tests/test_metrics.js", "agents/analyst/tests/test_analyst.js"] },
   { name: "Analyst server (Node)",  cmd: "node",   args: ["--test", "agents/analyst/tests/test_server.js"] },
-  { name: "Storage (Node)",         cmd: "node",   args: ["--test", "agents/storage/tests/test_storage.js", "agents/storage/tests/test_migrations.js"] },
+  { name: "Storage (Node)",         cmd: "node",   args: ["--test", "agents/storage/tests/test_storage.js", "agents/storage/tests/test_migrations.js", "agents/storage/tests/test_storage_timeline_migration.js"] },
   { name: "Auth (Node)",            cmd: "node",   args: ["--test", "agents/auth/tests/test_auth.js", "agents/auth/tests/test_users_pg.js"] },
   { name: "Billing (Node)",         cmd: "node",   args: ["--test", "agents/billing/tests/test_billing.js"] },
   { name: "Billing Stripe (Node)",  cmd: "node",   args: ["--test", "agents/billing/tests/test_billing_stripe.js"] },
   { name: "StripeClient (Node)",    cmd: "node",   args: ["--test", "agents/billing/tests/test_stripe_client.js"] },
   { name: "Ingest (Node)",          cmd: "node",   args: ["--test", "agents/ingest/tests/test_ingest.js"] },
-  { name: "OAuth core (Python)",    cmd: "python", args: ["-m", "pytest", "agents/oauth/tests/test_oauth.py", "-v", "--tb=no", "-q"] },
+  { name: "OAuth core (Python)",    cmd: "python", args: ["-m", "pytest", "tests/test_oauth.py", "-v", "--tb=no", "-q"], cwd: "agents/oauth", env: { PYTHONPATH: "." } },
   { name: "OAuth server (Node)",    cmd: "node",   args: ["--test", "agents/oauth/tests/test_oauth_server.js"] },
   { name: "Dashboard (Node)",       cmd: "node",   args: ["--test", "apps/dashboard/tests/test_server.js"] },
-  { name: "Studio (Node)",          cmd: "node",   args: ["--test", "agents/studio/tests/test_server.js", "agents/studio/tests/test_server_pg.js", "agents/studio/tests/test_fixes.js"] },
+  { name: "Studio (Node)",          cmd: "node",   args: ["--test", "agents/studio/tests/test_server.js", "agents/studio/tests/test_server_pg.js", "agents/studio/tests/test_fixes.js", "agents/studio/tests/test_api_timeline.js", "agents/studio/tests/test_timeline_ops.js"] },
   { name: "Storage chat store (Node)", cmd: "node", args: ["--test", "agents/storage/tests/test_chat_store.js"] },
   { name: "E2E Pipeline (Node)",    cmd: "node",   args: ["--test", "apps/orchestrator/tests/test_e2e.js"] },
-  { name: "Integration (Node)",     cmd: "node",   args: ["--test", "apps/orchestrator/tests/test_integration.js"] },
-  { name: "Auth Integration (Node)", cmd: "node",  args: ["--test", "tests/test_auth_integration.js"] },
-  { name: "Studio E2E (Node)",      cmd: "node",   args: ["--test", "tests/test_studio_e2e.mjs"] },
+  { name: "Integration (Node)", cmd: "node",  args: ["--test", "apps/orchestrator/tests/test_integration.js"] },
+  { name: "Auth Integration (Node)", cmd: "node", args: ["--test", "tests/test_auth_integration.js"] },
+  { name: "Shared Timeline Contract (Node)", cmd: "node", args: ["--test", "tests/test_shared_timeline.js"] },
+  { name: "Desktop (Node)", cmd: "node", args: ["--test", "tests/test_desktop_app.js"] },
+  { name: "Studio E2E (Node)",      cmd: "node",  args: ["--test", "tests/test_studio_e2e.mjs"] },
   { name: "Phase 3 Smoke (Node)",   cmd: "node",   args: ["--test", "tests/test_phase3_smoke.mjs"] },
   { name: "Phase 4 CI JUnit writer (Node)", cmd: "node", args: ["--test", "tests/test_junit_writer.mjs"] },
   { name: "Monitoring (Node)",      cmd: "node",  args: ["--test", "agents/monitoring/tests/test_monitoring.js"] },
@@ -50,7 +52,7 @@ const SUITES = [
 function run(suite) {
   return new Promise((resolve) => {
     const t0 = Date.now();
-    const child = spawn(suite.cmd, suite.args, { cwd: ROOT, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(suite.cmd, suite.args, { cwd: suite.cwd ? path.join(ROOT, suite.cwd) : ROOT, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
     child.stdout.on("data", (c) => { out += c.toString(); process.stdout.write(c); });

@@ -18,11 +18,6 @@ function numberOr(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function clampVolume(value) {
-  const n = numberOr(value, 1);
-  return Math.max(0, Math.min(1, n));
-}
-
 export const TIMELINE_KINDS = Object.freeze({
   VIDEO: "video",
   AUDIO: "audio",
@@ -48,8 +43,6 @@ export const TIMELINE_OPS = Object.freeze({
   ADD_EFFECT: "addEffect",
   ADD_TEXT: "addText",
   SET_EFFECT: "setEffect",
-  SET_TRANSFORM: "setTransform",
-  SET_VOLUME: "setVolume",
   REPLACE_ASSET: "replaceAsset",
   SET_TRACK_FLAG: "setTrackFlag",
   // Internal inverse-only ops accepted by applyOp for undo/redo journal replay.
@@ -71,8 +64,6 @@ export const PUBLIC_TIMELINE_OPS = Object.freeze([
   TIMELINE_OPS.ADD_EFFECT,
   TIMELINE_OPS.ADD_TEXT,
   TIMELINE_OPS.SET_EFFECT,
-  TIMELINE_OPS.SET_TRANSFORM,
-  TIMELINE_OPS.SET_VOLUME,
   TIMELINE_OPS.REPLACE_ASSET,
   TIMELINE_OPS.SET_TRACK_FLAG,
 ]);
@@ -164,7 +155,6 @@ export function normalizeClip(clip) {
     end: Number.isFinite(end) && end > start ? end : start + 1,
     in: inPoint,
     out: outPoint,
-    volume: clampVolume(numberOr(clip.volume ?? clip.audioVolume ?? clip.audio_volume, 1)),
     transform: { ...(clip.transform || {}) },
     effects: Array.isArray(clip.effects) ? clip.effects.map((effect) => ({ ...effect })) : [],
     source: clip.source || TIMELINE_CLIP_SOURCES.UPLOAD,
@@ -296,10 +286,6 @@ function applyOpInternal(timeline, op) {
       return addText(timeline, op);
     case TIMELINE_OPS.SET_EFFECT:
       return setEffect(timeline, op);
-    case TIMELINE_OPS.SET_TRANSFORM:
-      return setTransform(timeline, op);
-    case TIMELINE_OPS.SET_VOLUME:
-      return setVolume(timeline, op);
     case TIMELINE_OPS.REPLACE_ASSET:
       return replaceAsset(timeline, op);
     case TIMELINE_OPS.SET_TRACK_FLAG:
@@ -649,44 +635,6 @@ function setEffect(timeline, op) {
   };
 }
 
-function setTransform(timeline, op) {
-  const { clip } = resolveClip(timeline, op.trackId, op.clipId);
-  if (!op.payload || typeof op.payload.transform !== "object") throw invalid("setTransform requires payload.transform");
-  const allowed = ["x", "y", "scale", "opacity"];
-  const patch = {};
-  for (const key of allowed) {
-    if (Object.prototype.hasOwnProperty.call(op.payload.transform, key)) {
-      const value = numberOr(op.payload.transform[key], clip.transform?.[key] ?? 0);
-      if (key === "opacity") {
-        patch[key] = Math.max(0, Math.min(1, value));
-      } else if (key === "scale") {
-        patch[key] = Math.max(0, value);
-      } else {
-        patch[key] = value;
-      }
-    }
-  }
-  if (Object.keys(patch).length === 0) throw invalid("setTransform requires at least one transform field");
-  const previous = { ...clip.transform };
-  clip.transform = { ...clip.transform, ...patch };
-  return {
-    ...op,
-    payload: { transform: previous },
-  };
-}
-
-function setVolume(timeline, op) {
-  const { clip } = resolveClip(timeline, op.trackId, op.clipId);
-  if (!Object.prototype.hasOwnProperty.call(op.payload, "volume")) throw invalid("setVolume requires payload.volume");
-  const nextVolume = clampVolume(op.payload.volume);
-  const previous = clip.volume;
-  clip.volume = nextVolume;
-  return {
-    ...op,
-    payload: { volume: previous },
-  };
-}
-
 function replaceAsset(timeline, op) {
   const { clip } = resolveClip(timeline, op.trackId, op.clipId);
   const assetId = String(op.payload.assetId ?? op.payload.asset_id ?? "");
@@ -753,7 +701,6 @@ function buildClipFromPayload(payload) {
     end,
     in: numberOr(payload.in ?? payload.in_sec, 0),
     out: numberOr(payload.out ?? payload.out_sec, end - start),
-    volume: clampVolume(numberOr(payload.volume ?? payload.audioVolume ?? payload.audio_volume, 1)),
     transform: clone(payload.transform || {}),
     effects: Array.isArray(payload.effects) ? clone(payload.effects) : [],
     source: payload.source || TIMELINE_CLIP_SOURCES.UPLOAD,
