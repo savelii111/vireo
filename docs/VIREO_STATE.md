@@ -2,26 +2,46 @@
 
 ## Current Day
 
-Day 10 complete.
+Day 11 complete.
 
 ## Last Commit
 
-0b971572c3f05f0150493cfcb2709fb5f913524f — fix: Day 10 — restore suites to 0 failed
+a902118 — studio: Day 11 — Premiere-style layout + Vireo DESIGN.md, remove desktop drift
 
 ## What Changed
 
-- Inspector controls are wired into the Studio API path.
-- Transitions/effects/text now go through the shared timeline op-runner contract.
-- Timeline undo/redo journal support is covered by Studio tests.
-- Mock PG pool now mirrors the timeline op SQL used by undo/redo, including `NULL` clears.
+- Removed desktop drift:
+  - deleted `agents/studio/desktop`
+  - deleted `tests/test_desktop_app.js`
+  - removed desktop suite from `tests/run-all.mjs`
+  - no remaining `desktop` references in `tests/`, `scripts/`, `package.json`, or `docker*`
+- Added `docs/DESIGN.md` as the Vireo UI single source of truth.
+  - Direction: dark pro-video AI editor, Premiere × Linear/Framer/Vercel.
+  - 9-section contract: color, typography, spacing, layout, components, motion, voice, brand, anti-patterns.
+- Aligned Tailwind/index.css tokens with `docs/DESIGN.md`.
+- Re-laid out the Studio shell as a Premiere-style NLE grid:
+  - top: `TopBar`
+  - left: `SideRail`
+  - center-top: `Preview`
+  - right: `Inspector` + `ChatPanel` tabs
+  - bottom: full-width `Timeline`
+- Preserved existing behavior: playback, op-actions, undo/redo, and hotkeys remain wired through existing components.
+- Fixed shared timeline contract drift for frontend `setTransform` / `setVolume` ops used by existing Inspector tests.
+- Captured before/after screenshots:
+  - `docs/vireo-day11-before.png`
+  - `docs/vireo-day11-after.png`
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 10 fixes:
+`node tests/run-all.mjs` after Day 11 changes:
 
-- `TOTAL: 1326 passed, 0 failed across 28 suites`
-- Targeted Studio timeline ops test: `16 passed, 0 failed`
+- `TOTAL: 1320 passed, 0 failed across 27 suites`
+
+Frontend checks:
+
+- `npm run typecheck` → `exit 0`
+- `npm test` → `2 passed`, `18 passed`
 
 ## Next
 
-Day 11.
+Awaiting Day 11 confirmation before Day 12.
