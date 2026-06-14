@@ -1,0 +1,466 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  TIMELINE_OPS,
+  applyOp,
+  createEmptyTimelineDocument,
+  validateTimelineDocument,
+} from "../../../packages/shared/index.js";
+import { buildServer } from "../src/server.js";
+import { signToken } from "../../../packages/auth-middleware/index.js";
+import { makeMockPool } from "../../storage/tests/test_chat_store_helpers.js";
+
+function listen(server) {
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      resolve({ baseUrl: `http://127.0.0.1:${port}`, close: () => new Promise((closeResolve) => server.close(closeResolve)) });
+    });
+  });
+}
+
+async function token(userId, secret = "s") {
+  return signToken({ sub: userId, email: `${userId}@example.com`, name: userId }, secret, 600);
+}
+
+function op(opName, payload, extra = {}) {
+  return {
+    op: opName,
+    actor: "human",
+    timelineId: "tl_test",
+    clipId: "",
+    trackId: "",
+    payload,
+    ...extra,
+  };
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function baseDoc() {
+  const doc = createEmptyTimelineDocument({ projectId: "p_day3", userId: "u_day3", timelineId: "tl_test" });
+  doc.tracks[0].clips.push({
+    id: "clip_1",
+    assetId: "ast_hero",
+    start: 0,
+    end: 10,
+    in: 0,
+    out: 10,
+    transform: {},
+    effects: [{ id: "fx_base", name: "Base" }],
+    source: "upload",
+    name: "Hero",
+    selected: false,
+    locked: false,
+    muted: false,
+    text: "",
+  });
+  doc.tracks[0].clips.push({
+    id: "clip_2",
+    assetId: "ast_hero2",
+    start: 10,
+    end: 16,
+    in: 0,
+    out: 6,
+    transform: {},
+    effects: [],
+    source: "upload",
+    name: "Hero 2",
+    selected: false,
+    locked: false,
+    muted: false,
+    text: "",
+  });
+  doc.tracks[1].clips.push({
+    id: "clip_audio",
+    assetId: "ast_audio",
+    start: 0,
+    end: 10,
+    in: 0,
+    out: 10,
+    transform: {},
+    effects: [],
+    source: "upload",
+    name: "Music",
+    selected: false,
+    locked: false,
+    muted: false,
+    text: "",
+  });
+  doc.tracks[2].clips.push({
+    id: "clip_text",
+    assetId: "",
+    start: 1,
+    end: 4,
+    in: 0,
+    out: 3,
+    transform: {},
+    effects: [],
+    source: "text",
+    name: "Title",
+    text: "Title",
+    selected: false,
+    locked: false,
+    muted: false,
+  });
+  validateTimelineDocument(doc);
+  return doc;
+}
+
+async function json(res) {
+  return res.json();
+}
+
+test("applyOp round-trips every forward op through its inverse without mutating the original doc", () => {
+  const doc = baseDoc();
+  const cases = [
+    op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_insert", assetId: "ast_insert", start: 10, end: 14 }, { trackId: "trk_v1" }),
+    op(TIMELINE_OPS.TRIM_CLIP, { start: 2, end: 8 }, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(TIMELINE_OPS.SPLIT_CLIP, { at: 5 }, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(TIMELINE_OPS.MOVE_CLIP, { start: 3 }, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(TIMELINE_OPS.DELETE_CLIP, {}, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(TIMELINE_OPS.GROUP_CLIPS, { clipIds: ["clip_1", "clip_2"], groupId: "grp_hero" }),
+    op(TIMELINE_OPS.ADD_TRANSITION, { id: "tr_1", fromClipId: "clip_1", toClipId: "clip_insert", duration: 0.5 }, { trackId: "trk_v1" }),
+    op(TIMELINE_OPS.ADD_EFFECT, { effect: { id: "fx_zoom", name: "Zoom" } }, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(TIMELINE_OPS.ADD_TEXT, { id: "txt_2", text: "Subtitle", start: 4, end: 7 }, { trackId: "trk_t1" }),
+    op(TIMELINE_OPS.SET_EFFECT, { effect: { id: "fx_base", name: "Zoom Strong", intensity: 0.9 }, index: 0 }, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(TIMELINE_OPS.REPLACE_ASSET, { assetId: "ast_new" }, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(TIMELINE_OPS.SET_TRACK_FLAG, { muted: true, locked: false, hidden: false }, { trackId: "trk_v1" }),
+  ];
+
+  for (const forward of cases) {
+    const original = clone(doc);
+    const before = clone(original);
+    const result = applyOp(original, forward);
+    assert.deepEqual(original, before, "applyOp must not mutate the input document");
+    const restored = applyOp(result.doc, result.inverse).doc;
+    assert.deepEqual(restored, before, `round-trip failed for ${forward.op}`);
+  }
+});
+
+test("applyOp throws typed errors and leaves the document unchanged for invalid ops", () => {
+  const doc = baseDoc();
+  const before = clone(doc);
+  assert.throws(() => applyOp(doc, op(TIMELINE_OPS.TRIM_CLIP, { start: -1, end: 5 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });
+  assert.throws(() => applyOp(doc, op(TIMELINE_OPS.MOVE_CLIP, { start: -1 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });
+  assert.throws(() => applyOp(doc, op(TIMELINE_OPS.SPLIT_CLIP, { at: 99 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });
+  assert.deepEqual(doc, before);
+});
+
+test("studio op-runner applies a batch atomically and records monotonic journal rows", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Day3 Project" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+
+    const apply = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        actor: "human",
+        ops: [
+          op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_batch", assetId: asset.asset.id, start: 0, end: 5 }, { trackId: "trk_v1" }),
+          op(TIMELINE_OPS.TRIM_CLIP, { start: 1, end: 4 }, { trackId: "trk_v1", clipId: "clip_batch" }),
+        ],
+      }),
+    });
+    assert.equal(apply.status, 200);
+    const applied = await json(apply);
+    assert.equal(applied.applied, 2);
+    assert.equal(applied.version, 3);
+    assert.equal(applied.doc.tracks[0].clips.find((c) => c.id === "clip_batch").start, 1);
+
+    const timeline = await (await fetch(`${baseUrl}/api/timelines/${projectId}`, { headers })).json();
+    assert.equal(timeline.timeline.version, 3);
+
+    const rows = [...(pool.tables.vireo_timeline_ops || new Map()).values()].sort((a, b) => a.seq - b.seq);
+    assert.deepEqual(rows.map((r) => r.seq), [2, 3]);
+    assert.deepEqual(rows.map((r) => r.actor), ["human", "human"]);
+    assert.ok(rows.every((r) => r.op.op && r.inverse.op));
+  } finally {
+    await close();
+  }
+});
+
+test("studio op-runner rolls back the whole batch when one op fails", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3_batch_rollback")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Rollback Project" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+
+    const bad = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        ops: [
+          op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_ok", assetId: asset.asset.id, start: 0, end: 5 }, { trackId: "trk_v1" }),
+          op(TIMELINE_OPS.TRIM_CLIP, { start: -1, end: 1 }, { trackId: "trk_v1", clipId: "clip_ok" }),
+        ],
+      }),
+    });
+    assert.equal(bad.status, 400);
+    assert.equal((await json(bad)).error, "op_apply_failed");
+
+    const timeline = await (await fetch(`${baseUrl}/api/timelines/${projectId}`, { headers })).json();
+    assert.equal(timeline.timeline.version, 1);
+    assert.equal(timeline.timeline.doc.tracks[0].clips.length, 0);
+    assert.equal((pool.tables.vireo_timeline_ops || new Map()).size, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("studio op-runner rejects stale baseVersion with 409 and leaves state unchanged", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3_stale")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Stale Project" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+
+    const first = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_first", assetId: asset.asset.id, start: 0, end: 5 }, { trackId: "trk_v1" })],
+      }),
+    });
+    assert.equal(first.status, 200);
+
+    const stale = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_stale", assetId: asset.asset.id, start: 5, end: 7 }, { trackId: "trk_v1" })],
+      }),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await json(stale)).error, "timeline_version_conflict");
+
+    const timeline = await (await fetch(`${baseUrl}/api/timelines/${projectId}`, { headers })).json();
+    assert.equal(timeline.timeline.version, 2);
+    assert.deepEqual(timeline.timeline.doc.tracks[0].clips.map((c) => c.id), ["clip_first"]);
+  } finally {
+    await close();
+  }
+});
+
+test("studio undo and redo use the journal and return to the same doc/version path", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3_undo")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Undo Project" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+
+    const apply = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_undo", assetId: asset.asset.id, start: 0, end: 5 }, { trackId: "trk_v1" })],
+      }),
+    });
+    assert.equal(apply.status, 200);
+    assert.equal((await json(apply)).version, 2);
+
+    const undo = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undo.status, 200);
+    const undone = await json(undo);
+    assert.equal(undone.version, 3);
+    assert.equal(undone.doc.tracks[0].clips.some((c) => c.id === "clip_undo"), false);
+
+    const redo = await fetch(`${baseUrl}/api/timelines/${projectId}/redo`, { method: "POST", headers });
+    assert.equal(redo.status, 200);
+    const redone = await json(redo);
+    assert.equal(redone.version, 4);
+    assert.equal(redone.doc.tracks[0].clips.find((c) => c.id === "clip_undo").start, 0);
+
+    const rows = [...(pool.tables.vireo_timeline_ops || new Map()).values()].sort((a, b) => a.seq - b.seq);
+    assert.deepEqual(rows.map((r) => r.seq), [2]);
+    assert.equal(rows.find((r) => r.seq === 2).undone_at, null);
+    assert.ok(rows.find((r) => r.seq === 2).redone_at);
+  } finally {
+    await close();
+  }
+});
+
+test("studio undo/redo stack handles two separate op packets without journal rows becoming undo targets", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3_stack")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Stack Project" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+
+    const applyA = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_stack_a", assetId: asset.asset.id, start: 0, end: 5 }, { trackId: "trk_v1" })],
+      }),
+    });
+    assert.equal(applyA.status, 200);
+    assert.equal((await json(applyA)).version, 2);
+
+    const applyB = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 2,
+        ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_stack_b", assetId: asset.asset.id, start: 5, end: 10 }, { trackId: "trk_v1" })],
+      }),
+    });
+    assert.equal(applyB.status, 200);
+    assert.equal((await json(applyB)).version, 3);
+
+    const undoB = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoB.status, 200);
+    assert.equal((await json(undoB)).version, 4);
+    assert.deepEqual((await (await fetch(`${baseUrl}/api/timelines/${projectId}`, { headers })).json()).timeline.doc.tracks[0].clips.map((c) => c.id), ["clip_stack_a"]);
+
+    const undoA = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoA.status, 200);
+    const empty = await json(undoA);
+    assert.equal(empty.version, 5);
+    assert.deepEqual(empty.doc.tracks[0].clips.map((c) => c.id), []);
+
+    const redoA = await fetch(`${baseUrl}/api/timelines/${projectId}/redo`, { method: "POST", headers });
+    assert.equal(redoA.status, 200);
+    assert.equal((await json(redoA)).version, 6);
+    assert.deepEqual((await (await fetch(`${baseUrl}/api/timelines/${projectId}`, { headers })).json()).timeline.doc.tracks[0].clips.map((c) => c.id), ["clip_stack_a"]);
+
+    const redoB = await fetch(`${baseUrl}/api/timelines/${projectId}/redo`, { method: "POST", headers });
+    assert.equal(redoB.status, 200);
+    const restored = await json(redoB);
+    assert.equal(restored.version, 7);
+    assert.deepEqual(restored.doc.tracks[0].clips.map((c) => c.id), ["clip_stack_a", "clip_stack_b"]);
+    assert.equal(restored.doc.tracks[0].clips[0].start, 0);
+    assert.equal(restored.doc.tracks[0].clips[1].start, 5);
+
+    const rows = [...(pool.tables.vireo_timeline_ops || new Map()).values()].sort((a, b) => a.seq - b.seq);
+    assert.deepEqual(rows.map((r) => r.seq), [2, 3]);
+    assert.deepEqual(rows.map((r) => [r.seq, !!r.undone_at, !!r.redone_at]), [
+      [2, false, true],
+      [3, false, true],
+    ]);
+  } finally {
+    await close();
+  }
+});
+
+test("studio undo branch is discarded when a new op is applied off the cursor", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3_branch")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Branch Project" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+
+    const applyA = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ baseVersion: 1, ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_branch_a", assetId: asset.asset.id, start: 0, end: 5 }, { trackId: "trk_v1" })] }),
+    });
+    assert.equal(applyA.status, 200);
+    assert.equal((await json(applyA)).version, 2);
+
+    const applyB = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ baseVersion: 2, ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_branch_b", assetId: asset.asset.id, start: 5, end: 10 }, { trackId: "trk_v1" })] }),
+    });
+    assert.equal(applyB.status, 200);
+    assert.equal((await json(applyB)).version, 3);
+
+    const undoB = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoB.status, 200);
+    const undoneB = await json(undoB);
+    assert.equal(undoneB.version, 4);
+    assert.deepEqual(undoneB.doc.tracks[0].clips.map((c) => c.id), ["clip_branch_a"]);
+    const afterUndo = await (await fetch(`${baseUrl}/api/timelines/${projectId}`, { headers })).json();
+    assert.equal(afterUndo.timeline.version, 4);
+    const timelineRowAfterUndo = [...pool.tables.vireo_timelines.values()].find((r) => r.project_id === projectId);
+    assert.ok(timelineRowAfterUndo);
+    assert.equal(timelineRowAfterUndo.version, 4);
+    assert.equal(timelineRowAfterUndo.undo_cursor_seq, 2);
+
+    const applyC = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ baseVersion: 4, ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_branch_c", assetId: asset.asset.id, start: 10, end: 15 }, { trackId: "trk_v1" })] }),
+    });
+    assert.equal(applyC.status, 200);
+    const afterC = await json(applyC);
+    assert.equal(afterC.version, 5);
+    assert.deepEqual(afterC.doc.tracks[0].clips.map((c) => c.id), ["clip_branch_a", "clip_branch_c"]);
+
+    const redoAfterBranch = await fetch(`${baseUrl}/api/timelines/${projectId}/redo`, { method: "POST", headers });
+    assert.equal(redoAfterBranch.status, 404);
+    assert.equal((await json(redoAfterBranch)).error, "no_timeline_ops");
+
+    const rows = [...(pool.tables.vireo_timeline_ops || new Map()).values()].sort((a, b) => a.seq - b.seq);
+    assert.deepEqual(rows.map((r) => r.seq), [2, 5]);
+    assert.deepEqual(rows.map((r) => r.op.payload.id), ["clip_branch_a", "clip_branch_c"]);
+    assert.equal(rows.some((r) => r.seq === 3), false, "op B ahead of the cursor must be discarded");
+    assert.equal(rows.some((r) => r.seq > afterC.version), false, "no journal rows ahead of the new cursor should remain reachable");
+    const timelineAfterC = await (await fetch(`${baseUrl}/api/timelines/${projectId}`, { headers })).json();
+    assert.equal(timelineAfterC.timeline.version, 5);
+    assert.equal(timelineAfterC.timeline.doc.version, 5);
+    const timelineRow = [...pool.tables.vireo_timelines.values()].find((r) => r.project_id === projectId);
+    assert.ok(timelineRow);
+    assert.equal(timelineRow.version, 5);
+    assert.equal(timelineRow.undo_cursor_seq, afterC.version);
+  } finally {
+    await close();
+  }
+});
+
+test("studio op-runner enforces project ownership", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const owner = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3_owner")}` };
+  const other = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day3_other")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers: owner, body: JSON.stringify({ name: "Owner Project" }) })).json();
+    const foreign = await fetch(`${baseUrl}/api/timelines/${project.project.id}/ops`, {
+      method: "POST",
+      headers: other,
+      body: JSON.stringify({ baseVersion: 1, ops: [] }),
+    });
+    assert.equal(foreign.status, 404);
+  } finally {
+    await close();
+  }
+});
