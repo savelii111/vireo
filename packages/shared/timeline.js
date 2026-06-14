@@ -43,12 +43,15 @@ export const TIMELINE_OPS = Object.freeze({
   ADD_EFFECT: "addEffect",
   ADD_TEXT: "addText",
   SET_EFFECT: "setEffect",
+  SET_TRANSFORM: "setTransform",
+  SET_VOLUME: "setVolume",
   REPLACE_ASSET: "replaceAsset",
   SET_TRACK_FLAG: "setTrackFlag",
   // Internal inverse-only ops accepted by applyOp for undo/redo journal replay.
   REMOVE_TRANSITION: "removeTransition",
   REMOVE_EFFECT: "removeEffect",
   REMOVE_TEXT: "removeText",
+  REMOVE_VOLUME: "removeVolume",
   MERGE_CLIPS: "mergeClips",
   UNGROUP_CLIPS: "ungroupClips",
 });
@@ -64,6 +67,8 @@ export const PUBLIC_TIMELINE_OPS = Object.freeze([
   TIMELINE_OPS.ADD_EFFECT,
   TIMELINE_OPS.ADD_TEXT,
   TIMELINE_OPS.SET_EFFECT,
+  TIMELINE_OPS.SET_TRANSFORM,
+  TIMELINE_OPS.SET_VOLUME,
   TIMELINE_OPS.REPLACE_ASSET,
   TIMELINE_OPS.SET_TRACK_FLAG,
 ]);
@@ -286,6 +291,10 @@ function applyOpInternal(timeline, op) {
       return addText(timeline, op);
     case TIMELINE_OPS.SET_EFFECT:
       return setEffect(timeline, op);
+    case TIMELINE_OPS.SET_TRANSFORM:
+      return setTransform(timeline, op);
+    case TIMELINE_OPS.SET_VOLUME:
+      return setVolume(timeline, op);
     case TIMELINE_OPS.REPLACE_ASSET:
       return replaceAsset(timeline, op);
     case TIMELINE_OPS.SET_TRACK_FLAG:
@@ -635,6 +644,37 @@ function setEffect(timeline, op) {
   };
 }
 
+function setTransform(timeline, op) {
+  const { clip } = resolveClip(timeline, op.trackId, op.clipId);
+  if (!op.payload || typeof op.payload.transform !== "object") throw invalid("setTransform requires payload.transform");
+  const nextTransform = { ...(clip.transform || {}) };
+  for (const key of ["x", "y", "scale", "opacity", "rotation"]) {
+    if (Object.prototype.hasOwnProperty.call(op.payload.transform, key)) {
+      nextTransform[key] = Number(op.payload.transform[key]);
+    }
+  }
+  if (!Number.isFinite(nextTransform.scale) || nextTransform.scale < 0) throw invalid("setTransform.scale must be non-negative");
+  if (!Number.isFinite(nextTransform.opacity) || nextTransform.opacity < 0 || nextTransform.opacity > 1) throw invalid("setTransform.opacity must be between 0 and 1");
+  const previous = clone(clip.transform || {});
+  clip.transform = nextTransform;
+  return {
+    ...op,
+    payload: { transform: previous },
+  };
+}
+
+function setVolume(timeline, op) {
+  const { clip } = resolveClip(timeline, op.trackId, op.clipId);
+  const volume = Number(op.payload?.volume);
+  if (!Number.isFinite(volume) || volume < 0 || volume > 1) throw invalid("setVolume.volume must be between 0 and 1");
+  const previous = clip.volume ?? 1;
+  clip.volume = volume;
+  return {
+    ...op,
+    payload: { volume: previous },
+  };
+}
+
 function replaceAsset(timeline, op) {
   const { clip } = resolveClip(timeline, op.trackId, op.clipId);
   const assetId = String(op.payload.assetId ?? op.payload.asset_id ?? "");
@@ -709,6 +749,7 @@ function buildClipFromPayload(payload) {
     locked: Boolean(payload.locked),
     muted: Boolean(payload.muted),
     text: payload.text == null ? "" : String(payload.text),
+    volume: numberOr(payload.volume, 1),
   };
 }
 

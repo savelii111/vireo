@@ -1,4 +1,5 @@
 import { useState, Suspense, lazy, useEffect, useRef, useMemo } from 'react';
+import clsx from 'clsx';
 import type { PreviewTab } from './types';
 import { useEditor } from './hooks/useEditor';
 import { activeTextClipsAt, activeVideoClipAt } from './timelinePlayback';
@@ -146,6 +147,7 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>('program');
+  const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector');
   const chatProjectId = useMemo(() => localStorage.getItem('vireo.activeProjectId') || undefined, []);
   const chatConversationId = useMemo(() => localStorage.getItem('vireo.conversation_id') || undefined, []);
   const activeVideoClip = useMemo(() => activeVideoClipAt(editor.project, editor.playhead), [editor.project, editor.playhead]);
@@ -254,88 +256,123 @@ export default function App() {
   }, [editor, helpOpen, cmdOpen]);
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-bg-0 text-ink-1 overflow-hidden">
-      <Suspense fallback={<Fallback label="top bar" />}>
-        <TopBar
-          projectName={editor.project.name}
-          onExport={() => {}}
-          onRender={() => {}}
-        />
-      </Suspense>
-      <div className="flex flex-1 min-h-0">
+    <div className="h-screen w-screen overflow-hidden bg-bg-0 text-ink-1">
+      <div className="grid h-full w-full grid-cols-[56px_minmax(0,1fr)_360px] grid-rows-[44px_minmax(0,1fr)_minmax(260px,38vh)]">
+        <Suspense fallback={<Fallback label="top bar" />}>
+          <TopBar
+            projectName={editor.project.name}
+            onExport={() => {}}
+            onRender={() => {}}
+          />
+        </Suspense>
+
         <Suspense fallback={<Fallback label="rail" />}>
           <SideRail active="media" onChange={() => {}} />
         </Suspense>
-        <div className="flex-1 flex flex-col min-w-0">
+
+        <div className="min-h-0 min-w-0 overflow-hidden border border-border-1 bg-bg-1">
           <Suspense fallback={<Fallback label="workspace" />}>
-            <div className="flex flex-1 min-h-0">
-              <div className="flex-1 flex flex-col min-w-0">
-                <Preview
-                  tab={previewTab}
-                  onTabChange={setPreviewTab}
-                  playing={editor.playing}
-                  onTogglePlay={editor.togglePlay}
-                  playhead={editor.playhead}
-                  duration={editor.project.duration_sec}
-                  fps={editor.project.fps}
-                  width={editor.project.width}
-                  height={editor.project.height}
-                  activeVideoClip={activeVideoClip}
-                  activeTextClips={activeTextClips}
-                />
-                <Inspector
-                  clip={editor.selectedClip}
-                  clipId={editor.selectedClipId}
-                  track={selectedTrack}
-                  onQuickAction={(action) => {
-                    if (action === 'split') editor.splitAtPlayhead();
-                    if (action === 'undo') editor.undo();
-                  }}
-                  onAddEffect={(effect) => editor.addEffect(effect)}
-                  onSetEffect={(effect) => editor.setEffect(effect)}
-                  onTransformChange={(transform) => {
-                    if (editor.selectedClipId) editor.setTransform(editor.selectedClipId, transform);
-                  }}
-                  onVolumeChange={(volume) => {
-                    if (editor.selectedClipId) editor.setVolume(editor.selectedClipId, volume);
-                  }}
-                />
-                <Timeline
-                  project={editor.project}
-                  tool={editor.tool}
-                  onToolChange={editor.setTool}
-                  selectedClipId={editor.selectedClipId}
-                  onClipSelect={editor.selectClip}
-                  playhead={editor.playhead}
-                  onSeek={editor.seek}
-                  zoom={editor.zoom}
-                  onZoomChange={editor.setZoom}
-                  onClipMove={editor.moveClip}
-                  onClipResize={editor.resizeClip}
-                  onDragEnd={editor.onDragEnd}
-                  onUndo={editor.undo}
-                  onRedo={editor.redo}
-                  canUndo={editor.canUndo}
-                  canRedo={editor.canRedo}
-                  onToggleMute={editor.toggleTrackMute}
-                  onToggleSolo={editor.toggleTrackSolo}
-                  onToggleLock={editor.toggleTrackLock}
-                  onToggleHidden={editor.toggleTrackHidden}
-                  onAddTransition={(clipId, kind, duration) => editor.addTransition(clipId, kind, duration)}
-                  onAddText={(text, start, duration, position) => editor.addText(text, start, duration, position)}
-                />
-              </div>
-              <Suspense fallback={<Fallback label="chat" />}>
-                <ChatPanel
-                  projectId={chatProjectId}
-                  conversationId={chatConversationId}
-                  onBotInsertClip={(payload) => {
-                    editor.applyBotInsertClip(payload);
-                    localStorage.setItem('vireo.last_bot_clip', JSON.stringify(payload));
-                  }}
-                />
-              </Suspense>
+            <Preview
+              tab={previewTab}
+              onTabChange={setPreviewTab}
+              playing={editor.playing}
+              onTogglePlay={editor.togglePlay}
+              playhead={editor.playhead}
+              duration={editor.project.duration_sec}
+              fps={editor.project.fps}
+              width={editor.project.width}
+              height={editor.project.height}
+              activeVideoClip={activeVideoClip}
+              activeTextClips={activeTextClips}
+            />
+          </Suspense>
+        </div>
+
+        <div className="min-h-0 min-w-0 overflow-hidden border-l border-border-1 bg-bg-1">
+          <div className="grid h-full grid-rows-[38px_minmax(0,1fr)]">
+            <div className="flex items-center gap-1 border-b border-border-1 px-2">
+              <button
+                onClick={() => setRightPanel('inspector')}
+                className={clsx(
+                  'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
+                  rightPanel === 'inspector' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
+                )}
+              >
+                Inspector
+              </button>
+              <button
+                onClick={() => setRightPanel('chat')}
+                className={clsx(
+                  'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
+                  rightPanel === 'chat' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
+                )}
+              >
+                Chat
+              </button>
             </div>
+            <div className="min-h-0 overflow-hidden">
+              {rightPanel === 'inspector' ? (
+                <Suspense fallback={<Fallback label="inspector" />}>
+                  <Inspector
+                    clip={editor.selectedClip}
+                    clipId={editor.selectedClipId}
+                    track={selectedTrack}
+                    onQuickAction={(action) => {
+                      if (action === 'split') editor.splitAtPlayhead();
+                      if (action === 'undo') editor.undo();
+                    }}
+                    onAddEffect={(effect) => editor.addEffect(effect)}
+                    onSetEffect={(effect) => editor.setEffect(effect)}
+                    onTransformChange={(transform) => {
+                      if (editor.selectedClipId) editor.setTransform(editor.selectedClipId, transform);
+                    }}
+                    onVolumeChange={(volume) => {
+                      if (editor.selectedClipId) editor.setVolume(editor.selectedClipId, volume);
+                    }}
+                  />
+                </Suspense>
+              ) : (
+                <Suspense fallback={<Fallback label="chat" />}>
+                  <ChatPanel
+                    projectId={chatProjectId}
+                    conversationId={chatConversationId}
+                    onBotInsertClip={(payload) => {
+                      editor.applyBotInsertClip(payload);
+                      localStorage.setItem('vireo.last_bot_clip', JSON.stringify(payload));
+                    }}
+                  />
+                </Suspense>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="col-span-full min-h-0 min-w-0 overflow-hidden">
+          <Suspense fallback={<Fallback label="timeline" />}>
+            <Timeline
+              project={editor.project}
+              tool={editor.tool}
+              onToolChange={editor.setTool}
+              selectedClipId={editor.selectedClipId}
+              onClipSelect={editor.selectClip}
+              playhead={editor.playhead}
+              onSeek={editor.seek}
+              zoom={editor.zoom}
+              onZoomChange={editor.setZoom}
+              onClipMove={editor.moveClip}
+              onClipResize={editor.resizeClip}
+              onDragEnd={editor.onDragEnd}
+              onUndo={editor.undo}
+              onRedo={editor.redo}
+              canUndo={editor.canUndo}
+              canRedo={editor.canRedo}
+              onToggleMute={editor.toggleTrackMute}
+              onToggleSolo={editor.toggleTrackSolo}
+              onToggleLock={editor.toggleTrackLock}
+              onToggleHidden={editor.toggleTrackHidden}
+              onAddTransition={(clipId, kind, duration) => editor.addTransition(clipId, kind, duration)}
+              onAddText={(text, start, duration, position) => editor.addText(text, start, duration, position)}
+            />
           </Suspense>
         </div>
       </div>

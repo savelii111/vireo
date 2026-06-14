@@ -2,12 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Vireo design tokens — kept as CSS vars for the few cases Tailwind can't reach */
+/* Vireo design tokens — canonical values live in docs/DESIGN.md. */
 :root {
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --dur-1: 120ms;
   --dur-2: 200ms;
   --dur-3: 320ms;
+  --bg-0: #09090b;
+  --bg-1: #111114;
+  --bg-2: #18181c;
+  --bg-3: #202026;
+  --bg-4: #2a2a31;
+  --ink-1: #fafafa;
+  --ink-2: #a1a1aa;
+  --ink-3: #6b6b75;
+  --ink-4: #4a4a52;
+  --border-1: #1f1f24;
+  --border-2: #2a2a30;
+  --border-3: #3a3a42;
+  --accent: #6366f1;
+  --accent-h: #7c7ff5;
 }
 
 html, body, #root {

@@ -4,13 +4,13 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Vireo design tokens (mirrors CSS variables in prototype)
+        // Vireo design tokens — see docs/DESIGN.md.
         bg: {
-          0: '#0a0a0c',
+          0: '#09090b',
           1: '#111114',
           2: '#18181c',
-          3: '#1f1f24',
-          4: '#28282e',
+          3: '#202026',
+          4: '#2a2a31',
         },
         border: {
           1: '#1f1f24',
