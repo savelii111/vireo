@@ -3,13 +3,17 @@ import {
   Sparkles, Wand2, Move, Captions, Music2, Scissors, RotateCcw,
 } from 'lucide-react';
 import { formatSeconds } from '../utils/time';
-import type { Clip } from '../types';
+import type { Clip, Track } from '../types';
 import clsx from 'clsx';
 import { thumbnailUrl, fallbackGradient } from '../hooks/useThumbnails';
+import { hasRealMediaPath } from '../timelinePlayback';
 
 interface Props {
   clip: Clip | null;
+  track?: Track | null;
   onQuickAction: (action: string) => void;
+  onAddEffect?: (effect: Record<string, unknown>) => void;
+  onSetEffect?: (effect: Record<string, unknown>) => void;
 }
 
 type Tab = 'clip' | 'effect' | 'audio';
@@ -62,8 +66,32 @@ const QUICK_ACTIONS = [
   { id: 'undo',        label: 'Undo',                  Icon: RotateCcw,kbd: '⌘Z' },
 ];
 
-export function Inspector({ clip, onQuickAction }: Props) {
+function Property({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[110px_1fr] gap-3 py-1.5 border-b border-border-1 text-[12px]">
+      <div className="text-ink-3 uppercase tracking-wider">{label}</div>
+      <div className="text-ink-1 font-mono break-all">{children}</div>
+    </div>
+  );
+}
+
+export function Inspector({ clip, track, onQuickAction, onAddEffect, onSetEffect }: Props) {
   const [tab, setTab] = useState<Tab>('clip');
+  const [effectKind, setEffectKind] = useState('colorGrade');
+  const [effectIndex, setEffectIndex] = useState(0);
+
+  const effects = clip?.effects ?? [];
+  const effectPresets = [
+    { id: 'colorGrade', label: 'Color grade' },
+    { id: 'blur', label: 'Blur' },
+    { id: 'sharpen', label: 'Sharpen' },
+    { id: 'stabilize', label: 'Stabilize' },
+  ];
+
+  const source = clip?.source ?? 'upload';
+  const transformX = Number(clip?.transform?.x ?? 0);
+  const transformY = Number(clip?.transform?.y ?? 0);
+  const transformScale = Number(clip?.transform?.scale ?? 1);
 
   return (
     <section className="grid grid-cols-[260px_1fr_240px] bg-bg-1 border-b border-border-1 min-h-0 max-h-full overflow-hidden">
@@ -73,6 +101,7 @@ export function Inspector({ clip, onQuickAction }: Props) {
           {(['clip', 'effect', 'audio'] as const).map((t) => (
             <button
               key={t}
+              data-testid={`inspector-tab-${t}`}
               onClick={() => setTab(t)}
               className={clsx(
                 'px-2 py-1 text-[11px] rounded uppercase tracking-wider font-semibold transition-all',
@@ -103,42 +132,135 @@ export function Inspector({ clip, onQuickAction }: Props) {
           )}
           <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(transparent 60%, rgba(0,0,0,0.5))' }} />
         </div>
-        <div className="text-[12px] font-medium mb-0.5">
+        <div data-testid="inspector-name" className="text-[12px] font-medium mb-0.5">
           {clip?.label ?? 'No clip selected'}
         </div>
-        <div className="text-[11px] text-ink-3 font-mono">
+        <div data-testid="inspector-timing" className="text-[11px] text-ink-3 font-mono">
           {clip
-            ? `${formatSeconds(clip.in_sec)} — ${formatSeconds(clip.in_sec + clip.duration_sec)} · ${formatSeconds(clip.duration_sec)} · 1920×1080`
+            ? `${formatSeconds(clip.in_sec)} — ${formatSeconds(clip.in_sec + clip.duration_sec)} · ${formatSeconds(clip.duration_sec)}`
             : 'Click a clip in the timeline'}
         </div>
       </div>
 
       {/* Params column */}
       <div className="p-3 px-4 overflow-y-auto">
-        <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Transform</div>
-        <ParamSlider label="Position" value={0} min={-100} max={100} display="0, 0" />
-        <ParamSlider label="Scale"    value={100} min={0} max={200} display="100%" />
-        <ParamSlider label="Rotation" value={0} min={-180} max={180} display="0°" />
-        <ParamSlider label="Opacity"  value={100} min={0} max={100} display="100%" />
+        {tab === 'effect' ? (
+          <div className="space-y-3">
+            <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Effects</div>
+            {!clip ? (
+              <div className="text-[12px] text-ink-3">Select a clip to manage effects</div>
+            ) : (
+              <>
+                <div data-testid="clip-effects" className="space-y-1">
+                  {effects.length === 0 && <div className="text-[12px] text-ink-3">No effects on this clip</div>}
+                  {effects.map((effect, index) => (
+                    <div
+                      key={`${String(effect.id ?? effect.type ?? index)}-${index}`}
+                      data-testid="clip-effect"
+                      className="rounded-md bg-bg-2 px-2 py-1.5 text-[12px] text-ink-2"
+                    >
+                      #{index + 1} {String(effect.type ?? effect.name ?? effect.id ?? 'effect')}
+                    </div>
+                  ))}
+                </div>
+                <div className="grid gap-2">
+                  <label className="text-[11px] text-ink-3">Effect type</label>
+                  <select
+                    data-testid="effect-kind"
+                    value={effectKind}
+                    onChange={(e) => setEffectKind(e.target.value)}
+                    className="rounded-md bg-bg-2 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1"
+                  >
+                    {effectPresets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>{preset.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    data-testid="add-effect"
+                    onClick={() => {
+                      const preset = effectPresets.find((item) => item.id === effectKind);
+                      onAddEffect?.({
+                        id: `fx_${effectKind}_${Date.now().toString(36)}`,
+                        type: effectKind,
+                        name: preset?.label ?? effectKind,
+                        params: {},
+                      });
+                    }}
+                    className="rounded-md bg-accent px-2 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90"
+                  >
+                    Add effect
+                  </button>
+                  {effects.length > 0 && (
+                    <>
+                      <label className="text-[11px] text-ink-3">Set existing effect</label>
+                      <select
+                        value={effectIndex}
+                        onChange={(e) => setEffectIndex(Number(e.target.value))}
+                        className="rounded-md bg-bg-2 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1"
+                      >
+                        {effects.map((effect, index) => (
+                          <option key={`${String(effect.id ?? effect.type ?? index)}-${index}`} value={index}>
+                            #{index + 1} {String(effect.type ?? effect.name ?? effect.id ?? 'effect')}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        data-testid="set-effect"
+                        onClick={() => {
+                          const preset = effectPresets.find((item) => item.id === effectKind);
+                          const existing = effects[effectIndex] ?? {};
+                          onSetEffect?.({
+                            id: existing.id ?? `fx_${effectKind}_${Date.now().toString(36)}`,
+                            type: effectKind,
+                            name: preset?.label ?? effectKind,
+                            params: existing.params ?? {},
+                          });
+                        }}
+                        className="rounded-md bg-bg-2 border border-border-1 px-2 py-1.5 text-[12px] font-semibold text-ink-1 hover:bg-bg-3"
+                      >
+                        Set effect
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Clip properties</div>
+            <Property label="Track">
+              <span data-testid="inspector-track">{track?.name ?? clip?.track_id ?? '—'}</span>
+            </Property>
+            <Property label="Asset">
+              <span data-testid="inspector-asset">{clip?.source_file || '—'}</span>
+            </Property>
+            <Property label="Source">
+              <span data-testid="inspector-source">{source}</span>
+            </Property>
+            <Property label="Timeline">
+              <span data-testid="inspector-start-end">{clip ? `${formatSeconds(clip.start_sec)} — ${formatSeconds(clip.start_sec + clip.duration_sec)}` : '—'}</span>
+            </Property>
+            <Property label="Transform">
+              <span data-testid="inspector-transform">x={transformX}, y={transformY}, scale={transformScale}</span>
+            </Property>
+            <Property label="Media mode">
+              <span data-testid="inspector-media-mode">{clip && hasRealMediaPath(clip) ? 'real media' : 'placeholder card'}</span>
+            </Property>
 
-        <div className="border-t border-border-1 mt-3 pt-3">
-          <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Speed</div>
-          <ParamSlider label="Rate" value={100} min={10} max={400} step={5} display="1.00×" />
-        </div>
+            <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mt-3 mb-2">Transform</div>
+            <ParamSlider label="X" value={transformX} min={-2000} max={2000} display={String(transformX)} />
+            <ParamSlider label="Y" value={transformY} min={-1200} max={1200} display={String(transformY)} />
+            <ParamSlider label="Scale" value={transformScale * 100} min={0} max={300} display={`${Math.round(transformScale * 100)}%`} />
+            <ParamSlider label="Opacity" value={100} min={0} max={100} display="100%" />
 
-        <div className="border-t border-border-1 mt-3 pt-3">
-          <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Color</div>
-          <ParamSlider label="Exposure"  value={50} min={0} max={100} display="0.0" />
-          <ParamSlider label="Contrast"  value={60} min={0} max={100} display="+10" />
-          <ParamSlider label="Saturation"value={55} min={0} max={100} display="+5" />
-          <ParamSlider label="Temp"      value={65} min={0} max={100} display="+8" />
-        </div>
-
-        <div className="border-t border-border-1 mt-3 pt-3">
-          <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Audio</div>
-          <ParamSlider label="Volume"    value={100} min={0} max={200} display="100%" />
-          <ParamSlider label="Voice EQ"  value={50} min={0} max={100} display="flat" />
-        </div>
+            <div className="border-t border-border-1 mt-3 pt-3">
+              <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Audio</div>
+              <ParamSlider label="Volume" value={100} min={0} max={200} display="100%" />
+              <ParamSlider label="Voice EQ" value={50} min={0} max={100} display="flat" />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Quick actions column */}

@@ -1,6 +1,7 @@
 import { useState, Suspense, lazy, useEffect, useRef, useMemo } from 'react';
 import type { PreviewTab } from './types';
 import { useEditor } from './hooks/useEditor';
+import { activeTextClipsAt, activeVideoClipAt } from './timelinePlayback';
 
 // Lazy-load heavy components — splits initial bundle
 const TopBar = lazy(() => import('./components/TopBar').then(m => ({ default: m.TopBar })));
@@ -145,6 +146,15 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>('program');
+  const chatProjectId = useMemo(() => localStorage.getItem('vireo.activeProjectId') || undefined, []);
+  const chatConversationId = useMemo(() => localStorage.getItem('vireo.conversation_id') || undefined, []);
+  const activeVideoClip = useMemo(() => activeVideoClipAt(editor.project, editor.playhead), [editor.project, editor.playhead]);
+  const activeTextClips = useMemo(() => activeTextClipsAt(editor.project, editor.playhead), [editor.project, editor.playhead]);
+  const selectedTrack = useMemo(() => {
+    const selectedClip = editor.selectedClip;
+    if (!selectedClip) return null;
+    return editor.project.tracks.find((track) => track.id === selectedClip.track_id) ?? null;
+  }, [editor.project, editor.selectedClip]);
 
   // Build command palette items
   const commands: CmdItem[] = useMemo(() => [
@@ -247,7 +257,7 @@ export default function App() {
     <div className="h-screen w-screen flex flex-col bg-bg-0 text-ink-1 overflow-hidden">
       <Suspense fallback={<Fallback label="top bar" />}>
         <TopBar
-          projectName="Q3 Travel Vlog"
+          projectName={editor.project.name}
           onExport={() => {}}
           onRender={() => {}}
         />
@@ -267,13 +277,21 @@ export default function App() {
                   onTogglePlay={editor.togglePlay}
                   playhead={editor.playhead}
                   duration={editor.project.duration_sec}
-                  fps={30}
-                  width={1920}
-                  height={1080}
+                  fps={editor.project.fps}
+                  width={editor.project.width}
+                  height={editor.project.height}
+                  activeVideoClip={activeVideoClip}
+                  activeTextClips={activeTextClips}
                 />
                 <Inspector
                   clip={editor.selectedClip}
-                  onQuickAction={() => { /* TODO: wire up quick actions */ }}
+                  track={selectedTrack}
+                  onQuickAction={(action) => {
+                    if (action === 'split') editor.splitAtPlayhead();
+                    if (action === 'undo') editor.undo();
+                  }}
+                  onAddEffect={(effect) => editor.addEffect(effect)}
+                  onSetEffect={(effect) => editor.setEffect(effect)}
                 />
                 <Timeline
                   project={editor.project}
@@ -287,14 +305,28 @@ export default function App() {
                   onZoomChange={editor.setZoom}
                   onClipMove={editor.moveClip}
                   onClipResize={editor.resizeClip}
+                  onDragEnd={editor.onDragEnd}
+                  onUndo={editor.undo}
+                  onRedo={editor.redo}
+                  canUndo={editor.canUndo}
+                  canRedo={editor.canRedo}
                   onToggleMute={editor.toggleTrackMute}
                   onToggleSolo={editor.toggleTrackSolo}
                   onToggleLock={editor.toggleTrackLock}
                   onToggleHidden={editor.toggleTrackHidden}
+                  onAddTransition={(clipId, kind, duration) => editor.addTransition(clipId, kind, duration)}
+                  onAddText={(text, start, duration, position) => editor.addText(text, start, duration, position)}
                 />
               </div>
               <Suspense fallback={<Fallback label="chat" />}>
-                <ChatPanel />
+                <ChatPanel
+                  projectId={chatProjectId}
+                  conversationId={chatConversationId}
+                  onBotInsertClip={(payload) => {
+                    editor.applyBotInsertClip(payload);
+                    localStorage.setItem('vireo.last_bot_clip', JSON.stringify(payload));
+                  }}
+                />
               </Suspense>
             </div>
           </Suspense>

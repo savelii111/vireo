@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import {
   MousePointer2, Scissors, MoveVertical, MoveHorizontal,
   Magnet, Grid3x3, Video, Music, Layers,
-  EyeOff, Eye, Lock, Unlock, Volume2, VolumeX, Star, StarOff,
+  EyeOff, Eye, Lock, Unlock, Volume2, VolumeX, Star, StarOff, RotateCcw, Redo2, Type,
   type LucideIcon,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -21,10 +21,17 @@ interface Props {
   onZoomChange: (px: number) => void;
   onClipMove?: (id: string, newStart: number) => void;
   onClipResize?: (id: string, side: 'left' | 'right', pos: number) => void;
+  onDragEnd?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
   onToggleMute?: (trackId: string) => void;
   onToggleSolo?: (trackId: string) => void;
   onToggleLock?: (trackId: string) => void;
   onToggleHidden?: (trackId: string) => void;
+  onAddTransition?: (clipId: string, kind: string, duration: number) => void;
+  onAddText?: (text: string, start: number, duration: number, position: { x: number; y: number }) => void;
 }
 
 type DragMode = 'move' | 'resize-l' | 'resize-r';
@@ -45,14 +52,25 @@ const SNAP_THRESHOLD_PX = 6; // pixels within which snap activates
 export function Timeline({
   project, tool, onToolChange, selectedClipId, onClipSelect,
   playhead, onSeek, zoom, onZoomChange,
-  onClipMove, onClipResize,
+  onClipMove, onClipResize, onDragEnd,
+  onUndo, onRedo, canUndo, canRedo,
   onToggleMute, onToggleSolo, onToggleLock, onToggleHidden,
+  onAddTransition, onAddText,
 }: Props) {
   const rulerRef = useRef<HTMLDivElement>(null);
   const tracksRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [magnetOn, setMagnetOn] = useState(true);
   const [gridSnap, setGridSnap] = useState(false);
+  const [transitionOpen, setTransitionOpen] = useState(false);
+  const [transitionKind, setTransitionKind] = useState('crossfade');
+  const [transitionDuration, setTransitionDuration] = useState(0.5);
+  const [textOpen, setTextOpen] = useState(false);
+  const [textBody, setTextBody] = useState('Text');
+  const [textStart, setTextStart] = useState(playhead);
+  const [textDuration, setTextDuration] = useState(3);
+  const [textX, setTextX] = useState(0);
+  const [textY, setTextY] = useState(0);
 
   // ── Ruler click → seek ──
   const handleRulerClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -62,10 +80,23 @@ export function Timeline({
     onSeek(x / zoom);
   };
 
+  const handleTrackClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('[data-clip-id]')) return;
+    if (!tracksRef.current) return;
+    const rect = tracksRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left + tracksRef.current.scrollLeft;
+    onSeek(x / zoom);
+  };
+
   const totalWidth = project.duration_sec * zoom;
   const tickInterval = zoom >= 60 ? 5 : zoom >= 30 ? 10 : 30;
   const ticks: number[] = [];
   for (let s = 0; s <= project.duration_sec; s += tickInterval) ticks.push(s);
+  const selectedTrack = project.tracks.find((track) => track.clips.some((clip) => clip.id === selectedClipId)) ?? null;
+  const selectedClip = selectedTrack?.clips.find((clip) => clip.id === selectedClipId) ?? null;
+  const nextTransitionClip = selectedTrack && selectedClip
+    ? [...selectedTrack.clips].sort((a, b) => a.start_sec - b.start_sec).find((clip) => clip.start_sec >= (selectedClip.start_sec + selectedClip.duration_sec)) ?? null
+    : null;
 
   // ── Snap targets: playhead, markers, other clip edges ──
   const snapTargets = useCallback(() => {
@@ -136,14 +167,17 @@ export function Timeline({
         onClipResize?.(drag.clipId, 'left', snapToNearest(Math.max(0, rawStart)));
       }
     };
-    const onUp = () => setDrag(null);
+    const onUp = () => {
+      onDragEnd?.();
+      setDrag(null);
+    };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [drag, zoom, snapToNearest, onClipMove, onClipResize]);
+  }, [drag, zoom, snapToNearest, onClipMove, onClipResize, onDragEnd]);
 
   return (
     <section
@@ -194,6 +228,44 @@ export function Timeline({
           >
             <Magnet size={14} strokeWidth={1.6} />
           </button>
+          <div className="w-px h-4 bg-border-2 mx-1" />
+          <button
+            data-tip="Undo"
+            onClick={onUndo}
+            disabled={!canUndo}
+            className={clsx(
+              'tip w-7 h-[26px] flex items-center justify-center rounded transition-all duration-[120ms]',
+              canUndo ? 'text-ink-2 hover:text-ink-1 hover:bg-bg-2' : 'text-ink-4 cursor-not-allowed',
+            )}
+          >
+            <RotateCcw size={14} strokeWidth={1.6} />
+          </button>
+          <button
+            data-tip="Redo"
+            onClick={onRedo}
+            disabled={!canRedo}
+            className={clsx(
+              'tip w-7 h-[26px] flex items-center justify-center rounded transition-all duration-[120ms]',
+              canRedo ? 'text-ink-2 hover:text-ink-1 hover:bg-bg-2' : 'text-ink-4 cursor-not-allowed',
+            )}
+          >
+            <Redo2 size={14} strokeWidth={1.6} />
+          </button>
+          <div className="w-px h-4 bg-border-2 mx-1" />
+          <button
+            data-tip="Add transition between selected clip and next clip"
+            onClick={() => setTransitionOpen((v) => !v)}
+            className="h-[26px] rounded px-2 text-[11px] font-semibold text-ink-2 hover:text-ink-1 hover:bg-bg-2"
+          >
+            Переход
+          </button>
+          <button
+            data-tip="Add text on trk_t1"
+            onClick={() => setTextOpen((v) => !v)}
+            className="h-[26px] rounded px-2 text-[11px] font-semibold text-ink-2 hover:text-ink-1 hover:bg-bg-2"
+          >
+            Текст
+          </button>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-ink-3">
           <span>Zoom</span>
@@ -214,6 +286,96 @@ export function Timeline({
           <span className="font-mono bg-bg-2 border border-border-1 rounded px-1.5 py-0.5 text-ink-2">⌘-</span>
         </div>
       </div>
+
+      {(transitionOpen || textOpen) && (
+        <div className="flex items-center gap-3 border-b border-border-1 bg-bg-0 px-4 py-2 text-[12px]">
+          {transitionOpen && (
+            <div className="flex items-center gap-2">
+              <span className="text-ink-3">Переход</span>
+              <select
+                value={transitionKind}
+                onChange={(e) => setTransitionKind(e.target.value)}
+                className="rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
+              >
+                <option value="crossfade">crossfade</option>
+                <option value="fade">fade</option>
+                <option value="wipe">wipe</option>
+              </select>
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={transitionDuration}
+                onChange={(e) => setTransitionDuration(Number(e.target.value))}
+                className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
+              />
+              <span className="text-ink-3">сек</span>
+              <button
+                disabled={!selectedClip || !nextTransitionClip}
+                onClick={() => selectedClip && onAddTransition?.(selectedClip.id, transitionKind, transitionDuration)}
+                className="rounded-md bg-accent px-2 py-1 font-semibold text-white disabled:opacity-40"
+              >
+                Добавить
+              </button>
+              {selectedClip && nextTransitionClip ? (
+                <span className="text-ink-3">{selectedClip.label} → {nextTransitionClip.label}</span>
+              ) : (
+                <span className="text-ink-4">выберите clip с соседом справа</span>
+              )}
+            </div>
+          )}
+          {textOpen && (
+            <div className="flex items-center gap-2">
+              <span className="text-ink-3">Текст trk_t1</span>
+              <input
+                value={textBody}
+                onChange={(e) => setTextBody(e.target.value)}
+                placeholder="Введите текст"
+                className="w-40 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
+              />
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                value={textStart}
+                onChange={(e) => setTextStart(Number(e.target.value))}
+                className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
+              />
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={textDuration}
+                onChange={(e) => setTextDuration(Number(e.target.value))}
+                className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
+              />
+              <input
+                type="number"
+                value={textX}
+                onChange={(e) => setTextX(Number(e.target.value))}
+                placeholder="X"
+                className="w-14 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
+              />
+              <input
+                type="number"
+                value={textY}
+                onChange={(e) => setTextY(Number(e.target.value))}
+                placeholder="Y"
+                className="w-14 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
+              />
+              <button
+                onClick={() => {
+                  onAddText?.(textBody, textStart, textDuration, { x: textX, y: textY });
+                  setTextOpen(false);
+                }}
+                className="rounded-md bg-accent px-2 py-1 font-semibold text-white"
+              >
+                Добавить
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Body ── */}
       <div className="flex flex-1 min-h-0">
@@ -237,6 +399,15 @@ export function Timeline({
                   {t.kind === 'audio' && (
                     <button onClick={() => onToggleMute?.(t.id)} title={t.muted ? 'Unmute' : 'Mute'} className="w-5 h-5 flex items-center justify-center rounded hover:bg-bg-3">
                       {t.muted ? <VolumeX size={11} className="text-red-400" /> : <Volume2 size={11} className="text-ink-3" />}
+                    </button>
+                  )}
+                  {t.kind === 'overlay' && (t.id === 't1' || /text/i.test(t.name)) && (
+                    <button
+                      title="Добавить текст"
+                      onClick={(e) => { e.stopPropagation(); setTextOpen(true); }}
+                      className="w-5 h-5 flex items-center justify-center rounded hover:bg-bg-3"
+                    >
+                      <Type size={11} className="text-ink-3" />
                     </button>
                   )}
                   <button onClick={() => onToggleSolo?.(t.id)} title={t.soloed ? 'Unsolo' : 'Solo'} className="w-5 h-5 flex items-center justify-center rounded hover:bg-bg-3">
@@ -284,9 +455,10 @@ export function Timeline({
               <div
                 key={track.id}
                 className={clsx(
-                  'relative h-9 border-b border-border-1',
+                  'relative h-9 border-b border-border-1 cursor-pointer',
                   track.hidden && 'opacity-20',
                 )}
+                onClick={handleTrackClick}
               >
                 {track.clips.map((clip) => {
                   const leftPx = clip.start_sec * zoom;

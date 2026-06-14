@@ -1,10 +1,11 @@
-import { useRef } from 'react';
+import { useRef, type ReactNode } from 'react';
 import {
   SkipBack, Rewind, Play, FastForward, SkipForward, ChevronsLeft, ChevronsRight, Maximize2,
 } from 'lucide-react';
 import { formatTimecode, formatShortTime } from '../utils/time';
-import type { PreviewTab } from '../types';
+import type { PreviewTab, Clip } from '../types';
 import clsx from 'clsx';
+import { clipDuration, hasRealMediaPath, previewModeForClip, transformPosition } from '../timelinePlayback';
 
 interface Props {
   tab: PreviewTab;
@@ -16,12 +17,27 @@ interface Props {
   fps: number;
   width: number;
   height: number;
+  activeVideoClip?: Clip | null;
+  activeTextClips?: Clip[];
+}
+
+function SourceBadge({ children }: { children: ReactNode }) {
+  return (
+    <div className="bg-black/60 backdrop-blur-md border border-border-2 rounded px-2 py-1 text-[11px] text-ink-1 font-mono">
+      {children}
+    </div>
+  );
 }
 
 export function Preview({
   tab, onTabChange, playing, onTogglePlay, playhead, duration, fps, width, height,
+  activeVideoClip = null,
+  activeTextClips = [],
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const activeMode = activeVideoClip ? previewModeForClip(activeVideoClip) : 'empty';
+  const activeText = activeTextClips;
+  const sourceLabel = activeVideoClip?.source ?? 'upload';
 
   return (
     <section className="flex flex-col bg-bg-0 border-b border-border-1 min-h-0">
@@ -66,6 +82,7 @@ export function Preview({
         }}
       >
         <div
+          data-testid="preview-surface"
           className="relative bg-gradient-to-b from-[#1a1a1e] to-[#0a0a0c] border border-border-2 rounded-lg overflow-hidden"
           style={{
             width: 'min(80%, 920px)',
@@ -77,36 +94,80 @@ export function Preview({
             background: 'radial-gradient(circle at 30% 30%, rgba(99, 102, 241, 0.15), transparent 50%), radial-gradient(circle at 70% 70%, rgba(168, 85, 247, 0.10), transparent 50%)',
           }} />
 
-          {/* Hidden video element — for real preview we would set src=clip.source_file */}
-          <video
-            ref={videoRef}
-            className="absolute inset-0 w-full h-full object-contain"
-            muted
-            playsInline
-            style={{ display: 'none' }}
-          />
+          {activeMode === 'real' && activeVideoClip ? (
+            <video
+              ref={videoRef}
+              data-testid="preview-video"
+              className="absolute inset-0 w-full h-full object-contain"
+              src={activeVideoClip.source_file}
+              muted
+              playsInline
+            />
+          ) : null}
+
+          {activeMode === 'placeholder' && activeVideoClip ? (
+            <div
+              data-testid="preview-placeholder"
+              className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center"
+            >
+              <div className="rounded-2xl border border-dashed border-border-2 bg-bg-1/80 p-8 shadow-inner">
+                <div className="text-[11px] uppercase tracking-[0.3em] text-accent font-bold mb-2">Simulated media</div>
+                <h2 data-testid="preview-clip-name" className="text-2xl font-semibold text-ink-1">{activeVideoClip.label}</h2>
+                <p data-testid="preview-source" className="font-mono text-[12px] text-ink-3 mt-1">source: {sourceLabel}</p>
+                <p data-testid="preview-duration" className="font-mono text-[12px] text-ink-3">duration: {formatShortTime(clipDuration(activeVideoClip))}</p>
+                {!hasRealMediaPath(activeVideoClip) ? (
+                  <p data-testid="preview-no-fake-frame" className="mt-4 max-w-md text-[12px] text-ink-3">
+                    No real media path — Vireo shows a poster card instead of a fake frame.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {activeMode === 'empty' ? (
+            <div data-testid="preview-empty" className="absolute inset-0 flex items-center justify-center text-ink-3 text-[14px] font-medium">
+              No active video clip at {formatShortTime(playhead)}
+            </div>
+          ) : null}
+
+          {activeText.map((clip) => {
+            const { x, y } = transformPosition(clip);
+            return (
+              <div
+                key={clip.id}
+                data-testid="preview-text-overlay"
+                data-clip-id={clip.id}
+                className="absolute z-[3] whitespace-pre-wrap text-ink-1 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
+                style={{
+                  left: `${x}px`,
+                  top: `${y}px`,
+                  fontSize: 'clamp(18px, 4vw, 44px)',
+                  fontWeight: 700,
+                  transform: 'translate(0, 0)',
+                }}
+              >
+                {clip.text || clip.label || clip.source_file}
+              </div>
+            );
+          })}
 
           {/* Overlays */}
-          <div className="absolute top-3 left-3 flex gap-2 z-[2]">
-            <div className="flex items-center gap-1 bg-black/60 backdrop-blur-md border border-border-2 rounded px-2 py-1 text-[11px] text-rec">
+          <div className="absolute top-3 left-3 flex gap-2 z-[4]">
+            <SourceBadge>
               <span className="w-1.5 h-1.5 rounded-full bg-rec animate-pulse-rec" />
               <span className="font-mono">REC {formatTimecode(playhead, fps)}</span>
-            </div>
-            <div className="bg-black/60 backdrop-blur-md border border-border-2 rounded px-2 py-1 text-[11px] text-ink-1 font-mono">
-              {width}×{height} · {fps}fps
-            </div>
-            <div className="bg-black/60 backdrop-blur-md border border-border-2 rounded px-2 py-1 text-[11px] text-ink-1">
-              V1 · A1
-            </div>
+            </SourceBadge>
+            <SourceBadge>{width}×{height} · {fps}fps</SourceBadge>
+            <SourceBadge>{activeVideoClip ? activeVideoClip.track_id : '—'} · A1</SourceBadge>
           </div>
 
-          <div className="absolute inset-0 flex items-center justify-center text-ink-3 text-[14px] font-medium">
-            Preview · {formatShortTime(playhead)} / {formatShortTime(duration)}
+          <div className="absolute top-3 right-3 z-[4]">
+            <SourceBadge>{activeMode === 'real' ? 'real media' : activeMode === 'placeholder' ? 'poster card' : 'empty'}</SourceBadge>
           </div>
 
           {/* Video controls */}
           <div
-            className="absolute bottom-0 left-0 right-0 z-[2] flex items-center gap-3 px-4 py-3"
+            className="absolute bottom-0 left-0 right-0 z-[4] flex items-center gap-3 px-4 py-3"
             style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.8))' }}
           >
             <button data-tip="Previous edit (←)" className="vc-btn">
