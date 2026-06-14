@@ -1,5 +1,12 @@
 # VIREO State
 
+## Repo (canonical)
+
+- Working dir: `C:\Users\koval\vireo-active` (NOT OneDrive)
+- Remote: `https://github.com/savelii111/vireo.git` — push after every green day
+- Session-start: работаем ТОЛЬКО здесь. Если оказался в другой папке или в OneDrive — СТОП, перейди в `vireo-active` и `git pull`.
+- НИКОГДА не откатываться на старые коммиты при потере памяти — читать `git log` + этот файл.
+
 ## Current Day
 
 Day 11 complete.

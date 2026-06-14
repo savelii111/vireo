@@ -59,6 +59,8 @@ htmlcov/
 # ---- Test artifacts ----
 # JUnit XML output (regenerated on every `node tests/run-all.mjs --junit=...`)
 tests/results/
+tests/results/*.log
+tests/results/run-all-stash.mjs
 # Cached pytest benchmarks
 .benchmarks/
 # Test fixture temp dirs (populated at runtime, never source)
