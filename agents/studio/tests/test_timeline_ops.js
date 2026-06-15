@@ -508,6 +508,14 @@ test("studio human and bot asset inserts share one undoable timeline", async () 
     const projectId = project.project.id;
     const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://hero", kind: "clip", metadata: { simulated_ingest: true } }) })).json();
 
+    const list = await fetch(`${baseUrl}/api/assets?project_id=${encodeURIComponent(projectId)}&limit=200`, {
+      headers,
+    });
+    assert.equal(list.status, 200);
+    const listed = await json(list);
+    assert.equal(listed.assets.length, 1);
+    assert.equal(listed.assets[0].id, asset.asset.id);
+
     const human = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
       method: "POST",
       headers,

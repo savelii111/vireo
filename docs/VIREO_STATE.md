@@ -30,7 +30,7 @@ Day 13 complete.
 Frontend checks:
 
 - `npm run typecheck` → `exit 0`
-- `npm test` → `21 passed`
+- `npm test` → `22 passed` (MediaPanel, useEditor insertAsset, Timeline asset drop, playback)
 
 ## Next
 
