@@ -11,44 +11,21 @@
 
 ## Current Day
 
-Day 11 complete.
-
-## Last Commit
-
-a902118 — studio: Day 11 — Premiere-style layout + Vireo DESIGN.md, remove desktop drift
+Day 12 complete.
 
 ## What Changed
 
-- Removed desktop drift:
-  - deleted `agents/studio/desktop`
-  - deleted `tests/test_desktop_app.js`
-  - removed desktop suite from `tests/run-all.mjs`
-  - no remaining `desktop` references in `tests/`, `scripts/`, `package.json`, or `docker*`
-- Added `docs/DESIGN.md` as the Vireo UI single source of truth.
-  - Direction: dark pro-video AI editor, Premiere × Linear/Framer/Vercel.
-  - 9-section contract: color, typography, spacing, layout, components, motion, voice, brand, anti-patterns.
-- Aligned Tailwind/index.css tokens with `docs/DESIGN.md`.
-- Re-laid out the Studio shell as a Premiere-style NLE grid:
-  - top: `TopBar`
-  - left: `SideRail`
-  - center-top: `Preview`
-  - right: `Inspector` + `ChatPanel` tabs
-  - bottom: full-width `Timeline`
-- Preserved existing behavior: playback, op-actions, undo/redo, and hotkeys remain wired through existing components.
-- Fixed shared timeline contract drift for frontend `setTransform` / `setVolume` ops used by existing Inspector tests.
-- Captured before/after screenshots:
-  - `docs/vireo-day11-before.png`
-  - `docs/vireo-day11-after.png`
+- Added shared timeline contract coverage for snapTime, move/trim overlap clamping, locked track rejection, and soloed track flag propagation.
+- Updated the Studio frontend timeline drag/trim/snap path to use the shared op contract and preserve targetTrackId.
+- Wired frontend `toggleTrackSolo` through the shared op path instead of local-only state mutation.
+- Kept `createdAt` on public ops so inverse/internal ops stay distinguishable.
+- Added a shared TypeScript declaration for `packages/shared/index.js`.
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 11 changes:
+`node tests/run-all.mjs` after Day 12 changes:
 
-- `TOTAL: 1320 passed, 0 failed across 27 suites`
-
-Consolidation v2 control run after stale-copy rename:
-
-- `TOTAL: 1320 passed, 0 failed across 27 suites`
+- `TOTAL: 1325 passed, 0 failed across 27 suites`
 
 Frontend checks:
 
@@ -57,4 +34,4 @@ Frontend checks:
 
 ## Next
 
-Awaiting Day 11 confirmation before Day 12.
+Awaiting Day 12 confirmation before Day 13.

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { formatShortTime } from '../utils/time';
+import { snapTime } from '../../../../../packages/shared/index.js';
 import type { ProjectState, Tool, Clip, TrackKind } from '../types';
 
 interface Props {
@@ -19,7 +20,7 @@ interface Props {
   onSeek: (sec: number) => void;
   zoom: number;
   onZoomChange: (px: number) => void;
-  onClipMove?: (id: string, newStart: number) => void;
+  onClipMove?: (id: string, newStart: number, targetTrackId: string) => void;
   onClipResize?: (id: string, side: 'left' | 'right', pos: number) => void;
   onDragEnd?: () => void;
   onUndo?: () => void;
@@ -42,6 +43,7 @@ type DragState = {
   origStart: number;
   origDuration: number;
   origIn: number;
+  targetTrackId: string;
 };
 
 type TrackIcons = Record<TrackKind, LucideIcon>;
@@ -62,6 +64,7 @@ export function Timeline({
   const [drag, setDrag] = useState<DragState | null>(null);
   const [magnetOn, setMagnetOn] = useState(true);
   const [gridSnap, setGridSnap] = useState(false);
+  const [snapGuide, setSnapGuide] = useState<{ trackId: string; timeSec: number } | null>(null);
   const [transitionOpen, setTransitionOpen] = useState(false);
   const [transitionKind, setTransitionKind] = useState('crossfade');
   const [transitionDuration, setTransitionDuration] = useState(0.5);
@@ -115,23 +118,23 @@ export function Timeline({
     return targets;
   }, [playhead, project, magnetOn]);
 
-  const snapToNearest = useCallback((sec: number): number => {
-    if (!magnetOn && !gridSnap) return sec;
-    const px = sec * zoom;
-    const targets = snapTargets();
-    for (const t of targets) {
-      const tPx = t * zoom;
-      if (Math.abs(px - tPx) < SNAP_THRESHOLD_PX) {
-        return t;
-      }
-    }
+  const snapCandidate = useCallback((sec: number, targets: number[], enabled: boolean): number => {
+    if (!enabled) return sec;
+    const snapped = snapTime(sec, targets, SNAP_THRESHOLD_PX, zoom);
+    if (Math.abs(snapped - sec) > 1e-6) return snapped;
     if (gridSnap) {
       const gridSec = zoom >= 60 ? 1 : 5;
       const rounded = Math.round(sec / gridSec) * gridSec;
       if (Math.abs(sec - rounded) * zoom < SNAP_THRESHOLD_PX) return rounded;
     }
     return sec;
-  }, [magnetOn, gridSnap, snapTargets, zoom]);
+  }, [gridSnap, zoom]);
+
+  const resolveTargetTrackId = useCallback((e: PointerEvent, fallback: string) => {
+    if (typeof document === 'undefined') return fallback;
+    const element = document.elementsFromPoint(e.clientX, e.clientY).find((item) => item instanceof HTMLElement && item.getAttribute('data-track-id'));
+    return element?.getAttribute('data-track-id') || fallback;
+  }, []);
 
   // ── Drag handlers ──
   const startDrag = useCallback((e: React.PointerEvent, clip: Clip, mode: DragMode) => {
@@ -147,6 +150,7 @@ export function Timeline({
       origStart: clip.start_sec,
       origDuration: clip.duration_sec,
       origIn: clip.in_sec,
+      targetTrackId: clip.track_id,
     });
     onClipSelect(clip.id);
   }, [tool, onClipSelect, project.tracks]);
@@ -156,19 +160,32 @@ export function Timeline({
     const onMove = (e: PointerEvent) => {
       const dx = e.clientX - drag.startX;
       const dSec = dx / zoom;
+      const targets = snapTargets();
+      const snapEnabled = (magnetOn || gridSnap) && !e.altKey;
       if (drag.mode === 'move') {
+        const targetTrackId = resolveTargetTrackId(e, drag.targetTrackId);
+        if (targetTrackId !== drag.targetTrackId) {
+          setDrag((current) => current ? { ...current, targetTrackId } : current);
+        }
         const rawNew = drag.origStart + dSec;
-        onClipMove?.(drag.clipId, snapToNearest(Math.max(0, rawNew)));
+        const nextStart = snapCandidate(rawNew, targets, snapEnabled);
+        setSnapGuide(snapEnabled && Math.abs(nextStart - rawNew) > 1e-6 ? { trackId: targetTrackId, timeSec: nextStart } : null);
+        onClipMove?.(drag.clipId, nextStart, targetTrackId);
       } else if (drag.mode === 'resize-r') {
         const rawEnd = drag.origStart + drag.origDuration + dSec;
-        onClipResize?.(drag.clipId, 'right', Math.max(drag.origStart + 0.1, rawEnd));
+        const nextEnd = snapCandidate(Math.max(drag.origStart + 0.1, rawEnd), targets, snapEnabled);
+        setSnapGuide(snapEnabled && Math.abs(nextEnd - Math.max(drag.origStart + 0.1, rawEnd)) > 1e-6 ? { trackId: drag.targetTrackId, timeSec: nextEnd } : null);
+        onClipResize?.(drag.clipId, 'right', nextEnd);
       } else if (drag.mode === 'resize-l') {
         const rawStart = drag.origStart + dSec;
-        onClipResize?.(drag.clipId, 'left', snapToNearest(Math.max(0, rawStart)));
+        const nextStart = snapCandidate(Math.max(0, rawStart), targets, snapEnabled);
+        setSnapGuide(snapEnabled && Math.abs(nextStart - Math.max(0, rawStart)) > 1e-6 ? { trackId: drag.targetTrackId, timeSec: nextStart } : null);
+        onClipResize?.(drag.clipId, 'left', nextStart);
       }
     };
     const onUp = () => {
       onDragEnd?.();
+      setSnapGuide(null);
       setDrag(null);
     };
     window.addEventListener('pointermove', onMove);
@@ -177,7 +194,7 @@ export function Timeline({
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [drag, zoom, snapToNearest, onClipMove, onClipResize, onDragEnd]);
+  }, [drag, zoom, magnetOn, snapTargets, snapCandidate, resolveTargetTrackId, onClipMove, onClipResize, onDragEnd]);
 
   return (
     <section
@@ -465,12 +482,20 @@ export function Timeline({
             {project.tracks.map((track) => (
               <div
                 key={track.id}
+                data-track-id={track.id}
                 className={clsx(
                   'relative h-9 border-b border-border-1 cursor-pointer',
                   track.hidden && 'opacity-20',
                 )}
                 onClick={handleTrackClick}
               >
+                {snapGuide?.trackId === track.id && (
+                  <div
+                    data-testid="snap-guide"
+                    className="absolute top-0 bottom-0 w-px bg-yellow-300/80 z-[5] pointer-events-none"
+                    style={{ left: `${snapGuide.timeSec * zoom}px` }}
+                  />
+                )}
                 {track.clips.map((clip) => {
                   const leftPx = clip.start_sec * zoom;
                   const widthPx = clip.duration_sec * zoom;

@@ -1816,7 +1816,7 @@ function normalizeJournalOp(raw, actor, timelineId) {
     clipId: raw.clipId || "",
     trackId: raw.trackId || "",
     payload: raw.payload || {},
-    createdAt: raw.createdAt || "",
+    createdAt: raw.createdAt ?? "",
   };
 }
 async function applyJournalEntry(pool, projectId, userId, entry, inverseMode) {

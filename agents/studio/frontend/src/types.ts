@@ -90,6 +90,7 @@ export interface TimelineTrack {
   kind: TimelineTrackKind;
   name: string;
   muted: boolean;
+  soloed?: boolean;
   locked: boolean;
   hidden?: boolean;
   clips: TimelineClip[];

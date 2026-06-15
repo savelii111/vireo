@@ -8,6 +8,7 @@ import {
   createTimelineOp,
   deserializeTimelineDocument,
   serializeTimelineDocument,
+  snapTime,
 } from "../packages/shared/index.js";
 
 test("shared timeline contract creates a valid empty timeline", () => {
@@ -186,4 +187,52 @@ test("shared timeline transition/effect/text ops apply and inverse back out", ()
   assert.equal(withSetEffect.tracks[0].clips[0].effects[0].type, "blur");
   const restoredEffect = applyTimelineOp(withSetEffect, withSetEffect.inverse);
   assert.equal(restoredEffect.tracks[0].clips[0].effects[0].type, "colorGrade");
+});
+
+test("snapTime snaps to anchors only inside pixel threshold", () => {
+  assert.equal(snapTime(2.02, [2], 2, 100), 2);
+  assert.equal(snapTime(2.02, [2], 0.5, 50), 2.02);
+});
+
+test("moveClip rejects locked tracks and clamps against same-track neighbors", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "a", assetId: "a.mp4", start: 0, end: 2 } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "b", assetId: "b.mp4", start: 7, end: 10 } }));
+
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.MOVE_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetTrackId: "trk_v1", start: 6.5 } }));
+  assert.equal(doc.tracks.find((track) => track.id === "trk_v1").clips.find((clip) => clip.id === "a").start, 5);
+
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_FLAG, timelineId: doc.timelineId, trackId: "trk_v1", payload: { locked: true } }));
+  assert.throws(() => applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.MOVE_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "b", payload: { targetTrackId: "trk_v1", start: 1 } })), /Track is locked/);
+
+  let crossTrack = createEmptyTimelineDocument({ projectId: "p_2", userId: "u_1" });
+  crossTrack.tracks.push({ id: "trk_o1", kind: "overlay", name: "Overlay", muted: false, soloed: false, locked: false, hidden: false, clips: [] });
+  crossTrack = applyTimelineOp(crossTrack, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: crossTrack.timelineId, trackId: "trk_v1", payload: { id: "a", assetId: "a.mp4", start: 0, end: 5 } }));
+  crossTrack = applyTimelineOp(crossTrack, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: crossTrack.timelineId, trackId: "trk_o1", payload: { id: "o", assetId: "o.png", start: 2, end: 4 } }));
+  crossTrack = applyTimelineOp(crossTrack, createTimelineOp({ op: TIMELINE_OPS.MOVE_CLIP, timelineId: crossTrack.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetTrackId: "trk_o1", start: 2 } }));
+  assert.equal(crossTrack.tracks.find((track) => track.id === "trk_o1").clips.length, 2);
+  assert.equal(crossTrack.tracks.find((track) => track.id === "trk_o1").clips.find((clip) => clip.id === "a").start, 4);
+});
+
+test("trimClip clamps against neighbor boundaries and rejects locked tracks", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "a", assetId: "a.mp4", start: 0, end: 5 } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "b", assetId: "b.mp4", start: 5, end: 10 } }));
+
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.TRIM_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { start: 0, end: 8, originalStart: 0, originalEnd: 5 } }));
+  assert.equal(doc.tracks.find((track) => track.id === "trk_v1").clips.find((clip) => clip.id === "a").end, 5);
+
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.TRIM_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "b", payload: { start: 3, end: 10, originalStart: 5, originalEnd: 10 } }));
+  assert.equal(doc.tracks.find((track) => track.id === "trk_v1").clips.find((clip) => clip.id === "b").start, 5);
+
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_FLAG, timelineId: doc.timelineId, trackId: "trk_v1", payload: { locked: true } }));
+  assert.throws(() => applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.TRIM_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { start: 1, end: 5, originalStart: 0, originalEnd: 5 } })), /Track is locked/);
+});
+
+test("setTrackFlag supports soloed through shared track state", () => {
+  const doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  const next = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_FLAG, timelineId: doc.timelineId, trackId: "trk_v1", payload: { soloed: true } }));
+  assert.equal(next.tracks.find((track) => track.id === "trk_v1").soloed, true);
+  const restored = applyTimelineOp(next, next.inverse);
+  assert.equal(restored.tracks.find((track) => track.id === "trk_v1").soloed, false);
 });

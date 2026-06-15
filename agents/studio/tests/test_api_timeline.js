@@ -67,6 +67,7 @@ test("studio assets and timeline APIs persist through in-memory stores with owne
       track_start_ms: 0,
       kind: "clip",
     });
+    editedDoc.tracks[0].soloed = true;
 
     const save = await fetch(timelineUrl, {
       method: "PUT",
@@ -77,6 +78,7 @@ test("studio assets and timeline APIs persist through in-memory stores with owne
     const saved = (await json(save)).timeline;
     assert.equal(saved.version, 2);
     assert.equal(saved.doc.tracks[0].clips.length, 1);
+    assert.equal(saved.doc.tracks[0].soloed, true);
 
     const reloaded = await fetch(timelineUrl, { headers: h1 });
     assert.equal(reloaded.status, 200);

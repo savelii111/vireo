@@ -142,6 +142,7 @@ export function normalizeTrack(track) {
     muted: Boolean(track.muted),
     locked: Boolean(track.locked),
     hidden: Boolean(track.hidden),
+    soloed: Boolean(track.soloed),
     clips: Array.isArray(track.clips) ? track.clips.map(normalizeClip) : [],
   };
 }
@@ -265,7 +266,7 @@ function normalizeOp(op) {
     clipId: String(op.clipId || payload.clipId || payload.clip_id || ""),
     trackId: String(op.trackId || payload.trackId || payload.track_id || ""),
     payload,
-    createdAt: op.createdAt || "",
+    createdAt: op.createdAt ?? "",
   };
 }
 
@@ -314,6 +315,152 @@ function applyOpInternal(timeline, op) {
   }
 }
 
+export function snapTime(candidateTime, anchors = [], thresholdPx = 0, pxPerSec = 1) {
+  const candidate = Number(candidateTime);
+  if (!Number.isFinite(candidate)) return 0;
+  const threshold = Number(thresholdPx);
+  const scale = Number(pxPerSec);
+  if (!Number.isFinite(threshold) || threshold <= 0 || !Number.isFinite(scale) || scale <= 0) return candidate;
+
+  let best = candidate;
+  let bestDistance = Infinity;
+  for (const anchor of Array.isArray(anchors) ? anchors : []) {
+    const time = Number(anchor);
+    if (!Number.isFinite(time)) continue;
+    const distance = Math.abs(candidate - time) * scale;
+    if (distance <= threshold + 1e-9 && distance < bestDistance) {
+      best = time;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function clipStart(clip) {
+  return numberOr(clip.start ?? clip.start_sec, 0);
+}
+
+function clipEnd(clip) {
+  const start = clipStart(clip);
+  return numberOr(clip.end ?? clip.end_sec ?? start + 1, start + 1);
+}
+
+function clipRange(clip) {
+  const start = clipStart(clip);
+  const end = clipEnd(clip);
+  return { start, end: end > start ? end : start + 1 };
+}
+
+function clipsOverlap(a, b) {
+  const left = clipRange(a);
+  const right = clipRange(b);
+  return left.start < right.end && right.start < left.end;
+}
+
+function rangeOverlapsAny(range, clips) {
+  for (const clip of clips) {
+    if (clipsOverlap(range, clip)) return true;
+  }
+  return false;
+}
+
+function sortedClips(track, excludeId = "") {
+  return track.clips
+    .filter((clip) => clip.id !== excludeId)
+    .sort((a, b) => clipStart(a) - clipStart(b) || clipEnd(a) - clipEnd(b));
+}
+
+function adjacentClips(track, clip, index = -1) {
+  const sorted = sortedClips(track, clip.id);
+  const effectiveIndex = Number.isFinite(index) && index >= 0 ? index : sorted.findIndex((item) => item.id === clip.id);
+  return {
+    previous: effectiveIndex > 0 ? sorted[effectiveIndex - 1] : null,
+    next: effectiveIndex >= 0 && effectiveIndex < sorted.length ? sorted[effectiveIndex + 1] : null,
+  };
+}
+
+function clampToRange(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  if (!Number.isFinite(max)) return Math.max(value, min);
+  return Math.min(Math.max(value, min), max);
+}
+
+export function clampTrimRange({ track, clip, index = -1, start, end, originalStart = NaN, originalEnd = NaN, publicOp = true }) {
+  const nextStart = numberOr(start, clip.start);
+  const nextEnd = numberOr(end, clip.end);
+  if (!publicOp) return { start: nextStart, end: nextEnd };
+  if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) {
+    throw invalid(`Invalid trim range for clip ${clip.id}`);
+  }
+
+  const { previous, next } = adjacentClips(track, clip, index);
+  const lower = Math.max(0, clip.start, previous ? clipEnd(previous) : 0);
+  const upper = Math.min(clip.end, next ? clipStart(next) : clip.end);
+  const minDuration = 0.001;
+  if (lower >= upper) throw invalid(`No room to trim clip ${clip.id}`);
+
+  const originalStartTime = Number(originalStart);
+  const originalEndTime = Number(originalEnd);
+  let clampedStart = nextStart;
+  let clampedEnd = nextEnd;
+
+  if (Number.isFinite(originalStartTime) && Number.isFinite(originalEndTime)) {
+    if (Math.abs(clampedStart - originalStartTime) > 1e-6) {
+      clampedStart = clampToRange(clampedStart, lower, clampedEnd - minDuration);
+    }
+    if (Math.abs(clampedEnd - originalEndTime) > 1e-6) {
+      clampedEnd = clampToRange(clampedEnd, clampedStart + minDuration, upper);
+    }
+  } else {
+    clampedStart = clampToRange(clampedStart, lower, upper - minDuration);
+    clampedEnd = clampToRange(clampedEnd, clampedStart + minDuration, upper);
+  }
+
+  if (clampedEnd <= clampedStart) throw invalid(`No room to trim clip ${clip.id}`);
+  return { start: clampedStart, end: clampedEnd };
+}
+
+export function clampMoveStart({ track, clip, start, targetIndex = NaN, publicOp = true }) {
+  const duration = clip.end - clip.start;
+  const nextStart = Math.max(0, numberOr(start, clip.start));
+  if (!publicOp) return nextStart;
+  if (!Number.isFinite(duration) || duration <= 0) throw invalid(`Invalid move duration for clip ${clip.id}`);
+
+  const sorted = sortedClips(track, clip.id);
+  const effectiveIndex = Number.isFinite(targetIndex) ? Math.max(0, Math.min(Math.floor(targetIndex), sorted.length)) : null;
+  const range = { start: nextStart, end: nextStart + duration };
+
+  if (effectiveIndex !== null) {
+    const before = effectiveIndex > 0 ? sorted[effectiveIndex - 1] : null;
+    const after = effectiveIndex < sorted.length ? sorted[effectiveIndex] : null;
+    const lower = before ? clipEnd(before) : 0;
+    const upper = after ? clipStart(after) - duration : Infinity;
+    if (upper < lower) throw invalid(`No room to move clip ${clip.id}`);
+    return clampToRange(nextStart, lower, upper);
+  }
+
+  if (!rangeOverlapsAny(range, sorted)) return nextStart;
+  const candidates = [0];
+  for (const item of sorted) {
+    candidates.push(clipEnd(item));
+    candidates.push(clipStart(item) - duration);
+  }
+
+  let best = 0;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    if (!Number.isFinite(candidate) || candidate < 0) continue;
+    const candidateRange = { start: candidate, end: candidate + duration };
+    if (rangeOverlapsAny(candidateRange, sorted)) continue;
+    const distance = Math.abs(candidate - nextStart);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
 function insertClip(timeline, op) {
   const track = findTrack(timeline, op.trackId);
   const rawClip = op.payload.clip || buildClipFromPayload(op.payload);
@@ -343,14 +490,17 @@ function trimClip(timeline, op) {
   const originalEnd = numberOr(op.payload.originalEnd ?? op.payload.original_end, NaN);
   const start = numberOr(op.payload.start ?? op.payload.start_sec, previousStart);
   const end = numberOr(op.payload.end ?? op.payload.end_sec, previousEnd);
+  const { track } = resolveClip(timeline, op.trackId, op.clipId);
+  const index = track.clips.findIndex((item) => item.id === op.clipId);
+  if (op.createdAt !== "" && track.locked) throw invalid(`Track is locked: ${track.id}`);
   if (Number.isFinite(originalStart) && Number.isFinite(originalEnd) && originalEnd > originalStart) {
     clip.start = originalStart;
     clip.end = originalEnd;
   } else {
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw invalid(`Invalid trim range for clip ${clip.id}`);
-    if (start < clip.start || end > clip.end) throw invalid(`Trim time outside clip ${clip.id}`);
-    clip.start = start;
-    clip.end = end;
+    const clamped = clampTrimRange({ track, clip, index, start, end, originalStart, originalEnd, publicOp: op.createdAt !== "" });
+    clip.start = clamped.start;
+    clip.end = clamped.end;
   }
   const inversePayload = { start, end };
   if (Number.isFinite(start) && Number.isFinite(end)) {
@@ -398,15 +548,18 @@ function moveClip(timeline, op) {
   const duration = clip.end - clip.start;
   const start = numberOr(op.payload.start ?? op.payload.newStart ?? op.payload.start_sec, clip.start);
   if (!Number.isFinite(start) || start < 0) throw invalid(`Invalid move start for clip ${clip.id}`);
+  if (op.createdAt !== "" && (track.locked || targetTrack.locked)) {
+    throw invalid(`Track is locked: ${track.locked ? track.id : targetTrack.id}`);
+  }
 
+  const requestedTargetIndex = numberOr(op.payload.index ?? op.payload.targetIndex ?? op.payload.target_index, NaN);
   const oldTrackId = track.id;
   const oldStart = clip.start;
   track.clips.splice(index, 1);
-  const moved = { ...clip, start, end: start + duration };
-  const targetIndex = Number.isFinite(numberOr(op.payload.index ?? op.payload.targetIndex ?? op.payload.target_index, NaN))
-    ? numberOr(op.payload.index ?? op.payload.targetIndex ?? op.payload.target_index, targetTrack.clips.length)
-    : targetTrack.clips.length;
-  targetTrack.clips.splice(targetIndex, 0, moved);
+  const spliceIndex = Number.isFinite(requestedTargetIndex) ? requestedTargetIndex : targetTrack.clips.length;
+  const clampedStart = clampMoveStart({ track: targetTrack, clip, start, targetIndex: Number.isFinite(requestedTargetIndex) ? requestedTargetIndex : null, publicOp: op.createdAt !== "" });
+  const moved = { ...clip, start: clampedStart, end: clampedStart + duration };
+  targetTrack.clips.splice(spliceIndex, 0, moved);
 
   return {
     ...op,
@@ -691,7 +844,7 @@ function setTrackFlag(timeline, op) {
   const track = findTrack(timeline, op.trackId);
   const previous = {};
   let changed = false;
-  for (const flag of ["muted", "locked", "hidden"]) {
+  for (const flag of ["muted", "soloed", "locked", "hidden"]) {
     if (Object.prototype.hasOwnProperty.call(op.payload, flag)) {
       if (typeof op.payload[flag] !== "boolean") throw invalid(`setTrackFlag.${flag} must be boolean`);
       previous[flag] = track[flag];
@@ -813,3 +966,5 @@ function isTimelineOp(op) {
 function isPublicTimelineOp(op) {
   return PUBLIC_TIMELINE_OPS.includes(op);
 }
+
+export { clipsOverlap };

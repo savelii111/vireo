@@ -55,7 +55,7 @@ export function timelineToProject(doc: TimelineDocument, name = 'Untitled projec
               : 'linear-gradient(135deg, #6366f1, #4f46e5)',
         })),
         muted: Boolean(track.muted),
-        soloed: false,
+        soloed: Boolean(track.soloed),
         locked: Boolean(track.locked),
         hidden: Boolean(track.hidden),
       })),
@@ -83,6 +83,7 @@ export function projectToTimelineDocument(
       kind: track.kind === 'overlay' ? 'overlay' : track.kind,
       name: track.name,
       muted: Boolean(track.muted),
+      soloed: Boolean(track.soloed),
       locked: Boolean(track.locked),
       hidden: Boolean(track.hidden),
       clips: track.clips.map((clip) => ({

@@ -60,10 +60,11 @@ function clampResizeEnd(start: number, end: number) {
   return Math.max(start + MIN_CLIP_DURATION, end);
 }
 
-function createMoveOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, newStart: number) {
+function createMoveOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, newStart: number, targetTrackId?: string) {
   const located = findClipInDoc(doc, clipId);
   if (!located) return null;
   const { track, clip } = located;
+  const targetTrack = doc.tracks.find((item) => item.id === targetTrackId) ?? track;
   const start = Math.max(0, Number.isFinite(newStart) ? newStart : clip.start);
   return makeTimelineOp({
     op: 'moveClip',
@@ -71,7 +72,7 @@ function createMoveOpFromDoc(doc: import('../types').TimelineDocument, clipId: s
     timelineId: doc.timelineId,
     trackId: track.id,
     clipId,
-    payload: { targetTrackId: track.id, start, originalStart: clip.start },
+    payload: { targetTrackId: targetTrack.id, start, originalStart: clip.start },
   });
 }
 
@@ -151,7 +152,7 @@ function createDeleteOpFromDoc(doc: import('../types').TimelineDocument, clipId:
   });
 }
 
-function createSetTrackFlagOp(doc: import('../types').TimelineDocument, trackId: string, flag: 'muted' | 'locked' | 'hidden', value: boolean) {
+function createSetTrackFlagOp(doc: import('../types').TimelineDocument, trackId: string, flag: 'muted' | 'soloed' | 'locked' | 'hidden', value: boolean) {
   const track = doc.tracks.find((item) => item.id === trackId);
   if (!track) return null;
   return makeTimelineOp({
@@ -634,12 +635,12 @@ export function useEditor() {
     }));
   }, []);
 
-  const moveClip = useCallback((id: string, newStartSec: number) => {
+  const moveClip = useCallback((id: string, newStartSec: number, targetTrackId?: string) => {
     const current = serverRef.current;
     if (!current) return;
     const base = pendingRef.current?.baseDoc || current.doc;
     const baseVersion = pendingRef.current?.baseVersion || current.version;
-    const op = createMoveOpFromDoc(base, id, newStartSec);
+    const op = createMoveOpFromDoc(base, id, newStartSec, targetTrackId);
     pendingRef.current = { baseDoc: base, baseVersion, ops: [op].filter(Boolean) as import('../types').TimelineOp[] };
     if (op) applyLocalOp(op, base);
   }, [applyLocalOp]);
@@ -703,11 +704,12 @@ export function useEditor() {
   }, [commitOp]);
 
   const toggleTrackSolo = useCallback((trackId: string) => {
-    setProject((prev) => ({
-      ...prev,
-      tracks: prev.tracks.map((track) => track.id === trackId ? { ...track, soloed: !track.soloed } : track),
-    }));
-  }, []);
+    const current = serverRef.current;
+    if (!current) return;
+    const track = current.doc.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    commitOp(createSetTrackFlagOp(current.doc, trackId, 'soloed', !track.soloed));
+  }, [commitOp]);
 
   const applyBotInsertClip = useCallback((payload: Record<string, unknown>) => {
     const current = serverRef.current;

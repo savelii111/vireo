@@ -31,6 +31,7 @@ function op(opName, payload, extra = {}) {
     clipId: "",
     trackId: "",
     payload,
+    createdAt: "2026-06-15T00:00:00.000Z",
     ...extra,
   };
 }
@@ -127,7 +128,7 @@ test("applyOp round-trips every forward op through its inverse without mutating 
     op(TIMELINE_OPS.ADD_TEXT, { id: "txt_2", text: "Subtitle", start: 4, end: 7 }, { trackId: "trk_t1" }),
     op(TIMELINE_OPS.SET_EFFECT, { effect: { id: "fx_base", name: "Zoom Strong", intensity: 0.9 }, index: 0 }, { trackId: "trk_v1", clipId: "clip_1" }),
     op(TIMELINE_OPS.REPLACE_ASSET, { assetId: "ast_new" }, { trackId: "trk_v1", clipId: "clip_1" }),
-    op(TIMELINE_OPS.SET_TRACK_FLAG, { muted: true, locked: false, hidden: false }, { trackId: "trk_v1" }),
+    op(TIMELINE_OPS.SET_TRACK_FLAG, { muted: true, soloed: true, locked: false, hidden: false }, { trackId: "trk_v1" }),
   ];
 
   for (const forward of cases) {
@@ -143,7 +144,7 @@ test("applyOp round-trips every forward op through its inverse without mutating 
 test("applyOp throws typed errors and leaves the document unchanged for invalid ops", () => {
   const doc = baseDoc();
   const before = clone(doc);
-  assert.throws(() => applyOp(doc, op(TIMELINE_OPS.TRIM_CLIP, { start: -1, end: 5 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });
+  assert.throws(() => applyOp(doc, op(TIMELINE_OPS.TRIM_CLIP, { start: 5, end: 1 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });
   assert.throws(() => applyOp(doc, op(TIMELINE_OPS.MOVE_CLIP, { start: -1 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });
   assert.throws(() => applyOp(doc, op(TIMELINE_OPS.SPLIT_CLIP, { at: 99 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });
   assert.deepEqual(doc, before);
@@ -190,6 +191,57 @@ test("studio op-runner applies a batch atomically and records monotonic journal 
   }
 });
 
+test("studio human/bot op path enforces Day 12 move, trim, and solo contract", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day12_contract")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Day12 Contract" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+
+    const apply = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        actor: "bot",
+        ops: [
+          op(TIMELINE_OPS.INSERT_CLIP, { id: "a", assetId: asset.asset.id, start: 0, end: 2 }, { trackId: "trk_v1" }),
+          op(TIMELINE_OPS.INSERT_CLIP, { id: "b", assetId: asset.asset.id, start: 7, end: 10 }, { trackId: "trk_v1" }),
+          op(TIMELINE_OPS.MOVE_CLIP, { targetTrackId: "trk_v1", start: 6.5 }, { trackId: "trk_v1", clipId: "a" }),
+          op(TIMELINE_OPS.TRIM_CLIP, { start: 3, end: 10, originalStart: 7, originalEnd: 10 }, { trackId: "trk_v1", clipId: "b" }),
+          op(TIMELINE_OPS.SET_TRACK_FLAG, { soloed: true }, { trackId: "trk_v1" }),
+        ],
+      }),
+    });
+    assert.equal(apply.status, 200);
+    const applied = await json(apply);
+    const v1 = applied.doc.tracks.find((track) => track.id === "trk_v1");
+    assert.equal(v1.soloed, true);
+    assert.equal(v1.clips.find((clip) => clip.id === "a").start, 5);
+    assert.equal(v1.clips.find((clip) => clip.id === "b").start, 7);
+
+    const locked = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: applied.version,
+        actor: "human",
+        ops: [
+          op(TIMELINE_OPS.SET_TRACK_FLAG, { locked: true }, { trackId: "trk_v1" }),
+          op(TIMELINE_OPS.TRIM_CLIP, { start: 1, end: 5, originalStart: 0, originalEnd: 5 }, { trackId: "trk_v1", clipId: "a" }),
+        ],
+      }),
+    });
+    assert.equal(locked.status, 400);
+  } finally {
+    await close();
+  }
+});
+
 test("studio op-runner rolls back the whole batch when one op fails", async () => {
   const pool = makeMockPool();
   const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
@@ -208,7 +260,7 @@ test("studio op-runner rolls back the whole batch when one op fails", async () =
         baseVersion: 1,
         ops: [
           op(TIMELINE_OPS.INSERT_CLIP, { id: "clip_ok", assetId: asset.asset.id, start: 0, end: 5 }, { trackId: "trk_v1" }),
-          op(TIMELINE_OPS.TRIM_CLIP, { start: -1, end: 1 }, { trackId: "trk_v1", clipId: "clip_ok" }),
+          op(TIMELINE_OPS.TRIM_CLIP, { start: 5, end: 1 }, { trackId: "trk_v1", clipId: "clip_ok" }),
         ],
       }),
     });
