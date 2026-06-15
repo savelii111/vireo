@@ -20,6 +20,27 @@ export type TimelineOpName =
   | 'setTrackFlag'
   | 'duplicateClip';
 
+export type ProjectAssetKind = 'video' | 'audio' | 'image';
+
+export interface ProjectAsset {
+  id: string;
+  user_id?: string;
+  project_id?: string;
+  kind: ProjectAssetKind;
+  source?: string;
+  filename?: string;
+  name?: string;
+  mime?: string;
+  storage_path?: string;
+  duration_sec?: number | null;
+  width?: number | null;
+  height?: number | null;
+  size_bytes?: number | null;
+  status?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+}
+
 export interface Track {
   id: string;
   kind: TrackKind;

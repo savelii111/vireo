@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ProjectState, Clip, Track, Tool } from '../types';
+import type { ProjectAsset, ProjectState, Clip, Track, Tool } from '../types';
 import {
   applyTimelineOperation,
   createEmptyProjectState,
@@ -136,6 +136,37 @@ function createDuplicateOpFromDoc(doc: import('../types').TimelineDocument, clip
     trackId: track.id,
     clipId: String(dup.id),
     payload: { clip: dup, index: track.clips.length },
+  });
+}
+
+function createInsertAssetOpFromDoc(doc: import('../types').TimelineDocument, asset: ProjectAsset, trackId: string, startSec: number) {
+  const track = doc.tracks.find((item) => item.id === trackId) ?? doc.tracks.find((item) => item.kind === 'video') ?? doc.tracks[0];
+  if (!track) return null;
+  const duration = Math.max(0.1, Number(asset.duration_sec) || 5);
+  const start = Math.max(0, Number.isFinite(Number(startSec)) ? Number(startSec) : 0);
+  const clip = {
+    id: newClipId('clp'),
+    assetId: asset.id,
+    start,
+    end: start + duration,
+    in: 0,
+    out: duration,
+    source: asset.source || 'upload',
+    name: asset.filename || asset.name || asset.id,
+    selected: false,
+    locked: false,
+    muted: false,
+    text: '',
+    transform: {},
+    effects: [],
+  };
+  return makeTimelineOp({
+    op: 'insertClip',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: track.id,
+    clipId: clip.id,
+    payload: { clip, index: track.clips.length },
   });
 }
 
@@ -645,6 +676,19 @@ export function useEditor() {
     if (op) applyLocalOp(op, base);
   }, [applyLocalOp]);
 
+  const insertAsset = useCallback((asset: ProjectAsset, targetTrackId: string, startSec: number) => {
+    const current = serverRef.current;
+    if (!current) return null;
+    const base = pendingRef.current?.baseDoc || current.doc;
+    const baseVersion = pendingRef.current?.baseVersion || current.version;
+    const op = createInsertAssetOpFromDoc(base, asset, targetTrackId, startSec);
+    if (!op) return null;
+    pendingRef.current = { baseDoc: base, baseVersion, ops: [op] };
+    applyLocalOp(op, base);
+    commitPending();
+    return op;
+  }, [applyLocalOp, commitPending]);
+
   const resizeClip = useCallback((id: string, side: 'left' | 'right', newStartOrEnd: number) => {
     const current = serverRef.current;
     if (!current) return;
@@ -805,8 +849,10 @@ export function useEditor() {
     setTool,
     zoom,
     setZoom,
+    projectId: serverRef.current?.doc.projectId || getActiveProjectId(),
     updateClip,
     moveClip,
+    insertAsset,
     resizeClip,
     onDragEnd,
     applyBotInsertClip,

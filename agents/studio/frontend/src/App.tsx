@@ -10,6 +10,7 @@ const SideRail = lazy(() => import('./components/SideRail').then(m => ({ default
 const Preview = lazy(() => import('./components/Preview').then(m => ({ default: m.Preview })));
 const Inspector = lazy(() => import('./components/Inspector').then(m => ({ default: m.Inspector })));
 const Timeline = lazy(() => import('./components/Timeline').then(m => ({ default: m.Timeline })));
+const MediaPanel = lazy(() => import('./components/MediaPanel').then(m => ({ default: m.MediaPanel })));
 const ChatPanel = lazy(() => import('./components/ChatPanel').then(m => ({ default: m.ChatPanel })));
 
 function Fallback({ label }: { label: string }) {
@@ -270,7 +271,10 @@ export default function App() {
           <SideRail active="media" onChange={() => {}} />
         </Suspense>
 
-        <div className="min-h-0 min-w-0 overflow-hidden border border-border-1 bg-bg-1">
+        <div className="grid min-h-0 min-w-0 grid-rows-[minmax(220px,34vh)_minmax(0,1fr)] overflow-hidden border border-border-1 bg-bg-1">
+          <Suspense fallback={<Fallback label="media panel" />}>
+            <MediaPanel projectId={editor.projectId} />
+          </Suspense>
           <Suspense fallback={<Fallback label="workspace" />}>
             <Preview
               tab={previewTab}
@@ -361,6 +365,7 @@ export default function App() {
               onZoomChange={editor.setZoom}
               onClipMove={editor.moveClip}
               onClipResize={editor.resizeClip}
+              onAssetDrop={editor.insertAsset}
               onDragEnd={editor.onDragEnd}
               onUndo={editor.undo}
               onRedo={editor.redo}

@@ -8,7 +8,7 @@ import {
 import clsx from 'clsx';
 import { formatShortTime } from '../utils/time';
 import { snapTime } from '../../../../../packages/shared/index.js';
-import type { ProjectState, Tool, Clip, TrackKind } from '../types';
+import type { ProjectAsset, ProjectState, Tool, Clip, TrackKind } from '../types';
 
 interface Props {
   project: ProjectState;
@@ -22,6 +22,7 @@ interface Props {
   onZoomChange: (px: number) => void;
   onClipMove?: (id: string, newStart: number, targetTrackId: string) => void;
   onClipResize?: (id: string, side: 'left' | 'right', pos: number) => void;
+  onAssetDrop?: (asset: ProjectAsset, trackId: string, startSec: number) => void;
   onDragEnd?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
@@ -54,7 +55,7 @@ const SNAP_THRESHOLD_PX = 6; // pixels within which snap activates
 export function Timeline({
   project, tool, onToolChange, selectedClipId, onClipSelect,
   playhead, onSeek, zoom, onZoomChange,
-  onClipMove, onClipResize, onDragEnd,
+  onClipMove, onClipResize, onAssetDrop, onDragEnd,
   onUndo, onRedo, canUndo, canRedo,
   onToggleMute, onToggleSolo, onToggleLock, onToggleHidden,
   onAddTransition, onAddText,
@@ -65,6 +66,7 @@ export function Timeline({
   const [magnetOn, setMagnetOn] = useState(true);
   const [gridSnap, setGridSnap] = useState(false);
   const [snapGuide, setSnapGuide] = useState<{ trackId: string; timeSec: number } | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ trackId: string; timeSec: number } | null>(null);
   const [transitionOpen, setTransitionOpen] = useState(false);
   const [transitionKind, setTransitionKind] = useState('crossfade');
   const [transitionDuration, setTransitionDuration] = useState(0.5);
@@ -136,6 +138,17 @@ export function Timeline({
     return element?.getAttribute('data-track-id') || fallback;
   }, []);
 
+  const handleAssetDrop = useCallback((e: React.DragEvent<HTMLDivElement>, trackId: string) => {
+    e.preventDefault();
+    const raw = e.dataTransfer.getData('application/x-vireo-asset');
+    if (!raw) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left + e.currentTarget.scrollLeft;
+    const startSec = Math.max(0, x / zoom);
+    const asset = JSON.parse(raw) as ProjectAsset;
+    onAssetDrop?.(asset, trackId, startSec);
+  }, [onAssetDrop, zoom]);
+
   // ── Drag handlers ──
   const startDrag = useCallback((e: React.PointerEvent, clip: Clip, mode: DragMode) => {
     if (tool !== 'select') return;
@@ -186,6 +199,7 @@ export function Timeline({
     const onUp = () => {
       onDragEnd?.();
       setSnapGuide(null);
+      setDropTarget(null);
       setDrag(null);
     };
     window.addEventListener('pointermove', onMove);
@@ -414,6 +428,7 @@ export function Timeline({
             return (
               <div
                 key={t.id}
+                data-track-id={t.id}
                 className={clsx(
                   'h-9 flex items-center px-2 border-b border-border-1 text-[11px] font-medium gap-1 group',
                   t.locked ? 'opacity-50' : 'text-ink-1 hover:bg-bg-2 cursor-pointer',
@@ -487,6 +502,20 @@ export function Timeline({
                   'relative h-9 border-b border-border-1 cursor-pointer',
                   track.hidden && 'opacity-20',
                 )}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const timeSec = Math.max(0, (e.clientX - rect.left + e.currentTarget.scrollLeft) / zoom);
+                  setDropTarget({ trackId: track.id, timeSec });
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
+                }}
+                onDrop={(e) => {
+                  setDropTarget(null);
+                  handleAssetDrop(e, track.id);
+                }}
                 onClick={handleTrackClick}
               >
                 {snapGuide?.trackId === track.id && (
@@ -494,6 +523,13 @@ export function Timeline({
                     data-testid="snap-guide"
                     className="absolute top-0 bottom-0 w-px bg-yellow-300/80 z-[5] pointer-events-none"
                     style={{ left: `${snapGuide.timeSec * zoom}px` }}
+                  />
+                )}
+                {dropTarget?.trackId === track.id && (
+                  <div
+                    data-testid="drop-target"
+                    className="absolute top-0 bottom-0 w-px bg-accent z-[6] pointer-events-none shadow-[0_0_10px_rgba(14,165,233,.8)]"
+                    style={{ left: `${dropTarget.timeSec * zoom}px` }}
                   />
                 )}
                 {track.clips.map((clip) => {

@@ -497,6 +497,55 @@ test("studio undo branch is discarded when a new op is applied off the cursor", 
   }
 });
 
+test("studio human and bot asset inserts share one undoable timeline", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day13_asset")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Day13 Assets" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://hero", kind: "clip", metadata: { simulated_ingest: true } }) })).json();
+
+    const human = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        actor: "human",
+        ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "human_clip", assetId: asset.asset.id, start: 0, end: 4 }, { trackId: "trk_v1" })],
+      }),
+    });
+    assert.equal(human.status, 200);
+    const humanApplied = await json(human);
+    assert.equal(humanApplied.version, 2);
+    assert.equal(humanApplied.doc.tracks[0].clips.length, 1);
+
+    const bot = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: humanApplied.version,
+        actor: "bot",
+        ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "bot_clip", assetId: asset.asset.id, start: 4, end: 9 }, { trackId: "trk_v1" })],
+      }),
+    });
+    assert.equal(bot.status, 200);
+    const botApplied = await json(bot);
+    assert.equal(botApplied.version, 3);
+    assert.deepEqual(botApplied.doc.tracks[0].clips.map((clip) => clip.id), ["human_clip", "bot_clip"]);
+
+    const undo = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undo.status, 200);
+    const undone = await json(undo);
+    assert.equal(undone.version, 4);
+    assert.deepEqual(undone.doc.tracks[0].clips.map((clip) => clip.id), ["human_clip"]);
+  } finally {
+    await close();
+  }
+});
+
 test("studio op-runner enforces project ownership", async () => {
   const pool = makeMockPool();
   const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });

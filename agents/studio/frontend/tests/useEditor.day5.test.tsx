@@ -714,4 +714,50 @@ describe('Day 5 useEditor real timeline contract', () => {
     });
   });
 
+  it('inserts a project asset through the Day 13 drag-to-timeline op path', async () => {
+    const loaded = baseDoc(1);
+
+    fetchMock
+      .mockResolvedValueOnce(json({ timeline: { doc: loaded, version: 1, timelineId: 'tl1', projectId: 'p1' } }))
+      .mockResolvedValueOnce(json({ doc: docWithClipAt(2, 0, 'hero.mp4'), version: 2, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 2, can_redo: false }));
+
+    await renderHarness();
+
+    await act(async () => {
+      window.__editor?.insertAsset({
+        id: 'ast_hero',
+        kind: 'video',
+        filename: 'hero.mp4',
+        duration_sec: 5,
+        source: 'upload',
+      }, 'v1', 0);
+    });
+    expect(clipTexts().join('\n')).toContain('hero.mp4');
+    expect(clipTexts().join('\n')).toContain(':0-5:hero.mp4');
+
+    const postIndex = fetchMock.mock.calls.findLastIndex(([url]) => url === '/api/timelines/p1/ops');
+    expect(postIndex).toBeGreaterThanOrEqual(0);
+    const postBody = JSON.parse((fetchMock.mock.calls[postIndex][1] as RequestInit).body as string);
+    expect(postBody).toMatchObject({
+      baseVersion: 1,
+      actor: 'human',
+      ops: [{
+        op: 'insertClip',
+        actor: 'human',
+        timelineId: 'tl1',
+        trackId: 'v1',
+        payload: {
+          clip: {
+            assetId: 'ast_hero',
+            start: 0,
+            end: 5,
+            in: 0,
+            out: 5,
+            source: 'upload',
+            name: 'hero.mp4',
+          },
+        },
+      }],
+    });
+  });
 });

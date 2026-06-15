@@ -11,27 +11,27 @@
 
 ## Current Day
 
-Day 12 complete.
+Day 13 complete.
 
 ## What Changed
 
-- Added shared timeline contract coverage for snapTime, move/trim overlap clamping, locked track rejection, and soloed track flag propagation.
-- Updated the Studio frontend timeline drag/trim/snap path to use the shared op contract and preserve targetTrackId.
-- Wired frontend `toggleTrackSolo` through the shared op path instead of local-only state mutation.
-- Kept `createdAt` on public ops so inverse/internal ops stay distinguishable.
-- Added a shared TypeScript declaration for `packages/shared/index.js`.
+- Added Studio `Project / Media` panel with project asset listing, simulated ingest form, bin filters, search, and draggable asset cards.
+- Wired MediaPanel into the app layout above the preview workspace and passed `editor.insertAsset` into Timeline.
+- Added Timeline asset drop targets on tracks, converting drag/drop into shared `insertClip` timeline ops with human actor.
+- Added `ProjectAsset` frontend types and metadata-only import payload contract.
+- Added backend coverage for human+bot asset inserts sharing one undoable timeline.
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 12 changes:
+`node tests/run-all.mjs` after Day 13 changes:
 
-- `TOTAL: 1325 passed, 0 failed across 27 suites`
+- `TOTAL: 1326 passed, 0 failed across 27 suites`
 
 Frontend checks:
 
 - `npm run typecheck` → `exit 0`
-- `npm test` → `2 passed`, `18 passed`
+- `npm test` → `21 passed`
 
 ## Next
 
-Awaiting Day 12 confirmation before Day 13.
+Awaiting Day 13 confirmation before Day 14.
