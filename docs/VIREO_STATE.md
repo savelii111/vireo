@@ -11,27 +11,30 @@
 
 ## Current Day
 
-Day 13 complete.
+Day 14 complete.
 
 ## What Changed
 
-- Added Studio `Project / Media` panel with project asset listing, simulated ingest form, bin filters, search, and draggable asset cards.
-- Wired MediaPanel into the app layout above the preview workspace and passed `editor.insertAsset` into Timeline.
-- Added Timeline asset drop targets on tracks, converting drag/drop into shared `insertClip` timeline ops with human actor.
-- Added `ProjectAsset` frontend types and metadata-only import payload contract.
-- Added backend coverage for human+bot asset inserts sharing one undoable timeline.
+- Finished Studio Effect Controls UI in the Inspector:
+  - added a `controls` tab with transform-at-playhead controls (`x`, `y`, `scale`, `opacity`, `rotation`);
+  - added transform keyframe add/remove controls for the current playhead;
+  - added effect-parameter keyframe add/remove controls for existing clip effects;
+  - wired Inspector props through `App.tsx` for `playhead`, `onSetKeyframe`, and `onRemoveKeyframe`.
+- Updated shared timeline/keyframe contracts and Studio backend tests so human/bot keyframes share one undoable timeline.
+- Fixed shared timeline round-trip coverage for forward ops through inverse ops, including `insertClip`.
+- Added frontend coverage for Inspector controls and keyframe behavior.
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 13 changes:
+`node tests/run-all.mjs` after Day 14 changes:
 
-- `TOTAL: 1326 passed, 0 failed across 27 suites`
+- `TOTAL: 1330 passed, 0 failed across 27 suites`
 
 Frontend checks:
 
 - `npm run typecheck` → `exit 0`
-- `npm test` → `22 passed` (MediaPanel, useEditor insertAsset, Timeline asset drop, playback)
+- `npm test` → `25 passed` (MediaPanel, useEditor insertAsset/keyframes, Timeline asset drop, playback)
 
 ## Next
 
-Awaiting Day 13 confirmation before Day 14.
+Day 14 ready for commit/push/zip.

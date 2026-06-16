@@ -1,6 +1,6 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Inspector } from '../src/components/Inspector';
 import { Preview } from '../src/components/Preview';
 import type { Clip, ProjectState, Track } from '../src/types';
@@ -241,12 +241,102 @@ describe('Day 9 preview and inspector components', () => {
     expect(container.querySelector('[data-testid="inspector-start-end"]')?.textContent).toBe('2.0s — 6.0s');
     expect(container.querySelector('[data-testid="inspector-asset"]')?.textContent).toBe('—');
     expect(container.querySelector('[data-testid="inspector-source"]')?.textContent).toBe('higgsfield_simulated');
-    expect(container.querySelector('[data-testid="inspector-transform"]')?.textContent).toBe('x=12, y=34, scale=1');
+    expect(container.querySelector('[data-testid="inspector-transform"]')?.textContent).toBe('x=12, y=34, scale=1, rotation=0');
     expect(container.querySelector('[data-testid="inspector-media-mode"]')?.textContent).toBe('placeholder card');
-    const effectTab = container.querySelector('[data-testid="inspector-tab-effect"]');
+    const effectTab = container.querySelector('[data-testid="inspector-tab-controls"]');
     act(() => {
       effectTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="clip-effect"]')?.textContent).toContain('blur');
+  });
+
+  it('renders Preview transform from keyframes at the playhead', () => {
+    const p = project();
+    const clip = p.tracks[0].clips[0];
+    clip.source_file = '';
+    clip.source = 'higgsfield_simulated';
+    clip.transform = { x: 0, y: 0, scale: 1, opacity: 1 };
+    clip.keyframes = {
+      transform: {
+        x: [{ time: 0, value: 0, interp: 'linear' }, { time: 2, value: 80, interp: 'linear' }],
+        y: [{ time: 0, value: 0, interp: 'linear' }, { time: 2, value: -20, interp: 'linear' }],
+        scale: [{ time: 0, value: 1, interp: 'linear' }, { time: 2, value: 1.5, interp: 'linear' }],
+        opacity: [{ time: 0, value: 1, interp: 'linear' }, { time: 2, value: 0.4, interp: 'linear' }],
+      },
+    };
+
+    act(() => {
+      root.render(
+        <Preview
+          tab="program"
+          onTabChange={() => {}}
+          playing={false}
+          onTogglePlay={() => {}}
+          playhead={2}
+          duration={10}
+          fps={30}
+          width={1920}
+          height={1080}
+          activeVideoClip={clip}
+          activeTextClips={[]}
+        />,
+      );
+    });
+
+    const placeholder = container.querySelector('[data-testid="preview-placeholder"]') as HTMLElement | null;
+    expect(placeholder?.style.transform).toBe('translate(80px, -20px) scale(1.5)');
+    expect(placeholder?.style.opacity).toBe('0.4');
+  });
+
+  it('Inspector keyframe controls add/remove transform and effect keys at the current playhead', () => {
+    const clip: Clip = {
+      id: 'sim',
+      track_id: 'v1',
+      source_file: '',
+      start_sec: 2,
+      duration_sec: 4,
+      in_sec: 1,
+      source: 'higgsfield_simulated',
+      label: 'Simulated B-roll',
+      kind: 'video',
+      transform: { x: 10, y: 20, scale: 1.25, opacity: 0.8, rotation: 15 },
+      effects: [{ id: 'fx_blur', type: 'blur', name: 'Soft blur', params: { radius: 8 } }],
+    };
+    const track: Track = { id: 'v1', kind: 'video', name: 'Video 1', muted: false, locked: false, clips: [clip] };
+    const onTransformChange = vi.fn();
+    const onSetKeyframe = vi.fn();
+    const onRemoveKeyframe = vi.fn();
+
+    act(() => {
+      root.render(
+        <Inspector
+          clip={clip}
+          clipId="sim"
+          track={track}
+          playhead={2.5}
+          onQuickAction={() => {}}
+          onTransformChange={onTransformChange}
+          onSetKeyframe={onSetKeyframe}
+          onRemoveKeyframe={onRemoveKeyframe}
+        />,
+      );
+    });
+
+    const controlsTab = container.querySelector('[data-testid="inspector-tab-controls"]');
+    expect(controlsTab).toBeTruthy();
+    act(() => controlsTab?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.innerHTML).toContain('Keyframes at playhead');
+
+    expect(container.querySelector('[data-testid="effect-keyframes"]')?.textContent).toContain('2.5s');
+    expect(container.querySelector('[data-testid="inspector-transform-rotation"]')).toBeTruthy();
+
+    act(() => container.querySelector('[data-testid="add-scale-keyframe"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onSetKeyframe).toHaveBeenCalledWith('transform', 'scale', { time: 2.5, value: 1.25, interp: 'linear' });
+
+    act(() => container.querySelector('[data-testid="remove-y-keyframe"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onRemoveKeyframe).toHaveBeenCalledWith('transform', 'y', 2.5);
+
+    act(() => container.querySelector('[data-testid="add-radius-keyframe"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onSetKeyframe).toHaveBeenCalledWith('fx_blur', 'radius', { time: 2.5, value: 8, interp: 'linear' });
   });
 });

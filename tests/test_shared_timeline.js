@@ -7,6 +7,7 @@ import {
   createEmptyTimelineDocument,
   createTimelineOp,
   deserializeTimelineDocument,
+  evalParamAtTime,
   serializeTimelineDocument,
   snapTime,
 } from "../packages/shared/index.js";
@@ -192,6 +193,61 @@ test("shared timeline transition/effect/text ops apply and inverse back out", ()
 test("snapTime snaps to anchors only inside pixel threshold", () => {
   assert.equal(snapTime(2.02, [2], 2, 100), 2);
   assert.equal(snapTime(2.02, [2], 0.5, 50), 2.02);
+});
+
+test("evalParamAtTime interpolates, holds, clamps, sorts and handles empty/one-keyframe input", () => {
+  assert.equal(evalParamAtTime([], 3), 0);
+  assert.equal(evalParamAtTime([{ time: 2, value: 40 }], 0), 40);
+  assert.equal(evalParamAtTime([{ time: 2, value: 40 }], 2), 40);
+  assert.equal(evalParamAtTime([{ time: 2, value: 40 }], 9), 40);
+  assert.equal(evalParamAtTime([{ time: 4, value: 40 }, { time: 0, value: 0 }], 2), 20);
+  assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40 }], -1), 0);
+  assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40 }], 5), 40);
+  assert.equal(evalParamAtTime([{ time: 0, value: 0, interp: "hold" }, { time: 4, value: 40 }], 2), 0);
+  assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40, interp: "hold" }], 2), 0);
+  assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40 }], 3), 30);
+  assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40 }], 1, 10), 10);
+});
+
+test("keyframe ops are reversible and preserve effect keyframes", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "a", assetId: "a.mp4", start: 0, end: 5 } }));
+  const addEffect = createTimelineOp({ op: TIMELINE_OPS.ADD_EFFECT, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { effect: { id: "fx_blur", type: "gaussian-blur", name: "Gaussian blur", params: { radius: 0 } } } });
+  doc = applyTimelineOp(doc, addEffect);
+
+  const docAfterHuman = doc;
+  const humanKey = createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetId: "transform", param: "opacity", keyframe: { time: 0, value: 0.2 } } });
+  doc = applyTimelineOp(doc, humanKey);
+  const botKey = createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "bot", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetId: "transform", param: "opacity", keyframe: { time: 4, value: 1 } } });
+  doc = applyTimelineOp(doc, botKey);
+  const clip = doc.tracks.find((track) => track.id === "trk_v1").clips.find((item) => item.id === "a");
+  assert.ok(Math.abs(evalParamAtTime(clip.keyframes.transform.opacity, 2) - 0.6) < 1e-9);
+  assert.equal(evalParamAtTime(clip.keyframes.transform.opacity, 5), 1);
+  assert.equal(clip.transform.opacity, 1);
+
+  const docAfterBot = doc;
+  const effectKey = createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetId: "fx_blur", param: "radius", keyframe: { time: 1, value: 5 } } });
+  doc = applyTimelineOp(doc, effectKey);
+  assert.equal(evalParamAtTime(doc.tracks[0].clips[0].keyframes.effects.fx_blur.radius, 2), 5);
+
+  const withoutEffectKey = applyTimelineOp(doc, doc.inverse);
+  assert.equal(withoutEffectKey.tracks[0].clips[0].keyframes.effects.fx_blur, undefined);
+  const withoutHumanKey = applyTimelineOp(docAfterHuman, docAfterHuman.inverse);
+  assert.equal(withoutHumanKey.tracks[0].clips[0].keyframes?.transform?.opacity, undefined);
+  const withoutBotKey = applyTimelineOp(docAfterBot, docAfterBot.inverse);
+  assert.ok(Math.abs(evalParamAtTime(withoutBotKey.tracks[0].clips[0].keyframes.transform.opacity, 2) - 0.2) < 1e-9);
+});
+
+test("removeKeyframe is reversible and restores previous keyframes", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "a", assetId: "a.mp4", start: 0, end: 5 } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetId: "transform", param: "x", keyframe: { time: 0, value: 0 } } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetId: "transform", param: "x", keyframe: { time: 5, value: 100 } } }));
+  const remove = createTimelineOp({ op: TIMELINE_OPS.REMOVE_KEYFRAME, timelineId: doc.timelineId, trackId: "trk_v1", clipId: "a", payload: { targetId: "transform", param: "x", time: 0 } });
+  doc = applyTimelineOp(doc, remove);
+  assert.equal(evalParamAtTime(doc.tracks[0].clips[0].keyframes.transform.x, 2), 100);
+  const restored = applyTimelineOp(doc, doc.inverse);
+  assert.equal(evalParamAtTime(restored.tracks[0].clips[0].keyframes.transform.x, 2), 40);
 });
 
 test("moveClip rejects locked tracks and clamps against same-track neighbors", () => {

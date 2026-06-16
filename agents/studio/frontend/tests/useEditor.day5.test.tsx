@@ -590,6 +590,50 @@ describe('Day 5 useEditor real timeline contract', () => {
     expect(window.__editor?.project.tracks[0].clips[0].volume).toBe(0.5);
   });
 
+  it('sets and removes keyframes through the useEditor op path', async () => {
+    const withKeyframe = docWithClipAt(2, 0);
+    withKeyframe.tracks[0].clips[0].transform = { opacity: 0.5 };
+    withKeyframe.tracks[0].clips[0].keyframes = {
+      transform: {
+        opacity: [{ time: 0, value: 0.5, interp: 'linear' }],
+      },
+      effects: {},
+    };
+    const withoutKeyframe = docWithClipAt(3, 0);
+    withoutKeyframe.tracks[0].clips[0].transform = { opacity: 0.5 };
+
+    fetchMock
+      .mockResolvedValueOnce(json({ timeline: { doc: docWithClipAt(1, 0), version: 1, timelineId: 'tl1', projectId: 'p1' } }))
+      .mockResolvedValueOnce(json({ doc: withKeyframe, version: 2, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 2, can_redo: true }))
+      .mockResolvedValueOnce(json({ doc: withoutKeyframe, version: 3, timelineId: 'tl1', projectId: 'p1', undo_cursor_seq: 3, can_redo: true }));
+
+    await renderHarness();
+
+    await act(async () => {
+      window.__editor?.setKeyframe('clp1', 'transform', 'opacity', { time: 0, value: 0.5, interp: 'linear' });
+    });
+
+    expect(window.__editor?.project.tracks[0].clips[0].keyframes?.transform?.opacity).toEqual([{ time: 0, value: 0.5, interp: 'linear' }]);
+    const post = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+    expect(post).toMatchObject({
+      baseVersion: 1,
+      actor: 'human',
+      ops: [{
+        op: 'setKeyframe',
+        actor: 'human',
+        timelineId: 'tl1',
+        trackId: 'v1',
+        clipId: 'clp1',
+        payload: { targetId: 'transform', param: 'opacity', keyframe: { time: 0, value: 0.5, interp: 'linear' } },
+      }],
+    });
+
+    await act(async () => {
+      window.__editor?.removeKeyframe('clp1', 'transform', 'opacity', 0);
+    });
+    expect(window.__editor?.project.tracks[0].clips[0].keyframes?.transform?.opacity).toBeUndefined();
+  });
+
   it('rebases setTransform on 409 and retries POST /ops with the fresh baseVersion', async () => {
     const fresh = docWithTransformAndVolume(2, 10, 0, 1, 1, 1);
     const retryCommitted = docWithTransformAndVolume(3);

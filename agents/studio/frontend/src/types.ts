@@ -15,12 +15,24 @@ export type TimelineOpName =
   | 'addText'
   | 'setEffect'
   | 'setTransform'
+  | 'setKeyframe'
+  | 'removeKeyframe'
   | 'setVolume'
   | 'replaceAsset'
   | 'setTrackFlag'
   | 'duplicateClip';
 
 export type ProjectAssetKind = 'video' | 'audio' | 'image';
+export type KeyframeInterpolation = 'linear' | 'hold';
+export interface Keyframe {
+  time: number;
+  value: number;
+  interp?: KeyframeInterpolation;
+}
+export interface ClipKeyframes {
+  transform?: Record<string, Keyframe[]>;
+  effects?: Record<string, Record<string, Keyframe[]>>;
+}
 
 export interface ProjectAsset {
   id: string;
@@ -66,6 +78,7 @@ export interface Clip {
   kind: TrackKind;
   effects?: Array<Record<string, unknown>>;
   transform?: Record<string, unknown>;
+  keyframes?: ClipKeyframes;
   volume?: number;
   text?: string;
 }
@@ -98,6 +111,7 @@ export interface TimelineClip {
   volume?: number;
   transform?: Record<string, unknown>;
   effects?: Array<Record<string, unknown>>;
+  keyframes?: ClipKeyframes;
   source: TimelineClipSource;
   name?: string;
   text?: string;

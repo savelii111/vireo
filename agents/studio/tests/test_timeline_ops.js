@@ -4,6 +4,7 @@ import {
   TIMELINE_OPS,
   applyOp,
   createEmptyTimelineDocument,
+  evalParamAtTime,
   validateTimelineDocument,
 } from "../../../packages/shared/index.js";
 import { buildServer } from "../src/server.js";
@@ -549,6 +550,91 @@ test("studio human and bot asset inserts share one undoable timeline", async () 
     const undone = await json(undo);
     assert.equal(undone.version, 4);
     assert.deepEqual(undone.doc.tracks[0].clips.map((clip) => clip.id), ["human_clip"]);
+  } finally {
+    await close();
+  }
+});
+
+test("studio human and bot keyframes share one undoable timeline", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day14_keyframes")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Day14 Keyframes" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://hero", kind: "clip", metadata: { simulated_ingest: true } }) })).json();
+
+    const insert = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ baseVersion: 1, actor: "human", ops: [op(TIMELINE_OPS.INSERT_CLIP, { id: "key_clip", assetId: asset.asset.id, start: 0, end: 6 }, { trackId: "trk_v1" })] }),
+    });
+    assert.equal(insert.status, 200);
+    const inserted = await json(insert);
+    assert.equal(inserted.version, 2);
+
+    const humanKey = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: inserted.version,
+        actor: "human",
+        ops: [op(TIMELINE_OPS.SET_KEYFRAME, { targetId: "transform", param: "opacity", keyframe: { time: 0, value: 0.2 } }, { trackId: "trk_v1", clipId: "key_clip" })],
+      }),
+    });
+    assert.equal(humanKey.status, 200);
+    const humanApplied = await json(humanKey);
+    assert.equal(humanApplied.version, 3);
+
+    const botEffect = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: humanApplied.version,
+        actor: "bot",
+        ops: [op(TIMELINE_OPS.ADD_EFFECT, { effect: { id: "fx_blur", type: "gaussian-blur", name: "Gaussian blur", params: { radius: 0 } } }, { trackId: "trk_v1", clipId: "key_clip" })],
+      }),
+    });
+    assert.equal(botEffect.status, 200);
+    const botEffectApplied = await json(botEffect);
+    assert.equal(botEffectApplied.version, 4);
+
+    const botKey = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: botEffectApplied.version,
+        actor: "bot",
+        ops: [op(TIMELINE_OPS.SET_KEYFRAME, { targetId: "transform", param: "opacity", keyframe: { time: 4, value: 1 } }, { trackId: "trk_v1", clipId: "key_clip" })],
+      }),
+    });
+    assert.equal(botKey.status, 200);
+    const botApplied = await json(botKey);
+    assert.equal(botApplied.version, 5);
+    const clip = botApplied.doc.tracks[0].clips.find((item) => item.id === "key_clip");
+    assert.ok(Math.abs(evalParamAtTime(clip.keyframes.transform.opacity, 2) - 0.6) < 1e-9);
+    assert.equal(evalParamAtTime(clip.keyframes.effects.fx_blur?.radius, 2, 0), 0);
+
+    const undoBotKey = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoBotKey.status, 200);
+    const undoneBotKey = await json(undoBotKey);
+    assert.equal(undoneBotKey.version, 6);
+    assert.equal(evalParamAtTime(undoneBotKey.doc.tracks[0].clips[0].keyframes.transform.opacity, 2), 0.2);
+    assert.equal(undoneBotKey.doc.tracks[0].clips[0].effects.length, 1);
+
+    const undoBotEffect = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoBotEffect.status, 200);
+    const undoneBotEffect = await json(undoBotEffect);
+    assert.equal(undoneBotEffect.version, 7);
+    assert.equal(undoneBotEffect.doc.tracks[0].clips[0].effects.length, 0);
+
+    const undoHumanKey = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoHumanKey.status, 200);
+    const undoneHumanKey = await json(undoHumanKey);
+    assert.equal(undoneHumanKey.version, 8);
+    assert.equal(undoneHumanKey.doc.tracks[0].clips[0].keyframes.transform.opacity, undefined);
   } finally {
     await close();
   }

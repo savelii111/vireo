@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ProjectAsset, ProjectState, Clip, Track, Tool } from '../types';
+import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool } from '../types';
 import {
   applyTimelineOperation,
   createEmptyProjectState,
@@ -336,6 +336,40 @@ function createSetTransformOpFromDoc(doc: import('../types').TimelineDocument, c
   });
 }
 
+function createSetKeyframeOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, targetId: string, param: string, keyframe: Keyframe) {
+  const located = findClipInDoc(doc, clipId);
+  if (!located) return null;
+  return makeTimelineOp({
+    op: 'setKeyframe',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: located.track.id,
+    clipId,
+    payload: { targetId, param, keyframe: normalizeKeyframe(keyframe) },
+  });
+}
+
+function createRemoveKeyframeOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, targetId: string, param: string, time: number) {
+  const located = findClipInDoc(doc, clipId);
+  if (!located) return null;
+  return makeTimelineOp({
+    op: 'removeKeyframe',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: located.track.id,
+    clipId,
+    payload: { targetId, param, time: Number(time) },
+  });
+}
+
+function normalizeKeyframe(keyframe: Keyframe) {
+  return {
+    time: Math.max(0, Number(keyframe.time)),
+    value: Number(keyframe.value),
+    interp: keyframe.interp || 'linear',
+  };
+}
+
 function createSetVolumeOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, volume: number) {
   const located = findClipInDoc(doc, clipId);
   if (!located) return null;
@@ -414,7 +448,7 @@ function rebaseOp(doc: import('../types').TimelineDocument, op: import('../types
     };
   }
 
-  if (op.op === 'setTransform' || op.op === 'setVolume') {
+  if (op.op === 'setTransform' || op.op === 'setVolume' || op.op === 'setKeyframe' || op.op === 'removeKeyframe') {
     if (!track || !clip) return null;
     return {
       ...op,
@@ -804,6 +838,18 @@ export function useEditor() {
     commitOp(createSetTransformOpFromDoc(current.doc, clipId, transform));
   }, [commitOp]);
 
+  const setKeyframe = useCallback((clipId: string, targetId: string, param: string, keyframe: Keyframe) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createSetKeyframeOpFromDoc(current.doc, clipId, targetId, param, keyframe));
+  }, [commitOp]);
+
+  const removeKeyframe = useCallback((clipId: string, targetId: string, param: string, time: number) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createRemoveKeyframeOpFromDoc(current.doc, clipId, targetId, param, time));
+  }, [commitOp]);
+
   const setVolume = useCallback((clipId: string, volume: number) => {
     const current = serverRef.current;
     if (!current) return;
@@ -861,6 +907,8 @@ export function useEditor() {
     addEffect,
     setEffect,
     setTransform,
+    setKeyframe,
+    removeKeyframe,
     setVolume,
     splitAtPlayhead,
     deleteSelected,

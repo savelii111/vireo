@@ -46,6 +46,7 @@ export function timelineToProject(doc: TimelineDocument, name = 'Untitled projec
           selected: Boolean(clip.selected),
           effects: clip.effects,
           transform: clip.transform,
+          keyframes: clip.keyframes,
           volume: clip.volume,
           text: clip.text,
           thumbnail_color: clip.source === 'generated' || clip.source === 'higgsfield'
@@ -97,6 +98,7 @@ export function projectToTimelineDocument(
         name: clip.label || clip.source_file,
         text: clip.text,
         transform: clip.transform,
+        keyframes: clip.keyframes,
         volume: clip.volume,
         effects: clip.effects,
         selected: Boolean(clip.selected),

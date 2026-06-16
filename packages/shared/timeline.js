@@ -44,6 +44,8 @@ export const TIMELINE_OPS = Object.freeze({
   ADD_TEXT: "addText",
   SET_EFFECT: "setEffect",
   SET_TRANSFORM: "setTransform",
+  SET_KEYFRAME: "setKeyframe",
+  REMOVE_KEYFRAME: "removeKeyframe",
   SET_VOLUME: "setVolume",
   REPLACE_ASSET: "replaceAsset",
   SET_TRACK_FLAG: "setTrackFlag",
@@ -68,6 +70,8 @@ export const PUBLIC_TIMELINE_OPS = Object.freeze([
   TIMELINE_OPS.ADD_TEXT,
   TIMELINE_OPS.SET_EFFECT,
   TIMELINE_OPS.SET_TRANSFORM,
+  TIMELINE_OPS.SET_KEYFRAME,
+  TIMELINE_OPS.REMOVE_KEYFRAME,
   TIMELINE_OPS.SET_VOLUME,
   TIMELINE_OPS.REPLACE_ASSET,
   TIMELINE_OPS.SET_TRACK_FLAG,
@@ -153,8 +157,10 @@ export function normalizeClip(clip) {
   const end = Number(clip.end ?? (clip.start_sec ?? 0) + (clip.duration_sec ?? clip.duration ?? 0));
   const inPoint = Number(clip.in ?? clip.in_sec ?? clip.inPoint ?? 0);
   const outPoint = Number(clip.out ?? clip.out_sec ?? clip.outPoint ?? end - start);
-
-  return {
+  const keyframes = normalizeClipKeyframes(clip.keyframes);
+  const hasKeyframes = Object.values(keyframes.transform || {}).some((frames) => frames.length > 0)
+    || Object.values(keyframes.effects || {}).some((params) => Object.values(params || {}).some((frames) => frames.length > 0));
+  const normalized = {
     id: String(clip.id || newId("clp")),
     assetId: String(clip.assetId ?? clip.asset_id ?? clip.source_file ?? ""),
     start,
@@ -170,6 +176,65 @@ export function normalizeClip(clip) {
     muted: Boolean(clip.muted),
     text: clip.text == null ? "" : String(clip.text),
   };
+  if (hasKeyframes) normalized.keyframes = keyframes;
+  return normalized;
+}
+
+export function normalizeKeyframe(value) {
+  if (!value || typeof value !== "object") throw new Error("Keyframe must be an object");
+  const time = Number(value.time ?? value.time_sec ?? value.t ?? 0);
+  const keyValue = Number(value.value ?? value.v ?? value.amount ?? 0);
+  if (!Number.isFinite(time) || time < 0) throw new Error("Keyframe.time must be finite and non-negative");
+  if (!Number.isFinite(keyValue)) throw new Error("Keyframe.value must be finite");
+  const interp = String(value.interp ?? value.interpolation ?? "linear");
+  if (!["linear", "hold"].includes(interp)) throw new Error(`Unsupported keyframe interpolation: ${interp}`);
+  return { time, value: keyValue, interp };
+}
+
+export function normalizeKeyframes(value) {
+  return (Array.isArray(value) ? value : [])
+    .map(normalizeKeyframe)
+    .sort((a, b) => a.time - b.time || String(a.interp).localeCompare(String(b.interp)));
+}
+
+export function normalizeClipKeyframes(value) {
+  if (!value || typeof value !== "object") return { transform: {}, effects: {} };
+  const transform = {};
+  const effects = {};
+  for (const [target, params] of Object.entries(value.transform || {})) {
+    transform[target] = Array.isArray(params) ? params.map(normalizeKeyframe).sort((a, b) => a.time - b.time) : [];
+  }
+  for (const [effectId, params] of Object.entries(value.effects || {})) {
+    effects[effectId] = {};
+    for (const [param, frames] of Object.entries(params || {})) {
+      effects[effectId][param] = Array.isArray(frames) ? frames.map(normalizeKeyframe).sort((a, b) => a.time - b.time) : [];
+    }
+  }
+  return { transform, effects };
+}
+
+export function evalParamAtTime(keyframes, t, defaultValue = 0) {
+  const frames = normalizeKeyframes(keyframes);
+  const time = Number(t);
+  if (!Number.isFinite(time)) return Number.isFinite(defaultValue) ? defaultValue : 0;
+  if (frames.length === 0) return Number.isFinite(defaultValue) ? defaultValue : 0;
+  if (time <= frames[0].time) return frames[0].value;
+  if (time >= frames[frames.length - 1].time) return frames[frames.length - 1].value;
+
+  let leftIndex = 0;
+  for (let i = 0; i < frames.length - 1; i++) {
+    if (frames[i].time <= time && time <= frames[i + 1].time) {
+      leftIndex = i;
+      break;
+    }
+  }
+
+  const left = frames[leftIndex];
+  const right = frames[leftIndex + 1];
+  if (left.interp === "hold" || right.interp === "hold") return left.value;
+  if (right.time === left.time) return right.value;
+  const ratio = (time - left.time) / (right.time - left.time);
+  return left.value + (right.value - left.value) * ratio;
 }
 
 export function createTimelineOp({ op, actor = "human", timelineId, payload = {}, clipId, trackId } = {}) {
@@ -294,6 +359,10 @@ function applyOpInternal(timeline, op) {
       return setEffect(timeline, op);
     case TIMELINE_OPS.SET_TRANSFORM:
       return setTransform(timeline, op);
+    case TIMELINE_OPS.SET_KEYFRAME:
+      return setKeyframe(timeline, op);
+    case TIMELINE_OPS.REMOVE_KEYFRAME:
+      return removeKeyframe(timeline, op);
     case TIMELINE_OPS.SET_VOLUME:
       return setVolume(timeline, op);
     case TIMELINE_OPS.REPLACE_ASSET:
@@ -571,6 +640,11 @@ function moveClip(timeline, op) {
 function deleteClip(timeline, op) {
   const { track, clip, index } = resolveClip(timeline, op.trackId, op.clipId || op.payload.clip?.id);
   const removed = clone(clip);
+  if (removed.keyframes) {
+    const hasTransform = Object.values(removed.keyframes.transform || {}).some((frames) => frames.length > 0);
+    const hasEffects = Object.values(removed.keyframes.effects || {}).some((params) => Object.values(params || {}).some((frames) => frames.length > 0));
+    if (!hasTransform && !hasEffects) delete removed.keyframes;
+  }
   track.clips.splice(index, 1);
   return {
     op: TIMELINE_OPS.INSERT_CLIP,
@@ -610,6 +684,7 @@ function groupClips(timeline, op) {
     out: end,
     transform: {},
     effects: [],
+    keyframes: { transform: {}, effects: {} },
     source: "group",
     name: op.payload.name || "Group",
     groupedClipIds: clipIds,
@@ -746,6 +821,7 @@ function addText(timeline, op) {
     out: op.payload.out ?? op.payload.out_sec ?? 3,
     transform: clone(op.payload.transform || {}),
     effects: [],
+    keyframes: { transform: {}, effects: {} },
     source: "text",
     name: op.payload.text || "Text clip",
     text: op.payload.text || "",
@@ -794,6 +870,82 @@ function setEffect(timeline, op) {
     ...op,
     effectId: previous.id,
     payload: { effect: previous, index },
+  };
+}
+
+function keyframeTargetStore(clip, targetId) {
+  clip.keyframes = normalizeClipKeyframes(clip.keyframes);
+  if (targetId === "transform") return { store: clip.keyframes.transform || (clip.keyframes.transform = {}), kind: "transform" };
+  const effect = clip.effects.find((item) => item.id === targetId);
+  if (!effect) throw invalid(`Effect not found: ${targetId}`);
+  const effectStore = clip.keyframes.effects || (clip.keyframes.effects = {});
+  return { store: effectStore[targetId] || (effectStore[targetId] = {}), kind: "effect" };
+}
+
+function setKeyframe(timeline, op) {
+  const { clip } = resolveClip(timeline, op.trackId, op.clipId);
+  const targetId = String(op.payload.targetId || op.payload.effectId || "transform");
+  const param = String(op.payload.param || op.payload.parameter || "");
+  const frame = normalizeKeyframe(op.payload.keyframe || op.payload.frame || op.payload);
+  if (!param) throw invalid("setKeyframe requires param");
+  const { store } = keyframeTargetStore(clip, targetId);
+  const existing = Array.isArray(store[param]) ? store[param] : [];
+  const previous = clone(existing);
+  const next = op.payload.restore
+    ? normalizeKeyframes(op.payload.previous)
+    : existing
+      .filter((item) => Math.abs(Number(item.time) - frame.time) > 1e-9)
+      .concat(frame)
+      .sort((a, b) => a.time - b.time);
+  store[param] = next;
+  if (next.length === 0) delete store[param];
+  if (targetId !== "transform" && next.length === 0) delete clip.keyframes.effects[targetId];
+  if (targetId === "transform" && ["x", "y", "scale", "opacity", "rotation"].includes(param)) {
+    clip.transform = { ...(clip.transform || {}) };
+    clip.transform[param] = frame.value;
+  }
+  return {
+    op: TIMELINE_OPS.SET_KEYFRAME,
+    actor: op.actor,
+    timelineId: op.timelineId,
+    clipId: clip.id,
+    trackId: op.trackId,
+    targetId,
+    param,
+    payload: { targetId, param, keyframe: frame, previous, restore: true },
+  };
+}
+
+function removeKeyframe(timeline, op) {
+  const { clip } = resolveClip(timeline, op.trackId, op.clipId);
+  const targetId = String(op.payload.targetId || op.payload.effectId || "transform");
+  const param = String(op.payload.param || op.payload.parameter || "");
+  const time = Number(op.payload.time ?? op.payload.keyframe?.time);
+  if (!param || !Number.isFinite(time)) throw invalid("removeKeyframe requires param and time");
+  const { store } = keyframeTargetStore(clip, targetId);
+  const existing = Array.isArray(store[param]) ? store[param] : [];
+  const removedIndex = existing.findIndex((item) => Math.abs(Number(item.time) - time) <= 1e-9);
+  if (removedIndex < 0) throw invalid(`Keyframe not found at ${time}`);
+  const removed = clone(existing[removedIndex]);
+  const previous = clone(existing);
+  const next = existing.filter((_, index) => index !== removedIndex);
+  if (next.length) store[param] = next;
+  else delete store[param];
+  if (Object.keys(store).length === 0) delete clip.keyframes.effects[targetId];
+  if (targetId === "transform" && ["x", "y", "scale", "opacity", "rotation"].includes(param)) {
+    clip.transform = { ...(clip.transform || {}) };
+    clip.transform[param] = next.length ? next[next.length - 1].value : undefined;
+    if (clip.transform[param] === undefined) delete clip.transform[param];
+  }
+  return {
+    op: TIMELINE_OPS.SET_KEYFRAME,
+    actor: op.actor,
+    timelineId: op.timelineId,
+    clipId: clip.id,
+    trackId: op.trackId,
+    targetId,
+    param,
+    payload: { targetId, param, keyframe: removed, previous, restore: true },
   };
 }
 
@@ -887,7 +1039,7 @@ function buildClipFromPayload(payload) {
   const rawEnd = payload.end ?? payload.end_sec ?? (payload.duration_sec ?? payload.duration);
   const end = rawEnd == null ? start + 1 : numberOr(rawEnd, start + 1);
   if (!Number.isFinite(end) || end <= start) throw invalid("insertClip requires end greater than start");
-  return {
+  const clip = {
     id: payload.id || payload.clipId || newId("clp"),
     assetId: payload.assetId ?? payload.asset_id ?? "",
     start,
@@ -904,6 +1056,8 @@ function buildClipFromPayload(payload) {
     text: payload.text == null ? "" : String(payload.text),
     volume: numberOr(payload.volume, 1),
   };
+  if (payload.keyframes) clip.keyframes = normalizeClipKeyframes(payload.keyframes);
+  return clip;
 }
 
 function findTrack(timeline, trackId) {

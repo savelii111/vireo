@@ -3,7 +3,7 @@ import {
   Sparkles, Wand2, Move, Captions, Music2, Scissors, RotateCcw,
 } from 'lucide-react';
 import { formatSeconds } from '../utils/time';
-import type { Clip, Track } from '../types';
+import type { Clip, Keyframe, Track } from '../types';
 import clsx from 'clsx';
 import { thumbnailUrl, fallbackGradient } from '../hooks/useThumbnails';
 import { hasRealMediaPath } from '../timelinePlayback';
@@ -12,14 +12,17 @@ interface Props {
   clip: Clip | null;
   clipId?: string | null;
   track?: Track | null;
+  playhead?: number;
   onQuickAction: (action: string) => void;
   onAddEffect?: (effect: Record<string, unknown>) => void;
   onSetEffect?: (effect: Record<string, unknown>) => void;
+  onSetKeyframe?: (targetId: string, param: string, keyframe: Keyframe) => void;
+  onRemoveKeyframe?: (targetId: string, param: string, time: number) => void;
   onTransformChange?: (transform: Record<string, number>) => void;
   onVolumeChange?: (volume: number) => void;
 }
 
-type Tab = 'clip' | 'effect' | 'audio';
+type Tab = 'clip' | 'controls' | 'audio';
 
 interface ParamSliderProps {
   label: string;
@@ -82,13 +85,20 @@ function Property({ label, children }: { label: string; children: React.ReactNod
   );
 }
 
+function keyframeValueLabel(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.00$/, '');
+}
+
 export function Inspector({
   clip,
   clipId,
   track,
+  playhead,
   onQuickAction,
   onAddEffect,
   onSetEffect,
+  onSetKeyframe,
+  onRemoveKeyframe,
   onTransformChange,
   onVolumeChange,
 }: Props) {
@@ -103,6 +113,14 @@ export function Inspector({
     { id: 'sharpen', label: 'Sharpen' },
     { id: 'stabilize', label: 'Stabilize' },
   ];
+  const currentTime = playhead ?? 0;
+  const transformRotation = Number(clip?.transform?.rotation ?? 0);
+  const transformValue = (param: string, fallback: number) => {
+    const keyframes = clip?.keyframes?.transform?.[param] ?? [];
+    if (keyframes.length === 0) return fallback;
+    const previous = [...keyframes].filter((keyframe) => keyframe.time <= currentTime).sort((a, b) => b.time - a.time)[0];
+    return previous?.value ?? fallback;
+  };
 
   const source = clip?.source ?? 'upload';
   const transformX = Number(clip?.transform?.x ?? 0);
@@ -118,7 +136,7 @@ export function Inspector({
       {/* Clip info column */}
       <div className="p-3 px-4 border-r border-border-1">
         <div className="flex gap-0.5 mb-3">
-          {(['clip', 'effect', 'audio'] as const).map((t) => (
+          {(['clip', 'controls', 'audio'] as const).map((t) => (
             <button
               key={t}
               data-testid={`inspector-tab-${t}`}
@@ -130,7 +148,7 @@ export function Inspector({
                   : 'text-ink-3 hover:text-ink-2',
               )}
             >
-              {t}
+              {t === 'controls' ? 'controls' : t}
             </button>
           ))}
         </div>
@@ -164,7 +182,7 @@ export function Inspector({
 
       {/* Params column */}
       <div className="p-3 px-4 overflow-y-auto">
-        {tab === 'effect' ? (
+        {tab === 'controls' ? (
           <div className="space-y-3">
             <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Effects</div>
             {!clip ? (
@@ -243,6 +261,101 @@ export function Inspector({
                     </>
                   )}
                 </div>
+                <div className="border-t border-border-1 mt-3 pt-3" data-testid="effect-keyframes">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Keyframes at playhead</div>
+                    <div className="text-[10px] text-ink-4">{formatSeconds(currentTime)}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    {(['x', 'y', 'scale', 'opacity', 'rotation'] as const).map((param) => {
+                      const baseValue = Number(clip?.transform?.[param] ?? (param === 'scale' ? 1 : param === 'opacity' ? 1 : 0));
+                      const value = transformValue(param, baseValue);
+                      const keys = clip?.keyframes?.transform?.[param] ?? [];
+                      return (
+                        <div key={param} className="rounded-md bg-bg-2 p-2 text-[11px] text-ink-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="uppercase tracking-wider">{param}</span>
+                            <span className="font-mono">{keyframeValueLabel(value)}</span>
+                          </div>
+                          <div className="flex gap-1 mt-2">
+                            <button
+                              data-testid={`add-${param}-keyframe`}
+                              disabled={!clipId}
+                              onClick={() => onSetKeyframe?.('transform', param, { time: currentTime, value, interp: 'linear' })}
+                              className="flex-1 rounded bg-bg-3 px-2 py-1 text-[10px] text-ink-2 hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Add
+                            </button>
+                            <button
+                              data-testid={`remove-${param}-keyframe`}
+                              disabled={!clipId}
+                              onClick={() => onRemoveKeyframe?.('transform', param, currentTime)}
+                              className="flex-1 rounded bg-bg-3 px-2 py-1 text-[10px] text-ink-2 hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          <div className="text-[10px] text-ink-4 mt-1">{keys.length ? `${keys.length} keyframe${keys.length === 1 ? '' : 's'}` : 'No keyframes'}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                {effects.length > 0 && (
+                  <div className="border-t border-border-1 mt-3 pt-3" data-testid="effect-parameters">
+                    <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Effect parameters</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {effects.map((effect) => {
+                        const params = (effect.params ?? {}) as Record<string, unknown>;
+                        const effectId = String(effect.id ?? effect.type ?? 'effect');
+                        return Object.keys(params).map((param) => {
+                          const value = Number(params[param] ?? 0);
+                          const keys = clip?.keyframes?.effects?.[effectId]?.[param] ?? [];
+                          return (
+                            <div key={`${effectId}-${param}`} className="rounded-md bg-bg-2 p-2 text-[11px] text-ink-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="uppercase tracking-wider">{param}</span>
+                                <span className="font-mono">{keyframeValueLabel(value)}</span>
+                              </div>
+                              <div className="flex gap-1 mt-2">
+                                <button
+                                  data-testid={`add-${param}-keyframe`}
+                                  disabled={!clipId}
+                                  onClick={() => onSetKeyframe?.(effectId, param, { time: currentTime, value, interp: 'linear' })}
+                                  className="flex-1 rounded bg-bg-3 px-2 py-1 text-[10px] text-ink-2 hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Add
+                                </button>
+                                <button
+                                  data-testid={`remove-${param}-keyframe`}
+                                  disabled={!clipId}
+                                  onClick={() => onRemoveKeyframe?.(effectId, param, currentTime)}
+                                  className="flex-1 rounded bg-bg-3 px-2 py-1 text-[10px] text-ink-2 hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <div className="text-[10px] text-ink-4 mt-1">{keys.length ? `${keys.length} keyframe${keys.length === 1 ? '' : 's'}` : 'No keyframes'}</div>
+                            </div>
+                          );
+                        });
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="border-t border-border-1 mt-3 pt-3">
+                  <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Transform at playhead</div>
+                  <ParamSlider
+                    label="Rotation"
+                    value={Math.round(transformRotation)}
+                    min={-180}
+                    max={180}
+                    display={`${Math.round(transformRotation)}°`}
+                    disabled={transformDisabled}
+                    testId="inspector-transform-rotation"
+                    onChange={(rotation) => onTransformChange?.({ rotation })}
+                  />
+                </div>
               </>
             )}
           </div>
@@ -262,7 +375,7 @@ export function Inspector({
               <span data-testid="inspector-start-end">{clip ? `${formatSeconds(clip.start_sec)} — ${formatSeconds(clip.start_sec + clip.duration_sec)}` : '—'}</span>
             </Property>
             <Property label="Transform">
-              <span data-testid="inspector-transform">x={transformX}, y={transformY}, scale={transformScale}</span>
+              <span data-testid="inspector-transform">x={transformX}, y={transformY}, scale={transformScale}, rotation={Math.round(transformRotation)}</span>
             </Property>
             <Property label="Media mode">
               <span data-testid="inspector-media-mode">{clip && hasRealMediaPath(clip) ? 'real media' : 'placeholder card'}</span>

@@ -321,6 +321,7 @@ export default function App() {
                     clip={editor.selectedClip}
                     clipId={editor.selectedClipId}
                     track={selectedTrack}
+                    playhead={editor.playhead}
                     onQuickAction={(action) => {
                       if (action === 'split') editor.splitAtPlayhead();
                       if (action === 'undo') editor.undo();
@@ -329,6 +330,12 @@ export default function App() {
                     onSetEffect={(effect) => editor.setEffect(effect)}
                     onTransformChange={(transform) => {
                       if (editor.selectedClipId) editor.setTransform(editor.selectedClipId, transform);
+                    }}
+                    onSetKeyframe={(targetId, param, keyframe) => {
+                      if (editor.selectedClipId) editor.setKeyframe(editor.selectedClipId, targetId, param, keyframe);
+                    }}
+                    onRemoveKeyframe={(targetId, param, time) => {
+                      if (editor.selectedClipId) editor.removeKeyframe(editor.selectedClipId, targetId, param, time);
                     }}
                     onVolumeChange={(volume) => {
                       if (editor.selectedClipId) editor.setVolume(editor.selectedClipId, volume);

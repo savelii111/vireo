@@ -6,6 +6,7 @@ import { formatTimecode, formatShortTime } from '../utils/time';
 import type { PreviewTab, Clip } from '../types';
 import clsx from 'clsx';
 import { clipDuration, hasRealMediaPath, previewModeForClip, transformPosition } from '../timelinePlayback';
+import { evalParamAtTime } from '../../../../../packages/shared/index.js';
 
 interface Props {
   tab: PreviewTab;
@@ -29,14 +30,16 @@ function SourceBadge({ children }: { children: ReactNode }) {
   );
 }
 
-function transformStyle(clip: Clip) {
-  const x = Number(clip.transform?.x ?? 0);
-  const y = Number(clip.transform?.y ?? 0);
-  const scale = Math.max(0, Number(clip.transform?.scale ?? 1));
-  const opacity = Math.max(0, Math.min(1, Number(clip.transform?.opacity ?? 1)));
+function transformStyle(clip: Clip, playhead = 0) {
+  const transform = clip.transform || {};
+  const keyframes = clip.keyframes?.transform || {};
+  const x = evalParamAtTime(keyframes.x, playhead, Number(transform.x ?? 0));
+  const y = evalParamAtTime(keyframes.y, playhead, Number(transform.y ?? 0));
+  const scale = evalParamAtTime(keyframes.scale, playhead, Number(transform.scale ?? 1));
+  const opacity = evalParamAtTime(keyframes.opacity, playhead, Number(transform.opacity ?? 1));
   return {
-    transform: `translate(${Number.isFinite(x) ? x : 0}px, ${Number.isFinite(y) ? y : 0}px) scale(${Number.isFinite(scale) ? scale : 1})`,
-    opacity: Number.isFinite(opacity) ? opacity : 1,
+    transform: `translate(${Number.isFinite(x) ? x : 0}px, ${Number.isFinite(y) ? y : 0}px) scale(${Number.isFinite(scale) ? Math.max(0, scale) : 1})`,
+    opacity: Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1,
   };
 }
 
@@ -49,7 +52,7 @@ export function Preview({
   const activeMode = activeVideoClip ? previewModeForClip(activeVideoClip) : 'empty';
   const activeText = activeTextClips;
   const sourceLabel = activeVideoClip?.source ?? 'upload';
-  const videoTransform = activeVideoClip ? transformStyle(activeVideoClip) : {};
+  const videoTransform = activeVideoClip ? transformStyle(activeVideoClip, playhead) : {};
 
   return (
     <section className="flex flex-col bg-bg-0 border-b border-border-1 min-h-0">
@@ -145,7 +148,7 @@ export function Preview({
           ) : null}
 
           {activeText.map((clip) => {
-            const textTransform = transformStyle(clip);
+            const textTransform = transformStyle(clip, playhead);
             const position = transformPosition(clip);
             return (
               <div
