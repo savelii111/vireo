@@ -62,9 +62,11 @@ htmlcov/
 tests/results/
 tests/results/*.log
 tests/results/run-all-stash.mjs
+# Verification screenshots are disposable local artifacts.
+docs/*.png
 # Cached pytest benchmarks
 .benchmarks/
-# Test fixture temp dirs (populated at runtime, never source)
+
 tests/_artifacts/
 tests/fixtures/large/
 .cache/
