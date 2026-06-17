@@ -11,18 +11,18 @@
 
 ## Current Day
 
-Day 15 complete.
+Day 16 complete.
 
 ## What Changed
 
-- Finished Studio Effect Controls UI in the Inspector:
-  - added a `controls` tab with transform-at-playhead controls (`x`, `y`, `scale`, `opacity`, `rotation`);
-  - added transform keyframe add/remove controls for the current playhead;
-  - added effect-parameter keyframe add/remove controls for existing clip effects;
-  - wired Inspector props through `App.tsx` for `playhead`, `onSetKeyframe`, and `onRemoveKeyframe`.
-- Updated shared timeline/keyframe contracts and Studio backend tests so human/bot keyframes share one undoable timeline.
-- Fixed shared timeline round-trip coverage for forward ops through inverse ops, including `insertClip`.
-- Added frontend coverage for Inspector controls and keyframe behavior.
+- Finished Day 16 audio mixer without real decode/DSP:
+  - added shared `setTrackAudio` / `setClipAudio` op contract for gain, pan, fades, crossfade, ducking, metadata-only meters/waveform;
+  - added track `role` through `setTrackAudio` so deterministic ducking can mark `role: "voice"` through the op contract;
+  - reused existing `setKeyframe`/`evalParamAtTime` for volume keyframes via `targetId: "audio"`;
+  - wired frontend mixer/audio inspector controls, simulated meters/waveform badges, and timeline fade/ducking markers;
+  - added shared/backend/frontend tests for audio merge, inverse, deterministic ducking, human+bot path, and metadata-only visualization.
+- Updated shared timeline/keyframe contracts and Studio backend tests so human/bot audio state shares one undoable timeline.
+- Added frontend coverage for Inspector audio tab and simulated meters/waveform.
 
 ## Day 15 — Titles / Essential Graphics panel
 
@@ -33,11 +33,19 @@ Day 15 complete.
 - Added Studio backend coverage for human + bot title styling on one undoable timeline.
 - Added frontend coverage for Essential Graphics rendering only on text/title clips and title edits through the op-contract patch path.
 
+## Day 16 — Audio mixer + volume keyframes + ducking/fades
+
+- Added shared `setTrackAudio` / `setClipAudio` ops with field-level merge and inverse payloads.
+- Added `role` to audio sidechain metadata via `setTrackAudio` so ducking can be enabled with `role: "voice"` through the op contract.
+- Added deterministic ducking helpers and reused `targetId: "audio"` keyframes for volume automation.
+- Added frontend audio inspector controls, simulated meters/waveform badges, and timeline fade/ducking markers.
+- Added shared/backend/frontend tests for audio merge, inverse, deterministic ducking, human+bot path, and metadata-only visualization.
+
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 15 changes:
+`node tests/run-all.mjs` after Day 16 changes:
 
-- `TOTAL: 1334 passed, 0 failed across 27 suites`
+- `TOTAL: 1337 passed, 0 failed across 27 suites`
 
 Frontend checks:
 
@@ -46,4 +54,4 @@ Frontend checks:
 
 ## Next
 
-Day 15 ready for commit/push/zip.
+Day 16 ready for commit/push/zip.

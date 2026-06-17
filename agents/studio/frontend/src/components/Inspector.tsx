@@ -3,7 +3,7 @@ import {
   Sparkles, Wand2, Move, Captions, Music2, Scissors, RotateCcw,
 } from 'lucide-react';
 import { formatSeconds } from '../utils/time';
-import type { Clip, Keyframe, TitleProps, Track } from '../types';
+import type { Clip, Keyframe, TitleProps, Track, AudioTrack, AudioClip } from '../types';
 import clsx from 'clsx';
 import { thumbnailUrl, fallbackGradient } from '../hooks/useThumbnails';
 import { hasRealMediaPath } from '../timelinePlayback';
@@ -21,6 +21,8 @@ interface Props {
   onTransformChange?: (transform: Record<string, number>) => void;
   onTitlePropsChange?: (titleProps: Partial<TitleProps>) => void;
   onVolumeChange?: (volume: number) => void;
+  onTrackAudioChange?: (audio: Partial<AudioTrack>) => void;
+  onClipAudioChange?: (audio: Partial<AudioClip>) => void;
 }
 
 type Tab = 'clip' | 'controls' | 'audio';
@@ -103,6 +105,8 @@ export function Inspector({
   onTransformChange,
   onTitlePropsChange,
   onVolumeChange,
+  onTrackAudioChange,
+  onClipAudioChange,
 }: Props) {
   const [tab, setTab] = useState<Tab>('clip');
   const [effectKind, setEffectKind] = useState('colorGrade');
@@ -129,6 +133,12 @@ export function Inspector({
   const transformY = Number(clip?.transform?.y ?? 0);
   const transformScale = Number(clip?.transform?.scale ?? 1);
   const transformOpacity = Number(clip?.transform?.opacity ?? 1);
+  const trackAudio = track?.audio;
+  const clipAudio = clip?.audio;
+  const ducking = trackAudio?.ducking;
+  const meters = clipAudio?.meters ?? [];
+  const waveform = clipAudio?.waveform ?? [];
+  const audioMetadata = clipAudio?.metadata ?? { simulated_levels: true, real_decode: false };
   const volume = Number(clip?.volume ?? 1);
   const isTitleClip = clip?.source === 'text';
   const titleProps = isTitleClip ? (clip?.titleProps ?? {}) : {};
@@ -475,6 +485,140 @@ export function Inspector({
                 </div>
               </>
             )}
+          </div>
+        ) : tab === 'audio' ? (
+          <div className="space-y-3">
+            <div className="rounded-md border border-border-1 bg-bg-2 p-3 space-y-3">
+              <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Audio mixer</div>
+              <ParamSlider
+                label="Track gain"
+                value={Math.round(trackAudio?.gainDb ?? 0)}
+                min={-60}
+                max={12}
+                display={`${Math.round(trackAudio?.gainDb ?? 0)} dB`}
+                disabled={!clipId}
+                testId="inspector-track-gain"
+                onChange={(gainDb) => onTrackAudioChange?.({ gainDb })}
+              />
+              <ParamSlider
+                label="Track pan"
+                value={trackAudio?.pan ?? 0}
+                min={-1}
+                max={1}
+                step={0.01}
+                display={(trackAudio?.pan ?? 0).toFixed(2)}
+                disabled={!clipId}
+                testId="inspector-track-pan"
+                onChange={(pan) => onTrackAudioChange?.({ pan })}
+              />
+              <ParamSlider
+                label="Clip gain"
+                value={Math.round(clipAudio?.gainDb ?? 0)}
+                min={-60}
+                max={12}
+                display={`${Math.round(clipAudio?.gainDb ?? 0)} dB`}
+                disabled={!clipId}
+                testId="inspector-clip-gain"
+                onChange={(gainDb) => onClipAudioChange?.({ gainDb })}
+              />
+              <ParamSlider
+                label="Clip pan"
+                value={clipAudio?.pan ?? 0}
+                min={-1}
+                max={1}
+                step={0.01}
+                display={(clipAudio?.pan ?? 0).toFixed(2)}
+                disabled={!clipId}
+                testId="inspector-clip-pan"
+                onChange={(pan) => onClipAudioChange?.({ pan })}
+              />
+              <ParamSlider
+                label="Fade in"
+                value={clipAudio?.fadeIn ?? 0}
+                min={0}
+                max={10}
+                step={0.1}
+                display={`${(clipAudio?.fadeIn ?? 0).toFixed(1)}s`}
+                disabled={!clipId}
+                testId="inspector-fade-in"
+                onChange={(fadeIn) => onClipAudioChange?.({ fadeIn })}
+              />
+              <ParamSlider
+                label="Fade out"
+                value={clipAudio?.fadeOut ?? 0}
+                min={0}
+                max={10}
+                step={0.1}
+                display={`${(clipAudio?.fadeOut ?? 0).toFixed(1)}s`}
+                disabled={!clipId}
+                testId="inspector-fade-out"
+                onChange={(fadeOut) => onClipAudioChange?.({ fadeOut })}
+              />
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-ink-3">Ducking</span>
+                <button
+                  data-testid="inspector-ducking-toggle"
+                  onClick={() => onTrackAudioChange?.({
+                    ducking: {
+                      enabled: !(ducking?.enabled ?? false),
+                      amountDb: ducking?.amountDb ?? -12,
+                      thresholdDb: ducking?.thresholdDb ?? -30,
+                      attackSec: ducking?.attackSec ?? 0.02,
+                      releaseSec: ducking?.releaseSec ?? 0.2,
+                    },
+                  })}
+                  className={clsx('rounded px-2 py-1 text-[10px] font-semibold', ducking?.enabled ? 'bg-accent text-white' : 'bg-bg-3 text-ink-2')}
+                >
+                  {ducking?.enabled ? 'on' : 'off'}
+                </button>
+              </div>
+              <div data-testid="inspector-audio-metadata" className="text-[10px] text-ink-4">
+                metadata only · simulated_levels={String(audioMetadata.simulated_levels)} · real_decode={String(audioMetadata.real_decode)}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border-1 bg-bg-2 p-3 space-y-2">
+              <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Volume keyframes</div>
+              <div className="rounded bg-bg-1 p-2 text-[11px] text-ink-2">
+                {clip?.keyframes?.effects?.audio?.gain?.length ? (
+                  <ul className="space-y-1" data-testid="inspector-volume-keyframes">
+                    {clip.keyframes.effects.audio.gain.map((keyframe, index) => (
+                      <li key={`${keyframe.time}-${index}`} className="flex items-center justify-between">
+                        <span>{formatSeconds(keyframe.time)}</span><span>{keyframeValueLabel(keyframe.value)} dB</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div data-testid="inspector-no-volume-keyframes">No volume keyframes</div>
+                )}
+              </div>
+              <button
+                data-testid="inspector-add-volume-keyframe"
+                disabled={!clipId}
+                onClick={() => onSetKeyframe?.('audio', 'gain', { time: currentTime, value: clipAudio?.gainDb ?? 0, interp: 'linear' })}
+                className="w-full rounded bg-bg-3 px-2 py-1.5 text-[10px] text-ink-2 hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Add gain keyframe at playhead
+              </button>
+            </div>
+
+            <div className="rounded-md border border-border-1 bg-bg-2 p-3 space-y-2">
+              <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Meters / waveform</div>
+              <div className="h-12 rounded bg-bg-1 p-1" data-testid="inspector-meters">
+                {meters.length ? meters.map((meter, index) => (
+                  <div
+                    key={`${meter.time}-${index}`}
+                    className="inline-block w-2 bg-accent/70"
+                    style={{ height: `${Math.max(4, Math.min(100, ((meter.level + 60) / 60) * 100))}%`, marginLeft: index ? '4px' : 0 }}
+                  />
+                )) : <span className="text-[10px] text-ink-4">metadata only</span>}
+              </div>
+              <div className="h-12 rounded bg-bg-1 p-1 flex items-end gap-px" data-testid="inspector-waveform">
+                {waveform.length ? waveform.map((sample, index) => (
+                  <div key={index} className="w-1 bg-ink-3/50" style={{ height: `${Math.max(4, Math.min(100, Math.abs(sample) * 100))}%` }} />
+                )) : <span className="text-[10px] text-ink-4">metadata only</span>}
+              </div>
+            </div>
           </div>
         ) : (
           <>

@@ -6,6 +6,8 @@ import {
   applyTimelineOp,
   createEmptyTimelineDocument,
   createTimelineOp,
+  computeClipGainDb,
+  computeDuckingReductionDb,
   deserializeTimelineDocument,
   evalParamAtTime,
   normalizeTitleProps,
@@ -332,6 +334,57 @@ test("evalParamAtTime interpolates, holds, clamps, sorts and handles empty/one-k
   assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40, interp: "hold" }], 2), 0);
   assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40 }], 3), 30);
   assert.equal(evalParamAtTime([{ time: 0, value: 0 }, { time: 4, value: 40 }], 1, 10), 10);
+});
+
+test("audio ops merge gain/pan/fades/ducking, stay reversible, and keep volume keyframes in existing store", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  doc.tracks.push({ id: "trk_a2", kind: "audio", name: "Music", muted: false, locked: false, hidden: false, soloed: false, role: "music", audio: { gainDb: 0, pan: 0, fadeIn: 0, fadeOut: 0, crossfade: 0.25, ducking: { enabled: false, amountDb: -12, thresholdDb: -30, attackSec: 0.02, releaseSec: 0.2 }, metadata: { simulated_levels: true, real_decode: false } }, clips: [] });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_a1", payload: { id: "voice", assetId: "voice.wav", start: 1, end: 5, source: "upload" } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_a2", payload: { id: "music", assetId: "music.wav", start: 0, end: 8, source: "upload" } }));
+  doc.tracks.find((track) => track.id === "trk_a1").role = "voice";
+  doc.tracks.find((track) => track.id === "trk_a2").role = "music";
+
+  const humanTrack = createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_AUDIO, actor: "human", timelineId: doc.timelineId, trackId: "trk_a2", payload: { audio: { gainDb: -3, pan: -0.25 } } });
+  doc = applyTimelineOp(doc, humanTrack);
+  const humanClip = createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_AUDIO, actor: "human", timelineId: doc.timelineId, trackId: "trk_a2", clipId: "music", payload: { audio: { fadeIn: 1, fadeOut: 2, meters: [{ time: 0, level: -12, peak: -6 }], waveform: [-0.2, 0.4, -0.1] } } });
+  doc = applyTimelineOp(doc, humanClip);
+  const music = doc.tracks.find((track) => track.id === "trk_a2").clips.find((clip) => clip.id === "music");
+  assert.equal(music.audio.gainDb, 0);
+  assert.equal(music.audio.fadeIn, 1);
+  assert.deepEqual(music.audio.metadata, { simulated_levels: true, real_decode: false });
+
+  const botDuck = createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_AUDIO, actor: "bot", timelineId: doc.timelineId, trackId: "trk_a2", payload: { audio: { ducking: { enabled: true, amountDb: -10, thresholdDb: -30, attackSec: 0.1, releaseSec: 0.4 } } } });
+  const botDuckResult = applyTimelineOp(doc, botDuck);
+  doc = botDuckResult;
+  assert.equal(doc.version, 6);
+  assert.equal(doc.tracks.find((track) => track.id === "trk_a2").audio.ducking.enabled, true);
+  assert.equal(Math.round(computeDuckingReductionDb(doc, "trk_a2", 2) * 10) / 10, -10);
+  assert.equal(Math.round(computeClipGainDb(doc, music, 2) * 10) / 10, -13);
+  assert.equal(Math.round(computeDuckingReductionDb(doc, "trk_a2", 2) * 10) / 10, Math.round(computeDuckingReductionDb(doc, "trk_a2", 2) * 10) / 10);
+
+  const key = createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "human", timelineId: doc.timelineId, trackId: "trk_a2", clipId: "music", payload: { targetId: "audio", param: "gain", keyframe: { time: 0, value: 0 } } });
+  const keyResult = applyTimelineOp(doc, key);
+  doc = keyResult;
+  const key2 = createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "bot", timelineId: doc.timelineId, trackId: "trk_a2", clipId: "music", payload: { targetId: "audio", param: "gain", keyframe: { time: 4, value: -6 } } });
+  const key2Result = applyTimelineOp(doc, key2);
+  doc = key2Result;
+  const musicWithKeyframes = doc.tracks.find((track) => track.id === "trk_a2").clips.find((clip) => clip.id === "music");
+  assert.equal(Math.round(evalParamAtTime(musicWithKeyframes.keyframes.effects.audio.gain, 2) * 10) / 10, -3);
+
+  const restoredClip = applyTimelineOp(doc, key2Result.inverse);
+  assert.deepEqual(restoredClip.tracks.find((track) => track.id === "trk_a2").clips.find((clip) => clip.id === "music").keyframes.effects.audio.gain, [{ time: 0, value: 0, interp: "linear" }]);
+  const restoredTrack = applyTimelineOp(restoredClip, keyResult.inverse);
+  const withoutDuck = applyTimelineOp(restoredTrack, botDuckResult.inverse);
+  assert.equal(withoutDuck.tracks.find((track) => track.id === "trk_a2").audio.ducking.enabled, false);
+});
+
+test("setTrackAudio role is part of audio sidechain merge and inverse restores previous role", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  const roleOp = createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_AUDIO, actor: "bot", timelineId: doc.timelineId, trackId: "trk_a1", payload: { audio: { role: "voice" } } });
+  doc = applyTimelineOp(doc, roleOp);
+  assert.equal(doc.tracks.find((track) => track.id === "trk_a1").role, "voice");
+  const restored = applyTimelineOp(doc, doc.inverse);
+  assert.equal(restored.tracks.find((track) => track.id === "trk_a1").role, "other");
 });
 
 test("keyframe ops are reversible and preserve effect keyframes", () => {

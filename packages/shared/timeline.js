@@ -44,6 +44,8 @@ export const TIMELINE_OPS = Object.freeze({
   ADD_TEXT: "addText",
   SET_EFFECT: "setEffect",
   SET_TITLE_PROPS: "setTitleProps",
+  SET_TRACK_AUDIO: "setTrackAudio",
+  SET_CLIP_AUDIO: "setClipAudio",
   SET_TRANSFORM: "setTransform",
   SET_KEYFRAME: "setKeyframe",
   REMOVE_KEYFRAME: "removeKeyframe",
@@ -71,6 +73,8 @@ export const PUBLIC_TIMELINE_OPS = Object.freeze([
   TIMELINE_OPS.ADD_TEXT,
   TIMELINE_OPS.SET_EFFECT,
   TIMELINE_OPS.SET_TITLE_PROPS,
+  TIMELINE_OPS.SET_TRACK_AUDIO,
+  TIMELINE_OPS.SET_CLIP_AUDIO,
   TIMELINE_OPS.SET_TRANSFORM,
   TIMELINE_OPS.SET_KEYFRAME,
   TIMELINE_OPS.REMOVE_KEYFRAME,
@@ -149,8 +153,81 @@ export function normalizeTrack(track) {
     locked: Boolean(track.locked),
     hidden: Boolean(track.hidden),
     soloed: Boolean(track.soloed),
+    role: normalizeTrackRole(track.role),
+    audio: normalizeAudioTrack(track.audio),
     clips: Array.isArray(track.clips) ? track.clips.map(normalizeClip) : [],
   };
+}
+
+function normalizeTrackRole(value) {
+  const role = String(value || "other");
+  return ["voice", "music", "sfx", "ambience", "other"].includes(role) ? role : "other";
+}
+
+function clampDb(value, fallback, min = -60, max = 12) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+function clampPan(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : 0;
+}
+
+function clampDuration(value, fallback, max = 30) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : fallback;
+}
+
+export function normalizeAudioTrack(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  return {
+    role: normalizeTrackRole(raw.role),
+    gainDb: clampDb(raw.gainDb ?? raw.gain_db, 0),
+    pan: clampPan(raw.pan),
+    fadeIn: clampDuration(raw.fadeIn ?? raw.fade_in, 0),
+    fadeOut: clampDuration(raw.fadeOut ?? raw.fade_out, 0),
+    crossfade: clampDuration(raw.crossfade, 0.25),
+    ducking: normalizeAudioDucking(raw.ducking),
+    metadata: { simulated_levels: true, real_decode: false },
+  };
+}
+
+function normalizeAudioDucking(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  return {
+    enabled: Boolean(raw.enabled),
+    amountDb: Math.min(0, clampDb(raw.amountDb ?? raw.amount_db, -12, -60, 0)),
+    thresholdDb: Math.min(0, clampDb(raw.thresholdDb ?? raw.threshold_db, -30, -60, 0)),
+    attackSec: clampDuration(raw.attackSec ?? raw.attack_sec, 0.02, 5),
+    releaseSec: clampDuration(raw.releaseSec ?? raw.release_sec, 0.2, 10),
+  };
+}
+
+export function normalizeAudioClip(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  return {
+    gainDb: clampDb(raw.gainDb ?? raw.gain_db, 0),
+    pan: clampPan(raw.pan),
+    fadeIn: clampDuration(raw.fadeIn ?? raw.fade_in, 0),
+    fadeOut: clampDuration(raw.fadeOut ?? raw.fade_out, 0),
+    crossfade: clampDuration(raw.crossfade, 0.25),
+    meters: Array.isArray(raw.meters) ? raw.meters.map((item) => ({
+      time: Math.max(0, Number(item.time ?? item.time_sec ?? 0)),
+      level: clampDb(item.level ?? item.db, -60),
+      peak: clampDb(item.peak ?? item.peak_db, -60),
+    })) : [],
+    waveform: Array.isArray(raw.waveform) ? raw.waveform.map((item) => clampDb(item, 0)).slice(0, 240) : [],
+    metadata: { simulated_levels: true, real_decode: false },
+  };
+}
+
+function mergeAudioPatch(previous, patch, allowed) {
+  const next = { ...(previous || {}) };
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) next[key] = patch[key];
+  }
+  return next;
 }
 
 export function normalizeClip(clip) {
@@ -178,6 +255,7 @@ export function normalizeClip(clip) {
     muted: Boolean(clip.muted),
     text: clip.text == null ? "" : String(clip.text),
     titleProps: normalizeTitleProps(clip.titleProps),
+    audio: normalizeAudioClip(clip.audio),
   };
   if (hasKeyframes) normalized.keyframes = keyframes;
   return normalized;
@@ -391,6 +469,10 @@ function applyOpInternal(timeline, op) {
       return setEffect(timeline, op);
     case TIMELINE_OPS.SET_TITLE_PROPS:
       return setTitleProps(timeline, op);
+    case TIMELINE_OPS.SET_TRACK_AUDIO:
+      return setTrackAudio(timeline, op);
+    case TIMELINE_OPS.SET_CLIP_AUDIO:
+      return setClipAudio(timeline, op);
     case TIMELINE_OPS.SET_TRANSFORM:
       return setTransform(timeline, op);
     case TIMELINE_OPS.SET_KEYFRAME:
@@ -914,6 +996,10 @@ function setEffect(timeline, op) {
 function keyframeTargetStore(clip, targetId) {
   clip.keyframes = normalizeClipKeyframes(clip.keyframes);
   if (targetId === "transform") return { store: clip.keyframes.transform || (clip.keyframes.transform = {}), kind: "transform" };
+  if (targetId === "audio") {
+    const effects = clip.keyframes.effects || (clip.keyframes.effects = {});
+    return { store: effects.audio || (effects.audio = {}), kind: "audio" };
+  }
   const effect = clip.effects.find((item) => item.id === targetId);
   if (!effect) throw invalid(`Effect not found: ${targetId}`);
   const effectStore = clip.keyframes.effects || (clip.keyframes.effects = {});
@@ -997,6 +1083,44 @@ function setTitleProps(timeline, op) {
   return {
     ...op,
     payload: { titleProps: previous },
+  };
+}
+
+function setTrackAudio(timeline, op) {
+  const track = findTrack(timeline, op.trackId);
+  if (!op.payload || typeof op.payload.audio !== "object") throw invalid("setTrackAudio requires payload.audio");
+  const previous = {
+    role: track.role || "other",
+    audio: clone(track.audio || normalizeAudioTrack({})),
+  };
+  const audioPayload = op.payload.audio;
+  const hasMixFields = ["gainDb", "gain_db", "pan", "fadeIn", "fade_in", "fadeOut", "fade_out", "crossfade", "ducking"].some((key) => key in audioPayload);
+  if (hasMixFields && track.kind !== TIMELINE_KINDS.AUDIO) throw invalid("setTrackAudio only applies to audio tracks");
+  track.role = normalizeTrackRole(audioPayload.role ?? previous.role);
+  if (hasMixFields) {
+    track.audio = normalizeAudioTrack({ ...previous.audio, ...audioPayload });
+  }
+  return {
+    ...op,
+    payload: {
+      audio: {
+        role: previous.role,
+        ...previous.audio,
+      },
+    },
+  };
+}
+
+function setClipAudio(timeline, op) {
+  const { track, clip } = resolveClip(timeline, op.trackId, op.clipId);
+  if (track.kind !== TIMELINE_KINDS.AUDIO) throw invalid("setClipAudio only applies to audio clips");
+  if (!op.payload || typeof op.payload.audio !== "object") throw invalid("setClipAudio requires payload.audio");
+  const previous = clone(clip.audio || normalizeAudioClip({}));
+  const next = normalizeAudioClip({ ...previous, ...op.payload.audio });
+  clip.audio = next;
+  return {
+    ...op,
+    payload: { audio: previous },
   };
 }
 
@@ -1106,10 +1230,65 @@ function buildClipFromPayload(payload) {
     muted: Boolean(payload.muted),
     text: payload.text == null ? "" : String(payload.text),
     titleProps: normalizeTitleProps(payload.titleProps),
+    audio: normalizeAudioClip(payload.audio),
     volume: numberOr(payload.volume, 1),
   };
   if (payload.keyframes) clip.keyframes = normalizeClipKeyframes(payload.keyframes);
   return clip;
+}
+
+function activeClipAtTime(clip, t) {
+  return Number.isFinite(t) && clipStart(clip) <= t && t < clipEnd(clip);
+}
+
+function voiceLevelDb(clip, t) {
+  if (!activeClipAtTime(clip, t)) return -Infinity;
+  const clipAudio = clip.audio || normalizeAudioClip({});
+  const gain = clampDb(clipAudio.gainDb, 0);
+  const keyframes = clip.keyframes?.effects?.audio?.gain ?? [];
+  const keyframeGain = evalParamAtTime(keyframes, t, 0);
+  return gain + keyframeGain;
+}
+
+function duckingEnvelope(trackAudio, t, voiceClip) {
+  const amount = Math.min(0, Number(trackAudio.amountDb ?? -12));
+  const attack = Math.max(0, Number(trackAudio.attackSec ?? 0.02));
+  const release = Math.max(0, Number(trackAudio.releaseSec ?? 0.2));
+  const start = clipStart(voiceClip);
+  const end = clipEnd(voiceClip);
+  if (attack > 0 && t >= start && t < start + attack) return amount * ((t - start) / attack);
+  if (release > 0 && t > end - release && t < end) return amount * ((end - t) / release);
+  return amount;
+}
+
+export function computeDuckingReductionDb(timeline, trackId, t) {
+  const track = findTrack(timeline, trackId);
+  const audio = track.audio || normalizeAudioTrack({});
+  const ducking = audio.ducking || {};
+  if (!ducking.enabled) return 0;
+  const threshold = Number(ducking.thresholdDb ?? -30);
+  let reduction = 0;
+  for (const voiceTrack of timeline.tracks) {
+    if (voiceTrack.id === track.id || (voiceTrack.role !== "voice" && !/voice/i.test(String(voiceTrack.name || "")))) continue;
+    if (voiceTrack.muted) continue;
+    for (const voiceClip of voiceTrack.clips) {
+      const level = voiceLevelDb(voiceClip, t);
+      if (level >= threshold) {
+        reduction = Math.min(reduction, duckingEnvelope(ducking, t, voiceClip));
+      }
+    }
+  }
+  return reduction;
+}
+
+export function computeClipGainDb(timeline, clip, t) {
+  const track = timeline.tracks.find((item) => item.clips.some((itemClip) => itemClip.id === clip.id));
+  const clipAudio = clip.audio || normalizeAudioClip({});
+  const trackAudio = track?.audio || normalizeAudioTrack({});
+  const keyframes = clip.keyframes?.effects?.audio?.gain ?? [];
+  const keyframeGain = evalParamAtTime(keyframes, t, 0);
+  const ducking = track && track.id && track.kind === TIMELINE_KINDS.AUDIO ? computeDuckingReductionDb(timeline, track.id, t) : 0;
+  return clipAudio.gainDb + trackAudio.gainDb + keyframeGain + ducking;
 }
 
 function findTrack(timeline, trackId) {

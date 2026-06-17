@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   TIMELINE_OPS,
   applyOp,
+  computeClipGainDb,
+  computeDuckingReductionDb,
   createEmptyTimelineDocument,
   evalParamAtTime,
   normalizeTimelineDocument,
@@ -140,6 +142,65 @@ test("applyOp round-trips every forward op through its inverse without mutating 
     assert.deepEqual(original, before, "applyOp must not mutate the input document");
     const restored = applyOp(result.doc, result.inverse).doc;
     assert.deepEqual(restored, before, `round-trip failed for ${forward.op}`);
+  }
+});
+
+test("studio human/bot audio ops merge, undo stepwise, and compute deterministic ducking", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day16_audio")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Day16 Audio" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+    const apply = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        actor: "human",
+        ops: [
+          op(TIMELINE_OPS.INSERT_CLIP, { id: "voice", assetId: asset.asset.id, start: 4, end: 8 }, { trackId: "trk_t1" }),
+          op(TIMELINE_OPS.INSERT_CLIP, { id: "music", assetId: asset.asset.id, start: 0, end: 8 }, { trackId: "trk_a1" }),
+          op(TIMELINE_OPS.SET_TRACK_FLAG, { muted: false }, { trackId: "trk_t1" }),
+          op(TIMELINE_OPS.SET_TRACK_AUDIO, { audio: { gainDb: -2 } }, { trackId: "trk_a1" }),
+          op(TIMELINE_OPS.SET_CLIP_AUDIO, { audio: { gainDb: -4, fadeIn: 1, fadeOut: 1 } }, { trackId: "trk_a1", clipId: "music" }),
+          op(TIMELINE_OPS.SET_KEYFRAME, { targetId: "audio", param: "gain", keyframe: { time: 0, value: 0, interp: "linear" } }, { trackId: "trk_a1", clipId: "music" }),
+        ],
+      }),
+    });
+    assert.equal(apply.status, 200);
+    const applied = await json(apply);
+    applied.doc.tracks.find((track) => track.id === "trk_t1").role = "voice";
+    applied.doc.tracks.find((track) => track.id === "trk_a1").role = "music";
+
+    const bot = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: applied.version,
+        actor: "bot",
+        ops: [
+          op(TIMELINE_OPS.SET_TRACK_AUDIO, { audio: { role: "voice" } }, { trackId: "trk_t1" }),
+          op(TIMELINE_OPS.SET_TRACK_AUDIO, { audio: { ducking: { enabled: true, amountDb: -9, thresholdDb: -30, attackSec: 0.1, releaseSec: 0.4 } } }, { trackId: "trk_a1" }),
+        ],
+      }),
+    });
+    assert.equal(bot.status, 200);
+    const botApplied = await json(bot);
+    const music = botApplied.doc.tracks.find((track) => track.id === "trk_a1").clips.find((clip) => clip.id === "music");
+    assert.equal(botApplied.version, applied.version + 2);
+    assert.equal(Math.round(computeDuckingReductionDb(botApplied.doc, "trk_a1", 5) * 10) / 10, -9);
+    assert.equal(Math.round(computeClipGainDb(botApplied.doc, music, 5) * 10) / 10, -15);
+
+    const undo = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undo.status, 200);
+    const undone = await json(undo);
+    assert.equal(undone.doc.tracks.find((track) => track.id === "trk_a1").audio.ducking.enabled, false);
+  } finally {
+    await close();
   }
 });
 

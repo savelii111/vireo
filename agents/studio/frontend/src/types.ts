@@ -2,6 +2,42 @@
 
 export type TrackKind = 'video' | 'audio' | 'overlay';
 export type TimelineTrackKind = 'video' | 'audio' | 'text' | 'overlay';
+export type TrackRole = 'voice' | 'music' | 'sfx' | 'ambience' | 'other';
+export interface AudioDucking {
+  enabled: boolean;
+  amountDb: number;
+  thresholdDb: number;
+  attackSec: number;
+  releaseSec: number;
+}
+export interface AudioMetadata {
+  simulated_levels: true;
+  real_decode: false;
+}
+export interface AudioTrack {
+  gainDb: number;
+  pan: number;
+  fadeIn: number;
+  fadeOut: number;
+  crossfade: number;
+  ducking: AudioDucking;
+  metadata: AudioMetadata;
+}
+export interface AudioMeter {
+  time: number;
+  level: number;
+  peak: number;
+}
+export interface AudioClip {
+  gainDb: number;
+  pan: number;
+  fadeIn: number;
+  fadeOut: number;
+  crossfade: number;
+  meters?: AudioMeter[];
+  waveform?: number[];
+  metadata: AudioMetadata;
+}
 export type TimelineClipSource = 'upload' | 'higgsfield' | 'higgsfield_simulated' | 'stock' | 'generated' | 'text' | 'placeholder';
 export type TimelineOpName =
   | 'insertClip'
@@ -15,6 +51,8 @@ export type TimelineOpName =
   | 'addText'
   | 'setEffect'
   | 'setTitleProps'
+  | 'setTrackAudio'
+  | 'setClipAudio'
   | 'setTransform'
   | 'setKeyframe'
   | 'removeKeyframe'
@@ -68,6 +106,8 @@ export interface Track {
   id: string;
   kind: TrackKind;
   name: string;
+  role?: TrackRole;
+  audio?: AudioTrack;
   clips: Clip[];
   locked?: boolean;
   muted?: boolean;
@@ -91,6 +131,7 @@ export interface Clip {
   transform?: Record<string, unknown>;
   keyframes?: ClipKeyframes;
   volume?: number;
+  audio?: AudioClip;
   text?: string;
   titleProps?: Partial<TitleProps>;
 }
@@ -121,6 +162,7 @@ export interface TimelineClip {
   in: number;
   out: number;
   volume?: number;
+  audio?: AudioClip;
   transform?: Record<string, unknown>;
   effects?: Array<Record<string, unknown>>;
   keyframes?: ClipKeyframes;
@@ -137,6 +179,8 @@ export interface TimelineTrack {
   id: string;
   kind: TimelineTrackKind;
   name: string;
+  role?: TrackRole;
+  audio?: AudioTrack;
   muted: boolean;
   soloed?: boolean;
   locked: boolean;

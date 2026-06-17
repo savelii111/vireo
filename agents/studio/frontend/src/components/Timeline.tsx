@@ -437,6 +437,12 @@ export function Timeline({
               >
                 <Icon size={12} strokeWidth={1.6} className="flex-shrink-0" />
                 <span className="truncate flex-1">{t.name}</span>
+                {t.kind === 'audio' && (
+                  <span className="text-[9px] text-ink-3" data-testid={`timeline-track-gain-${t.id}`}>{Math.round(t.audio?.gainDb ?? 0)}dB</span>
+                )}
+                {t.kind === 'audio' && t.role && (
+                  <span className="text-[9px] text-ink-4 uppercase" data-testid={`timeline-track-role-${t.id}`}>{t.role}</span>
+                )}
                 {/* Track controls */}
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                   {t.kind === 'audio' && (
@@ -573,6 +579,10 @@ export function Timeline({
                         className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-white/20 rounded-l"
                       />
                       <span className="truncate text-[9px] drop-shadow-sm pointer-events-none">{clip.label}</span>
+                      {(clip.audio?.fadeIn ?? 0) > 0 && <span className="ml-1 text-[8px] opacity-80">fade in</span>}
+                      {(clip.audio?.fadeOut ?? 0) > 0 && <span className="ml-1 text-[8px] opacity-80">fade out</span>}
+                      {track.kind === 'audio' && track.audio?.ducking?.enabled && <span className="ml-1 text-[8px] opacity-80">duck</span>}
+                      <span className="ml-auto text-[8px] opacity-70">metadata only</span>
                       <div
                         onPointerDown={(e) => { e.stopPropagation(); startDrag(e, clip, 'resize-r'); }}
                         className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-white/20 rounded-r"

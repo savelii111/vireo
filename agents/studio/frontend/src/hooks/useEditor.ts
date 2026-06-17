@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool, TitleProps } from '../types';
+import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool, TitleProps, AudioClip, AudioTrack } from '../types';
 import {
   applyTimelineOperation,
   createEmptyProjectState,
@@ -192,6 +192,41 @@ function createSetTrackFlagOp(doc: import('../types').TimelineDocument, trackId:
     timelineId: doc.timelineId,
     trackId,
     payload: { [flag]: value },
+  });
+}
+
+function createSetTrackAudioOpFromDoc(doc: import('../types').TimelineDocument, trackId: string, audio: Partial<AudioTrack>) {
+  const track = doc.tracks.find((item) => item.id === trackId);
+  if (!track || track.kind !== 'audio') return null;
+  const patch: Record<string, unknown> = {};
+  for (const key of ['gainDb', 'pan', 'fadeIn', 'fadeOut', 'crossfade', 'ducking'] as const) {
+    if (Object.prototype.hasOwnProperty.call(audio, key) && audio[key] !== undefined) patch[key] = audio[key];
+  }
+  if (Object.keys(patch).length === 0) return null;
+  return makeTimelineOp({
+    op: 'setTrackAudio',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId,
+    payload: { audio: patch },
+  });
+}
+
+function createSetClipAudioOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, audio: Partial<AudioClip>) {
+  const located = findClipInDoc(doc, clipId);
+  if (!located || located.track.kind !== 'audio') return null;
+  const patch: Record<string, unknown> = {};
+  for (const key of ['gainDb', 'pan', 'fadeIn', 'fadeOut', 'crossfade', 'meters', 'waveform'] as const) {
+    if (Object.prototype.hasOwnProperty.call(audio, key) && audio[key] !== undefined) patch[key] = audio[key];
+  }
+  if (Object.keys(patch).length === 0) return null;
+  return makeTimelineOp({
+    op: 'setClipAudio',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: located.track.id,
+    clipId,
+    payload: { audio: patch },
   });
 }
 
@@ -473,7 +508,7 @@ function rebaseOp(doc: import('../types').TimelineDocument, op: import('../types
     };
   }
 
-  if (op.op === 'setTransform' || op.op === 'setTitleProps' || op.op === 'setVolume' || op.op === 'setKeyframe' || op.op === 'removeKeyframe') {
+  if (op.op === 'setTransform' || op.op === 'setTitleProps' || op.op === 'setTrackAudio' || op.op === 'setClipAudio' || op.op === 'setVolume' || op.op === 'setKeyframe' || op.op === 'removeKeyframe') {
     if (!track || !clip) return null;
     return {
       ...op,
@@ -887,6 +922,18 @@ export function useEditor() {
     commitOp(createSetVolumeOpFromDoc(current.doc, clipId, volume));
   }, [commitOp]);
 
+  const setTrackAudio = useCallback((trackId: string, audio: Partial<AudioTrack>) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createSetTrackAudioOpFromDoc(current.doc, trackId, audio));
+  }, [commitOp]);
+
+  const setClipAudio = useCallback((clipId: string, audio: Partial<AudioClip>) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createSetClipAudioOpFromDoc(current.doc, clipId, audio));
+  }, [commitOp]);
+
   const undo = useCallback(async () => {
     const projectId = serverRef.current?.doc.projectId || getActiveProjectId();
     if (!projectId) return;
@@ -942,6 +989,8 @@ export function useEditor() {
     setKeyframe,
     removeKeyframe,
     setVolume,
+    setTrackAudio,
+    setClipAudio,
     splitAtPlayhead,
     deleteSelected,
     duplicateSelected,

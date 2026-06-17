@@ -343,6 +343,12 @@ export default function App() {
                     onVolumeChange={(volume) => {
                       if (editor.selectedClipId) editor.setVolume(editor.selectedClipId, volume);
                     }}
+                    onTrackAudioChange={(audio) => {
+                      if (selectedTrack) editor.setTrackAudio(selectedTrack.id, audio);
+                    }}
+                    onClipAudioChange={(audio) => {
+                      if (editor.selectedClipId) editor.setClipAudio(editor.selectedClipId, audio);
+                    }}
                   />
                 </Suspense>
               ) : (

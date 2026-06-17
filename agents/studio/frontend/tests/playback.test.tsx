@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Inspector } from '../src/components/Inspector';
 import { Preview } from '../src/components/Preview';
-import type { Clip, ProjectState, Track } from '../src/types';
+import type { Clip, Keyframe, ProjectState, Track, AudioTrack, AudioClip } from '../src/types';
 import { TIMELINE_OPS, createTimelineOp } from '../../../../packages/shared/index.js';
 import {
   activeClipAtTrack,

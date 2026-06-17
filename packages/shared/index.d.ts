@@ -1,5 +1,47 @@
 export function snapTime(candidateTime: number, anchors?: number[], thresholdPx?: number, pxPerSec?: number): number;
 export function clipsOverlap(a: unknown, b: unknown): boolean;
+export type TrackRole = 'voice' | 'music' | 'sfx' | 'ambience' | 'other';
+export interface AudioDucking {
+  enabled: boolean;
+  amountDb: number;
+  thresholdDb: number;
+  attackSec: number;
+  releaseSec: number;
+}
+export interface AudioMetadata {
+  simulated_levels: true;
+  real_decode: false;
+}
+export interface AudioTrack {
+  role?: TrackRole;
+  gainDb: number;
+  pan: number;
+  fadeIn: number;
+  fadeOut: number;
+  crossfade: number;
+  ducking: AudioDucking;
+  metadata: AudioMetadata;
+}
+export interface AudioMeter {
+  time: number;
+  level: number;
+  peak: number;
+}
+export interface AudioClip {
+  gainDb: number;
+  pan: number;
+  fadeIn: number;
+  fadeOut: number;
+  crossfade: number;
+  meters: AudioMeter[];
+  waveform: number[];
+  metadata: AudioMetadata;
+}
+export function normalizeTrackRole(value: unknown): TrackRole;
+export function normalizeAudioTrack(value: unknown): AudioTrack;
+export function normalizeAudioClip(value: unknown): AudioClip;
+export function computeDuckingReductionDb(timeline: unknown, trackId: string, t: number): number;
+export function computeClipGainDb(timeline: unknown, clip: unknown, t: number): number;
 export type KeyframeInterpolation = 'linear' | 'hold';
 export type TitleAlign = 'left' | 'center' | 'right';
 export interface TitleProps {
@@ -24,6 +66,8 @@ export interface TimelineOps {
   readonly ADD_TEXT: 'addText';
   readonly SET_EFFECT: 'setEffect';
   readonly SET_TITLE_PROPS: 'setTitleProps';
+  readonly SET_TRACK_AUDIO: 'setTrackAudio';
+  readonly SET_CLIP_AUDIO: 'setClipAudio';
   readonly SET_TRANSFORM: 'setTransform';
   readonly SET_KEYFRAME: 'setKeyframe';
   readonly REMOVE_KEYFRAME: 'removeKeyframe';
