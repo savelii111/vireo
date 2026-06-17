@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Inspector } from '../src/components/Inspector';
 import { Preview } from '../src/components/Preview';
 import type { Clip, ProjectState, Track } from '../src/types';
+import { TIMELINE_OPS, createTimelineOp } from '../../../../packages/shared/index.js';
 import {
   activeClipAtTrack,
   activeClipsAt,
@@ -72,6 +73,7 @@ function project(): ProjectState {
             label: 'Title',
             text: 'Hello Vireo',
             transform: { x: 120, y: 80 },
+            titleProps: { text: 'Hello Vireo', fontFamily: 'Inter', fontSize: 44, color: '#ffffff', align: 'center' },
             kind: 'overlay',
           },
         ],
@@ -209,6 +211,9 @@ describe('Day 9 preview and inspector components', () => {
     expect(overlay?.textContent).toBe('Hello Vireo');
     expect(overlay?.style.left).toBe('120px');
     expect(overlay?.style.top).toBe('80px');
+    expect(overlay?.style.fontFamily).toBe('Inter');
+    expect(overlay?.style.fontSize).toBe('44px');
+    expect(overlay?.style.color).toBe('rgb(255, 255, 255)');
   });
 
   it('Inspector shows track/start/end/asset/source/transform/effects from the selected clip', () => {
@@ -248,6 +253,118 @@ describe('Day 9 preview and inspector components', () => {
       effectTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="clip-effect"]')?.textContent).toContain('blur');
+  });
+
+
+  it('Inspector renders Essential Graphics only for selected text titles', () => {
+    const videoClip: Clip = {
+      id: 'sim',
+      track_id: 'v1',
+      source_file: '',
+      start_sec: 2,
+      duration_sec: 4,
+      in_sec: 1,
+      source: 'higgsfield_simulated',
+      label: 'Simulated B-roll',
+      kind: 'video',
+      transform: { x: 12, y: 34 },
+      effects: [],
+    };
+    const videoTrack: Track = { id: 'v1', kind: 'video', name: 'Video 1', muted: false, locked: false, clips: [videoClip] };
+
+    act(() => {
+      root.render(<Inspector clip={videoClip} clipId="sim" track={videoTrack} onQuickAction={() => {}} />);
+    });
+    const videoControls = container.querySelector('[data-testid="inspector-tab-controls"]');
+    act(() => videoControls?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('[data-testid="essential-graphics-panel"]')).toBeNull();
+
+    const textClip: Clip = {
+      id: 'txt',
+      track_id: 't1',
+      source_file: '',
+      start_sec: 2,
+      duration_sec: 4,
+      in_sec: 0,
+      source: 'text',
+      label: 'Title',
+      text: 'Hello Vireo',
+      kind: 'overlay',
+      transform: { x: 120, y: 80 },
+      titleProps: { text: 'Hello Vireo', fontFamily: 'Inter', fontSize: 44, color: '#ffffff', align: 'center' },
+    };
+    const textTrack: Track = { id: 't1', kind: 'overlay', name: 'Text 1', muted: false, locked: false, clips: [textClip] };
+    act(() => {
+      root.render(<Inspector clip={textClip} clipId="txt" track={textTrack} onQuickAction={() => {}} />);
+    });
+    const textControls = container.querySelector('[data-testid="inspector-tab-controls"]');
+    act(() => textControls?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('[data-testid="essential-graphics-panel"]')).toBeTruthy();
+  });
+
+  it('Inspector title edits call editor with title-props patch compatible with op contract', async () => {
+    const textClip: Clip = {
+      id: 'txt',
+      track_id: 't1',
+      source_file: '',
+      start_sec: 2,
+      duration_sec: 4,
+      in_sec: 0,
+      source: 'text',
+      label: 'Title',
+      text: 'Hello Vireo',
+      kind: 'overlay',
+      transform: { x: 120, y: 80 },
+      titleProps: { text: 'Hello Vireo', fontFamily: 'Inter', fontSize: 44, color: '#ffffff', align: 'center' },
+    };
+    const textTrack: Track = { id: 't1', kind: 'overlay', name: 'Text 1', muted: false, locked: false, clips: [textClip] };
+    const onTitlePropsChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <Inspector
+          clip={textClip}
+          clipId="txt"
+          track={textTrack}
+          onQuickAction={() => {}}
+          onTitlePropsChange={onTitlePropsChange}
+        />,
+      );
+    });
+    const controls = container.querySelector('[data-testid="inspector-tab-controls"]');
+    act(() => controls?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    const textInput = container.querySelector('[data-testid="title-text"]') as HTMLInputElement;
+    const fontSize = container.querySelector('[data-testid="title-font-size"]') as HTMLInputElement;
+    const color = container.querySelector('[data-testid="title-color"]') as HTMLInputElement;
+    expect(textInput).toBeTruthy();
+    expect(fontSize).toBeTruthy();
+    expect(color).toBeTruthy();
+    await act(async () => {
+      Object.defineProperty(textInput, 'value', { value: 'Hello Vireo Updated', configurable: true, writable: true });
+      textInput.dispatchEvent(new Event('change', { bubbles: true }));
+      textInput.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.defineProperty(fontSize, 'value', { value: '56', configurable: true, writable: true });
+      fontSize.dispatchEvent(new Event('change', { bubbles: true }));
+      fontSize.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.defineProperty(color, 'value', { value: '#123456', configurable: true, writable: true });
+      color.dispatchEvent(new Event('change', { bubbles: true }));
+      color.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    expect(onTitlePropsChange).toHaveBeenCalledWith({ text: 'Hello Vireo Updated' });
+    expect(onTitlePropsChange).toHaveBeenCalledWith({ fontSize: 56 });
+    expect(onTitlePropsChange).toHaveBeenCalledWith({ color: '#123456' });
+    const contractOp = createTimelineOp({
+      op: TIMELINE_OPS.SET_TITLE_PROPS,
+      actor: 'human',
+      timelineId: 'tl_test',
+      trackId: 't1',
+      clipId: 'txt',
+      payload: { titleProps: { text: 'Hello Vireo Updated', fontSize: 56, color: '#123456' } },
+    });
+    expect(contractOp.op).toBe(TIMELINE_OPS.SET_TITLE_PROPS);
+    expect(contractOp.payload).toEqual({ titleProps: { text: 'Hello Vireo Updated', fontSize: 56, color: '#123456' } });
   });
 
   it('renders Preview transform from keyframes at the playhead', () => {

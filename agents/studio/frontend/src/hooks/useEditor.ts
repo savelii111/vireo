@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool } from '../types';
+import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool, TitleProps } from '../types';
 import {
   applyTimelineOperation,
   createEmptyProjectState,
@@ -238,7 +238,7 @@ function createTransitionOpFromDoc(doc: import('../types').TimelineDocument, fro
   });
 }
 
-function createTextOpFromDoc(doc: import('../types').TimelineDocument, text: string, startSec: number, durationSec: number, position: { x: number; y: number }) {
+function createTextOpFromDoc(doc: import('../types').TimelineDocument, text: string, startSec: number, durationSec: number, position: { x: number; y: number }, titleProps?: Partial<TitleProps>) {
   const track = findTextTrack(doc);
   if (!track) return null;
   const start = Math.max(0, Number(startSec) || 0);
@@ -256,6 +256,7 @@ function createTextOpFromDoc(doc: import('../types').TimelineDocument, text: str
     source: 'text',
     name: text || 'Text',
     text: text || '',
+    titleProps: titleProps ? { ...titleProps, text: text || titleProps.text || '' } : { text: text || '', fontFamily: 'Inter', fontSize: 44, color: '#ffffff', align: 'center' },
   };
   return makeTimelineOp({
     op: 'addText',
@@ -269,6 +270,7 @@ function createTextOpFromDoc(doc: import('../types').TimelineDocument, text: str
       in: 0,
       out: duration,
       clip,
+      titleProps: clip.titleProps,
     },
   });
 }
@@ -333,6 +335,29 @@ function createSetTransformOpFromDoc(doc: import('../types').TimelineDocument, c
     trackId: located.track.id,
     clipId,
     payload: { transform: patch },
+  });
+}
+
+function createSetTitlePropsOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, titleProps: Partial<TitleProps>) {
+  const located = findClipInDoc(doc, clipId);
+  if (!located) return null;
+  const patch: Partial<TitleProps> = {};
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'text') && titleProps.text !== undefined) patch.text = titleProps.text;
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'fontFamily') && titleProps.fontFamily !== undefined) patch.fontFamily = titleProps.fontFamily;
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'fontSize') && titleProps.fontSize !== undefined) patch.fontSize = titleProps.fontSize;
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'color') && titleProps.color !== undefined) patch.color = titleProps.color;
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'align') && titleProps.align !== undefined) patch.align = titleProps.align;
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'backgroundColor') && titleProps.backgroundColor !== undefined) patch.backgroundColor = titleProps.backgroundColor;
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'strokeColor') && titleProps.strokeColor !== undefined) patch.strokeColor = titleProps.strokeColor;
+  if (Object.prototype.hasOwnProperty.call(titleProps, 'strokeWidth') && titleProps.strokeWidth !== undefined) patch.strokeWidth = titleProps.strokeWidth;
+  if (Object.keys(patch).length === 0) return null;
+  return makeTimelineOp({
+    op: 'setTitleProps',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: located.track.id,
+    clipId,
+    payload: { titleProps: patch },
   });
 }
 
@@ -448,7 +473,7 @@ function rebaseOp(doc: import('../types').TimelineDocument, op: import('../types
     };
   }
 
-  if (op.op === 'setTransform' || op.op === 'setVolume' || op.op === 'setKeyframe' || op.op === 'removeKeyframe') {
+  if (op.op === 'setTransform' || op.op === 'setTitleProps' || op.op === 'setVolume' || op.op === 'setKeyframe' || op.op === 'removeKeyframe') {
     if (!track || !clip) return null;
     return {
       ...op,
@@ -838,6 +863,12 @@ export function useEditor() {
     commitOp(createSetTransformOpFromDoc(current.doc, clipId, transform));
   }, [commitOp]);
 
+  const setTitleProps = useCallback((clipId: string, titleProps: Partial<TitleProps>) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createSetTitlePropsOpFromDoc(current.doc, clipId, titleProps));
+  }, [commitOp]);
+
   const setKeyframe = useCallback((clipId: string, targetId: string, param: string, keyframe: Keyframe) => {
     const current = serverRef.current;
     if (!current) return;
@@ -907,6 +938,7 @@ export function useEditor() {
     addEffect,
     setEffect,
     setTransform,
+    setTitleProps,
     setKeyframe,
     removeKeyframe,
     setVolume,

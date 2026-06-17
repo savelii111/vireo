@@ -5,6 +5,7 @@ import {
   applyOp,
   createEmptyTimelineDocument,
   evalParamAtTime,
+  normalizeTimelineDocument,
   validateTimelineDocument,
 } from "../../../packages/shared/index.js";
 import { buildServer } from "../src/server.js";
@@ -108,7 +109,7 @@ function baseDoc() {
     muted: false,
   });
   validateTimelineDocument(doc);
-  return doc;
+  return normalizeTimelineDocument(doc);
 }
 
 async function json(res) {
@@ -550,6 +551,81 @@ test("studio human and bot asset inserts share one undoable timeline", async () 
     const undone = await json(undo);
     assert.equal(undone.version, 4);
     assert.deepEqual(undone.doc.tracks[0].clips.map((clip) => clip.id), ["human_clip"]);
+  } finally {
+    await close();
+  }
+});
+
+
+test("studio human and bot title props share one undoable timeline", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day15_title_props")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Day15 Title Props" }) })).json();
+    const projectId = project.project.id;
+
+    const add = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        actor: "human",
+        ops: [op(TIMELINE_OPS.ADD_TEXT, { id: "title_day15", text: "Launch", start: 1, end: 4, titleProps: { fontFamily: "Inter", fontSize: 44, color: "#ffffff", align: "center" } }, { trackId: "trk_t1" })],
+      }),
+    });
+    assert.equal(add.status, 200);
+    const added = await json(add);
+    assert.equal(added.version, 2);
+    let clip = added.doc.tracks.find((track) => track.id === "trk_t1").clips.find((item) => item.id === "title_day15");
+    assert.equal(clip.source, "text");
+    assert.equal(clip.titleProps.color, "#ffffff");
+
+    const humanStyle = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: added.version,
+        actor: "human",
+        ops: [op(TIMELINE_OPS.SET_TITLE_PROPS, { titleProps: { text: "Launch now", fontFamily: "Arial", color: "#123456" } }, { trackId: "trk_t1", clipId: "title_day15" })],
+      }),
+    });
+    assert.equal(humanStyle.status, 200);
+    const humanApplied = await json(humanStyle);
+    assert.equal(humanApplied.version, 3);
+    clip = humanApplied.doc.tracks.find((track) => track.id === "trk_t1").clips.find((item) => item.id === "title_day15");
+    assert.deepEqual(clip.titleProps, { text: "Launch now", fontFamily: "Arial", fontSize: 44, color: "#123456", align: "center", backgroundColor: "", strokeColor: "", strokeWidth: 0 });
+
+    const botStyle = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: humanApplied.version,
+        actor: "bot",
+        ops: [op(TIMELINE_OPS.SET_TITLE_PROPS, { titleProps: { align: "right", fontSize: 64 } }, { trackId: "trk_t1", clipId: "title_day15" })],
+      }),
+    });
+    assert.equal(botStyle.status, 200);
+    const botApplied = await json(botStyle);
+    assert.equal(botApplied.version, 4);
+    clip = botApplied.doc.tracks.find((track) => track.id === "trk_t1").clips.find((item) => item.id === "title_day15");
+    assert.deepEqual(clip.titleProps, { text: "Launch now", fontFamily: "Arial", fontSize: 64, color: "#123456", align: "right", backgroundColor: "", strokeColor: "", strokeWidth: 0 });
+
+    const undoBot = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoBot.status, 200);
+    const undoneBot = await json(undoBot);
+    assert.equal(undoneBot.version, 5);
+    clip = undoneBot.doc.tracks.find((track) => track.id === "trk_t1").clips.find((item) => item.id === "title_day15");
+    assert.deepEqual(clip.titleProps, { text: "Launch now", fontFamily: "Arial", fontSize: 44, color: "#123456", align: "center", backgroundColor: "", strokeColor: "", strokeWidth: 0 });
+
+    const undoHuman = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoHuman.status, 200);
+    const undoneHuman = await json(undoHuman);
+    assert.equal(undoneHuman.version, 6);
+    clip = undoneHuman.doc.tracks.find((track) => track.id === "trk_t1").clips.find((item) => item.id === "title_day15");
+    assert.deepEqual(clip.titleProps, { fontFamily: "Inter", fontSize: 44, color: "#ffffff", align: "center", text: "Launch", backgroundColor: "", strokeColor: "", strokeWidth: 0 });
   } finally {
     await close();
   }

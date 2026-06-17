@@ -8,6 +8,7 @@ import {
   createTimelineOp,
   deserializeTimelineDocument,
   evalParamAtTime,
+  normalizeTitleProps,
   serializeTimelineDocument,
   snapTime,
 } from "../packages/shared/index.js";
@@ -188,6 +189,130 @@ test("shared timeline transition/effect/text ops apply and inverse back out", ()
   assert.equal(withSetEffect.tracks[0].clips[0].effects[0].type, "blur");
   const restoredEffect = applyTimelineOp(withSetEffect, withSetEffect.inverse);
   assert.equal(restoredEffect.tracks[0].clips[0].effects[0].type, "colorGrade");
+});
+
+
+test("setTitleProps edits only title style fields and is reversible", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  const addText = createTimelineOp({
+    op: TIMELINE_OPS.ADD_TEXT,
+    actor: "human",
+    timelineId: doc.timelineId,
+    trackId: "trk_t1",
+    payload: {
+      id: "title_one",
+      text: "Hello",
+      start: 0,
+      end: 3,
+      in: 0,
+      out: 3,
+      transform: { x: 120, y: 80 },
+      titleProps: { fontFamily: "Inter", fontSize: 44, color: "#ffffff", align: "center" },
+    },
+  });
+  doc = applyTimelineOp(doc, addText);
+  const title = doc.tracks.find((track) => track.id === "trk_t1").clips.find((clip) => clip.id === "title_one");
+  assert.deepEqual(title.titleProps, { fontFamily: "Inter", fontSize: 44, color: "#ffffff", align: "center", text: "Hello", backgroundColor: "", strokeColor: "", strokeWidth: 0 });
+  assert.deepEqual(title.transform, { x: 120, y: 80 });
+
+  const setProps = createTimelineOp({
+    op: TIMELINE_OPS.SET_TITLE_PROPS,
+    actor: "human",
+    timelineId: doc.timelineId,
+    trackId: "trk_t1",
+    clipId: "title_one",
+    payload: { titleProps: { color: "#123456", fontSize: 56 } },
+  });
+  doc = applyTimelineOp(doc, setProps);
+  const styled = doc.tracks.find((track) => track.id === "trk_t1").clips.find((clip) => clip.id === "title_one");
+  assert.deepEqual(styled.titleProps, {
+    text: "Hello",
+    fontFamily: "Inter",
+    fontSize: 56,
+    color: "#123456",
+    align: "center",
+    backgroundColor: "",
+    strokeColor: "",
+    strokeWidth: 0,
+  });
+  assert.deepEqual(styled.transform, { x: 120, y: 80 });
+  assert.equal(styled.text, "Hello");
+
+  const restored = applyTimelineOp(doc, doc.inverse);
+  const restoredTitle = restored.tracks.find((track) => track.id === "trk_t1").clips.find((clip) => clip.id === "title_one");
+  assert.deepEqual(restoredTitle.titleProps, { fontFamily: "Inter", fontSize: 44, color: "#ffffff", align: "center", text: "Hello", backgroundColor: "", strokeColor: "", strokeWidth: 0 });
+  assert.deepEqual(restoredTitle.transform, { x: 120, y: 80 });
+});
+
+test("setTitleProps rejects non-text clips and normalizes title props", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  const insert = createTimelineOp({
+    op: TIMELINE_OPS.INSERT_CLIP,
+    actor: "human",
+    timelineId: doc.timelineId,
+    trackId: "trk_v1",
+    payload: { id: "video_one", assetId: "hero.mp4", start: 0, end: 5, source: "upload" },
+  });
+  doc = applyTimelineOp(doc, insert);
+  assert.throws(() => applyTimelineOp(doc, createTimelineOp({
+    op: TIMELINE_OPS.SET_TITLE_PROPS,
+    actor: "human",
+    timelineId: doc.timelineId,
+    trackId: "trk_v1",
+    clipId: "video_one",
+    payload: { titleProps: { color: "#123456" } },
+  })), { code: "timeline_op_invalid" });
+
+  assert.deepEqual(normalizeTitleProps(undefined), {
+    text: "",
+    fontFamily: "Inter",
+    fontSize: 44,
+    color: "#ffffff",
+    align: "center",
+    backgroundColor: "",
+    strokeColor: "",
+    strokeWidth: 0,
+  });
+  assert.deepEqual(normalizeTitleProps({
+    text: "Title",
+    fontFamily: "Arial",
+    fontSize: 999,
+    color: "not-a-color",
+    backgroundColor: "#abc",
+    strokeColor: "#112233",
+    strokeWidth: -5,
+    align: "middle",
+    unknown: "ignored",
+  }), {
+    text: "Title",
+    fontFamily: "Arial",
+    fontSize: 240,
+    color: "#ffffff",
+    align: "center",
+    backgroundColor: "#abc",
+    strokeColor: "#112233",
+    strokeWidth: 0,
+  });
+});
+
+test("normalizeTitleProps preserves valid compact colors and zero numeric fields", () => {
+  assert.deepEqual(normalizeTitleProps({
+    fontSize: 0,
+    strokeWidth: 0,
+    color: "#abc",
+    backgroundColor: "",
+    strokeColor: "",
+    unknown: "ignored",
+  }), {
+    text: "",
+    fontFamily: "Inter",
+    fontSize: 8,
+    color: "#abc",
+    align: "center",
+    backgroundColor: "",
+    strokeColor: "",
+    strokeWidth: 0,
+  });
 });
 
 test("snapTime snaps to anchors only inside pixel threshold", () => {

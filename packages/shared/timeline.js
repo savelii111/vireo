@@ -43,6 +43,7 @@ export const TIMELINE_OPS = Object.freeze({
   ADD_EFFECT: "addEffect",
   ADD_TEXT: "addText",
   SET_EFFECT: "setEffect",
+  SET_TITLE_PROPS: "setTitleProps",
   SET_TRANSFORM: "setTransform",
   SET_KEYFRAME: "setKeyframe",
   REMOVE_KEYFRAME: "removeKeyframe",
@@ -69,6 +70,7 @@ export const PUBLIC_TIMELINE_OPS = Object.freeze([
   TIMELINE_OPS.ADD_EFFECT,
   TIMELINE_OPS.ADD_TEXT,
   TIMELINE_OPS.SET_EFFECT,
+  TIMELINE_OPS.SET_TITLE_PROPS,
   TIMELINE_OPS.SET_TRANSFORM,
   TIMELINE_OPS.SET_KEYFRAME,
   TIMELINE_OPS.REMOVE_KEYFRAME,
@@ -175,9 +177,39 @@ export function normalizeClip(clip) {
     locked: Boolean(clip.locked),
     muted: Boolean(clip.muted),
     text: clip.text == null ? "" : String(clip.text),
+    titleProps: normalizeTitleProps(clip.titleProps),
   };
   if (hasKeyframes) normalized.keyframes = keyframes;
   return normalized;
+}
+
+export function normalizeTitleProps(value) {
+  const validHexColor = (candidate) => /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(candidate || "").trim());
+  if (!value || typeof value !== "object") {
+    return {
+      text: "",
+      fontFamily: "Inter",
+      fontSize: 44,
+      color: "#ffffff",
+      align: "center",
+      backgroundColor: "",
+      strokeColor: "",
+      strokeWidth: 0,
+    };
+  }
+
+  const fontSize = Number(value.fontSize ?? value.size ?? 44);
+  const strokeWidth = Number(value.strokeWidth ?? 0);
+  return {
+    text: value.text == null ? "" : String(value.text),
+    fontFamily: String(value.fontFamily || value.font || "Inter"),
+    fontSize: Number.isFinite(fontSize) ? Math.max(8, Math.min(240, fontSize)) : 44,
+    color: validHexColor(value.color) ? String(value.color).trim() : "#ffffff",
+    align: ["left", "center", "right"].includes(String(value.align || "center")) ? String(value.align || "center") : "center",
+    backgroundColor: value.backgroundColor == null ? "" : validHexColor(value.backgroundColor) ? String(value.backgroundColor).trim() : "",
+    strokeColor: value.strokeColor == null ? "" : validHexColor(value.strokeColor) ? String(value.strokeColor).trim() : "",
+    strokeWidth: Number.isFinite(strokeWidth) ? Math.max(0, Math.min(12, strokeWidth)) : 0,
+  };
 }
 
 export function normalizeKeyframe(value) {
@@ -357,6 +389,8 @@ function applyOpInternal(timeline, op) {
       return addText(timeline, op);
     case TIMELINE_OPS.SET_EFFECT:
       return setEffect(timeline, op);
+    case TIMELINE_OPS.SET_TITLE_PROPS:
+      return setTitleProps(timeline, op);
     case TIMELINE_OPS.SET_TRANSFORM:
       return setTransform(timeline, op);
     case TIMELINE_OPS.SET_KEYFRAME:
@@ -825,6 +859,10 @@ function addText(timeline, op) {
     source: "text",
     name: op.payload.text || "Text clip",
     text: op.payload.text || "",
+    titleProps: normalizeTitleProps({
+      ...op.payload.titleProps,
+      text: op.payload.text ?? op.payload.titleProps?.text,
+    }),
   };
   const clip = normalizeClip(rawClip);
   if (clip.end <= clip.start) throw invalid(`Text clip ${clip.id} end must be greater than start`);
@@ -949,6 +987,19 @@ function removeKeyframe(timeline, op) {
   };
 }
 
+function setTitleProps(timeline, op) {
+  const { clip } = resolveClip(timeline, op.trackId, op.clipId);
+  if (!op.payload || typeof op.payload.titleProps !== "object") throw invalid("setTitleProps requires payload.titleProps");
+  if (clip.source !== "text") throw invalid("setTitleProps only applies to text clips");
+  const previous = clone(clip.titleProps || normalizeTitleProps({}));
+  const next = normalizeTitleProps({ ...previous, ...op.payload.titleProps });
+  clip.titleProps = next;
+  return {
+    ...op,
+    payload: { titleProps: previous },
+  };
+}
+
 function setTransform(timeline, op) {
   const { clip } = resolveClip(timeline, op.trackId, op.clipId);
   if (!op.payload || typeof op.payload.transform !== "object") throw invalid("setTransform requires payload.transform");
@@ -1054,6 +1105,7 @@ function buildClipFromPayload(payload) {
     locked: Boolean(payload.locked),
     muted: Boolean(payload.muted),
     text: payload.text == null ? "" : String(payload.text),
+    titleProps: normalizeTitleProps(payload.titleProps),
     volume: numberOr(payload.volume, 1),
   };
   if (payload.keyframes) clip.keyframes = normalizeClipKeyframes(payload.keyframes);

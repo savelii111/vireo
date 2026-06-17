@@ -3,7 +3,7 @@ import {
   Sparkles, Wand2, Move, Captions, Music2, Scissors, RotateCcw,
 } from 'lucide-react';
 import { formatSeconds } from '../utils/time';
-import type { Clip, Keyframe, Track } from '../types';
+import type { Clip, Keyframe, TitleProps, Track } from '../types';
 import clsx from 'clsx';
 import { thumbnailUrl, fallbackGradient } from '../hooks/useThumbnails';
 import { hasRealMediaPath } from '../timelinePlayback';
@@ -19,6 +19,7 @@ interface Props {
   onSetKeyframe?: (targetId: string, param: string, keyframe: Keyframe) => void;
   onRemoveKeyframe?: (targetId: string, param: string, time: number) => void;
   onTransformChange?: (transform: Record<string, number>) => void;
+  onTitlePropsChange?: (titleProps: Partial<TitleProps>) => void;
   onVolumeChange?: (volume: number) => void;
 }
 
@@ -100,6 +101,7 @@ export function Inspector({
   onSetKeyframe,
   onRemoveKeyframe,
   onTransformChange,
+  onTitlePropsChange,
   onVolumeChange,
 }: Props) {
   const [tab, setTab] = useState<Tab>('clip');
@@ -128,6 +130,9 @@ export function Inspector({
   const transformScale = Number(clip?.transform?.scale ?? 1);
   const transformOpacity = Number(clip?.transform?.opacity ?? 1);
   const volume = Number(clip?.volume ?? 1);
+  const isTitleClip = clip?.source === 'text';
+  const titleProps = isTitleClip ? (clip?.titleProps ?? {}) : {};
+  const titleDisabled = !clipId || !isTitleClip;
   const transformDisabled = !clipId;
   const volumeDisabled = !clipId;
 
@@ -184,6 +189,118 @@ export function Inspector({
       <div className="p-3 px-4 overflow-y-auto">
         {tab === 'controls' ? (
           <div className="space-y-3">
+            {isTitleClip ? (
+              <div className="rounded-md border border-border-1 bg-bg-2 p-3 space-y-3" data-testid="essential-graphics-panel">
+                <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Essential Graphics</div>
+                <label className="grid gap-1 text-[11px] text-ink-3">
+                  Text
+                  <input
+                    data-testid="title-text"
+                    value={titleProps.text ?? ''}
+                    disabled={titleDisabled}
+                    onChange={(e) => onTitlePropsChange?.({ text: e.target.value })}
+                    className="rounded-md bg-bg-1 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="grid gap-1 text-[11px] text-ink-3">
+                    Font
+                    <select
+                      data-testid="title-font-family"
+                      value={titleProps.fontFamily ?? 'Inter'}
+                      disabled={titleDisabled}
+                      onChange={(e) => onTitlePropsChange?.({ fontFamily: e.target.value })}
+                      className="rounded-md bg-bg-1 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New'].map((font) => (
+                        <option key={font} value={font}>{font}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-[11px] text-ink-3">
+                    Align
+                    <select
+                      data-testid="title-align"
+                      value={titleProps.align ?? 'center'}
+                      disabled={titleDisabled}
+                      onChange={(e) => onTitlePropsChange?.({ align: e.target.value as TitleProps['align'] })}
+                      className="rounded-md bg-bg-1 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="left">Left</option>
+                      <option value="center">Center</option>
+                      <option value="right">Right</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="grid gap-1 text-[11px] text-ink-3">
+                    Size
+                    <input
+                      data-testid="title-font-size"
+                      type="number"
+                      min={8}
+                      max={240}
+                      value={Number(titleProps.fontSize ?? 44)}
+                      disabled={titleDisabled}
+                      onChange={(e) => onTitlePropsChange?.({ fontSize: Number(e.target.value) })}
+                      className="rounded-md bg-bg-1 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-[11px] text-ink-3">
+                    Text color
+                    <input
+                      data-testid="title-color"
+                      type="color"
+                      value={titleProps.color ?? '#ffffff'}
+                      disabled={titleDisabled}
+                      onChange={(e) => onTitlePropsChange?.({ color: e.target.value })}
+                      className="h-9 rounded-md bg-bg-1 border border-border-1 px-1 py-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-[11px] text-ink-3">
+                    Stroke
+                    <input
+                      data-testid="title-stroke-width"
+                      type="number"
+                      min={0}
+                      max={12}
+                      value={Number(titleProps.strokeWidth ?? 0)}
+                      disabled={titleDisabled}
+                      onChange={(e) => onTitlePropsChange?.({ strokeWidth: Number(e.target.value) })}
+                      className="rounded-md bg-bg-1 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="grid gap-1 text-[11px] text-ink-3">
+                    Background
+                    <input
+                      data-testid="title-background-color"
+                      type="color"
+                      value={titleProps.backgroundColor || '#000000'}
+                      disabled={titleDisabled}
+                      onChange={(e) => onTitlePropsChange?.({ backgroundColor: e.target.value })}
+                      className="h-9 rounded-md bg-bg-1 border border-border-1 px-1 py-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-[11px] text-ink-3">
+                    Stroke color
+                    <input
+                      data-testid="title-stroke-color"
+                      type="color"
+                      value={titleProps.strokeColor || '#000000'}
+                      disabled={titleDisabled}
+                      onChange={(e) => onTitlePropsChange?.({ strokeColor: e.target.value })}
+                      className="h-9 rounded-md bg-bg-1 border border-border-1 px-1 py-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-border-1 bg-bg-2 p-3 text-[12px] text-ink-3">
+                Select a text title to edit Essential Graphics properties.
+              </div>
+            )}
             <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Effects</div>
             {!clip ? (
               <div className="text-[12px] text-ink-3">Select a clip to manage effects</div>

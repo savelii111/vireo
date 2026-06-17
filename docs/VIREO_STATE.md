@@ -11,7 +11,7 @@
 
 ## Current Day
 
-Day 14 complete.
+Day 15 complete.
 
 ## What Changed
 
@@ -24,17 +24,26 @@ Day 14 complete.
 - Fixed shared timeline round-trip coverage for forward ops through inverse ops, including `insertClip`.
 - Added frontend coverage for Inspector controls and keyframe behavior.
 
+## Day 15 — Titles / Essential Graphics panel
+
+- Extended Day 10 text clips with shared `setTitleProps` title styling (`text`, `fontFamily`, `fontSize`, `color`, `align`, background/stroke fields).
+- Reused Day 14 transform keyframes for title position/opacity/scale animation; title styling stays field-based through the op contract.
+- Carried `titleProps` through frontend `timelineContract.ts`, `useEditor.ts`, `Inspector.tsx`, and `Preview.tsx`.
+- Added shared tests for reversible field-level `setTitleProps`, non-text clip rejection, and `normalizeTitleProps`.
+- Added Studio backend coverage for human + bot title styling on one undoable timeline.
+- Added frontend coverage for Essential Graphics rendering only on text/title clips and title edits through the op-contract patch path.
+
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 14 changes:
+`node tests/run-all.mjs` after Day 15 changes:
 
-- `TOTAL: 1330 passed, 0 failed across 27 suites`
+- `TOTAL: 1334 passed, 0 failed across 27 suites`
 
 Frontend checks:
 
 - `npm run typecheck` → `exit 0`
-- `npm test` → `25 passed` (MediaPanel, useEditor insertAsset/keyframes, Timeline asset drop, playback)
+- `npm test` → `27 passed` (MediaPanel, useEditor insertAsset/keyframes, Timeline asset drop, playback)
 
 ## Next
 
-Day 14 ready for commit/push/zip.
+Day 15 ready for commit/push/zip.

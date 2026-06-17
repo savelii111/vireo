@@ -14,6 +14,7 @@ export type TimelineOpName =
   | 'addEffect'
   | 'addText'
   | 'setEffect'
+  | 'setTitleProps'
   | 'setTransform'
   | 'setKeyframe'
   | 'removeKeyframe'
@@ -28,6 +29,16 @@ export interface Keyframe {
   time: number;
   value: number;
   interp?: KeyframeInterpolation;
+}
+export interface TitleProps {
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  align: 'left' | 'center' | 'right';
+  backgroundColor?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
 }
 export interface ClipKeyframes {
   transform?: Record<string, Keyframe[]>;
@@ -81,6 +92,7 @@ export interface Clip {
   keyframes?: ClipKeyframes;
   volume?: number;
   text?: string;
+  titleProps?: Partial<TitleProps>;
 }
 
 export type ProjectState = {
@@ -115,6 +127,7 @@ export interface TimelineClip {
   source: TimelineClipSource;
   name?: string;
   text?: string;
+  titleProps?: Partial<TitleProps>;
   selected?: boolean;
   locked?: boolean;
   muted?: boolean;

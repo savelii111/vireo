@@ -160,8 +160,18 @@ export function Preview({
                   ...textTransform,
                   left: `${position.x}px`,
                   top: `${position.y}px`,
-                  fontSize: 'clamp(18px, 4vw, 44px)',
+                  fontFamily: clip.titleProps?.fontFamily || 'Inter',
+                  fontSize: `${Math.max(8, Number(clip.titleProps?.fontSize ?? 44))}px`,
+                  color: clip.titleProps?.color || '#ffffff',
+                  textAlign: clip.titleProps?.align || 'center',
                   fontWeight: 700,
+                  lineHeight: 1.05,
+                  padding: clip.titleProps?.backgroundColor ? '0.18em 0.32em' : '0',
+                  borderRadius: clip.titleProps?.backgroundColor ? '0.25em' : '0',
+                  backgroundColor: clip.titleProps?.backgroundColor || 'transparent',
+                  WebkitTextStroke: Number(clip.titleProps?.strokeWidth ?? 0) > 0
+                    ? `${Math.max(0, Number(clip.titleProps?.strokeWidth || 0))}px ${clip.titleProps?.strokeColor || '#000000'}`
+                    : undefined,
                 }}
               >
                 {clip.text || clip.label || clip.source_file}

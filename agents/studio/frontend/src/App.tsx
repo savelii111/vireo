@@ -331,6 +331,9 @@ export default function App() {
                     onTransformChange={(transform) => {
                       if (editor.selectedClipId) editor.setTransform(editor.selectedClipId, transform);
                     }}
+                    onTitlePropsChange={(titleProps) => {
+                      if (editor.selectedClipId) editor.setTitleProps(editor.selectedClipId, titleProps);
+                    }}
                     onSetKeyframe={(targetId, param, keyframe) => {
                       if (editor.selectedClipId) editor.setKeyframe(editor.selectedClipId, targetId, param, keyframe);
                     }}

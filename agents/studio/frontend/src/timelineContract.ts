@@ -49,6 +49,7 @@ export function timelineToProject(doc: TimelineDocument, name = 'Untitled projec
           keyframes: clip.keyframes,
           volume: clip.volume,
           text: clip.text,
+          titleProps: clip.titleProps,
           thumbnail_color: clip.source === 'generated' || clip.source === 'higgsfield'
             ? 'linear-gradient(135deg, #8b5cf6, #ec4899)'
             : clip.source === 'stock'
@@ -102,6 +103,7 @@ export function projectToTimelineDocument(
         volume: clip.volume,
         effects: clip.effects,
         selected: Boolean(clip.selected),
+        titleProps: clip.titleProps,
       })),
     })),
     markers: project.markers,
