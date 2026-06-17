@@ -20,6 +20,7 @@ function numberOr(value, fallback) {
 
 export const TIMELINE_KINDS = Object.freeze({
   VIDEO: "video",
+  IMAGE: "image",
   AUDIO: "audio",
   TEXT: "text",
   OVERLAY: "overlay",
@@ -46,6 +47,7 @@ export const TIMELINE_OPS = Object.freeze({
   SET_TITLE_PROPS: "setTitleProps",
   SET_TRACK_AUDIO: "setTrackAudio",
   SET_CLIP_AUDIO: "setClipAudio",
+  SET_CLIP_COLOR: "setClipColor",
   SET_TRANSFORM: "setTransform",
   SET_KEYFRAME: "setKeyframe",
   REMOVE_KEYFRAME: "removeKeyframe",
@@ -75,6 +77,7 @@ export const PUBLIC_TIMELINE_OPS = Object.freeze([
   TIMELINE_OPS.SET_TITLE_PROPS,
   TIMELINE_OPS.SET_TRACK_AUDIO,
   TIMELINE_OPS.SET_CLIP_AUDIO,
+  TIMELINE_OPS.SET_CLIP_COLOR,
   TIMELINE_OPS.SET_TRANSFORM,
   TIMELINE_OPS.SET_KEYFRAME,
   TIMELINE_OPS.REMOVE_KEYFRAME,
@@ -241,6 +244,7 @@ export function normalizeClip(clip) {
     || Object.values(keyframes.effects || {}).some((params) => Object.values(params || {}).some((frames) => frames.length > 0));
   const normalized = {
     id: String(clip.id || newId("clp")),
+    kind: clip.kind || TIMELINE_KINDS.VIDEO,
     assetId: String(clip.assetId ?? clip.asset_id ?? clip.source_file ?? ""),
     start,
     end: Number.isFinite(end) && end > start ? end : start + 1,
@@ -255,6 +259,7 @@ export function normalizeClip(clip) {
     muted: Boolean(clip.muted),
     text: clip.text == null ? "" : String(clip.text),
     titleProps: normalizeTitleProps(clip.titleProps),
+    color: normalizeColorGrade(clip.color),
     audio: normalizeAudioClip(clip.audio),
   };
   if (hasKeyframes) normalized.keyframes = keyframes;
@@ -287,6 +292,124 @@ export function normalizeTitleProps(value) {
     backgroundColor: value.backgroundColor == null ? "" : validHexColor(value.backgroundColor) ? String(value.backgroundColor).trim() : "",
     strokeColor: value.strokeColor == null ? "" : validHexColor(value.strokeColor) ? String(value.strokeColor).trim() : "",
     strokeWidth: Number.isFinite(strokeWidth) ? Math.max(0, Math.min(12, strokeWidth)) : 0,
+  };
+}
+
+const BASIC_COLOR_PARAMS = ["temperature", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "saturation", "vibrance"];
+
+function clampRange(value, fallback, min, max) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+function normalizeHexOrNull(value) {
+  if (value == null || value === "") return null;
+  const text = String(value).trim();
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(text) ? text.toLowerCase() : null;
+}
+
+function normalizeCurvePoints(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((point) => {
+      const raw = point && typeof point === "object" ? point : { x: point, y: point };
+      const x = clampRange(raw.x, 0, 0, 1);
+      const y = clampRange(raw.y, 0, 0, 1);
+      return { x, y };
+    })
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+}
+
+function normalizeWheel(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  return {
+    r: clampRange(raw.r ?? raw.red, 0, -1, 1),
+    g: clampRange(raw.g ?? raw.green, 0, -1, 1),
+    b: clampRange(raw.b ?? raw.blue, 0, -1, 1),
+  };
+}
+
+export function normalizeColorGrade(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const basicRaw = raw.basic || raw.basicCorrection || {};
+  const creativeRaw = raw.creative || {};
+  const curvesRaw = raw.curves || raw.rgbCurves || {};
+  const wheelsRaw = raw.wheels || raw.colorWheels || {};
+  const metadataRaw = raw.metadata || {};
+  return {
+    basic: {
+      temperature: clampRange(basicRaw.temperature, 0, -100, 100),
+      tint: clampRange(basicRaw.tint, 0, -100, 100),
+      exposure: clampRange(basicRaw.exposure, 0, -5, 5),
+      contrast: clampRange(basicRaw.contrast, 0, -100, 100),
+      highlights: clampRange(basicRaw.highlights, 0, -100, 100),
+      shadows: clampRange(basicRaw.shadows, 0, -100, 100),
+      whites: clampRange(basicRaw.whites, 0, -100, 100),
+      blacks: clampRange(basicRaw.blacks, 0, -100, 100),
+      saturation: clampRange(basicRaw.saturation, 100, 0, 200),
+      vibrance: clampRange(basicRaw.vibrance, 0, -100, 100),
+    },
+    creative: {
+      lut: {
+        id: creativeRaw.lut?.id ? String(creativeRaw.lut.id) : "",
+        name: creativeRaw.lut?.name ? String(creativeRaw.lut.name) : "",
+        intensity: clampRange(creativeRaw.lut?.intensity, 0, 0, 100),
+      },
+      faded: clampRange(creativeRaw.faded, 0, 0, 100),
+      sharpen: clampRange(creativeRaw.sharpen, 0, -100, 100),
+      tintShadows: normalizeHexOrNull(creativeRaw.tintShadows),
+      tintHighlights: normalizeHexOrNull(creativeRaw.tintHighlights),
+    },
+    curves: {
+      master: normalizeCurvePoints(curvesRaw.master),
+      r: normalizeCurvePoints(curvesRaw.r),
+      g: normalizeCurvePoints(curvesRaw.g),
+      b: normalizeCurvePoints(curvesRaw.b),
+    },
+    wheels: {
+      shadows: normalizeWheel(wheelsRaw.shadows || wheelsRaw.lift),
+      midtones: normalizeWheel(wheelsRaw.midtones || wheelsRaw.gamma),
+      highlights: normalizeWheel(wheelsRaw.highlights || wheelsRaw.gain),
+    },
+    metadata: {
+      simulated_scopes: Boolean(metadataRaw.simulated_scopes ?? metadataRaw.simulatedScopes ?? true),
+      real_pixel_analysis: Boolean(metadataRaw.real_pixel_analysis ?? metadataRaw.realPixelAnalysis ?? false),
+      real_lut_apply: Boolean(metadataRaw.real_lut_apply ?? metadataRaw.realLutApply ?? false),
+    },
+  };
+}
+
+export function evalColorAtTime(keyframes, t, defaultValue = 0) {
+  return evalParamAtTime(keyframes, t, defaultValue);
+}
+
+export function computeClipColorAt(timeline, clip, t) {
+  const base = normalizeColorGrade(clip.color || {});
+  const colorFrames = clip.keyframes?.effects?.color || {};
+  const next = normalizeColorGrade(base);
+  for (const param of BASIC_COLOR_PARAMS) {
+    const frames = Array.isArray(colorFrames[param]) ? colorFrames[param] : [];
+    const value = evalParamAtTime(frames, t, base.basic[param]);
+    next.basic[param] = clampRange(value, base.basic[param], param === "saturation" ? 0 : -100, param === "saturation" ? 200 : 100);
+  }
+  return next;
+}
+
+export function computeSimulatedColorScopes(timeline, clip, t) {
+  const color = computeClipColorAt(timeline, clip, t);
+  const exposure = color.basic.exposure / 5;
+  const contrast = color.basic.contrast / 100;
+  const saturation = color.basic.saturation / 100;
+  const lut = color.creative.lut.intensity / 100;
+  const deterministic = Math.sin((Number(t) || 0) + color.basic.temperature * 0.01) * 0.5 + 0.5;
+  return {
+    histogram: [0.18, 0.34, 0.46, 0.58, 0.52, 0.39, 0.26].map((value, index) => clampRange(value + exposure * 0.06 + contrast * 0.04 + (index - 3) * 0.01, value, 0, 1)),
+    waveform: [0.2, 0.36, 0.52, 0.64, 0.56, 0.42, 0.28].map((value, index) => clampRange(value + exposure * 0.05 + saturation * 0.02 + deterministic * 0.03, value, 0, 1)),
+    vectorscope: [
+      { x: 0.5 + color.basic.temperature / 200, y: 0.5 + color.basic.tint / 200 },
+      { x: 0.5 + (color.wheels.shadows.r - color.wheels.highlights.r) * 0.12, y: 0.5 + (color.creative.lut.id ? lut * 0.18 : 0) },
+      { x: 0.5 + color.wheels.midtones.g * 0.12, y: 0.5 + color.wheels.midtones.b * 0.12 },
+    ].map((point) => ({ x: clampRange(point.x, 0.5, 0, 1), y: clampRange(point.y, 0.5, 0, 1) })),
+    metadata: { simulated_scopes: true, real_pixel_analysis: false, approx_preview: true },
   };
 }
 
@@ -473,6 +596,8 @@ function applyOpInternal(timeline, op) {
       return setTrackAudio(timeline, op);
     case TIMELINE_OPS.SET_CLIP_AUDIO:
       return setClipAudio(timeline, op);
+    case TIMELINE_OPS.SET_CLIP_COLOR:
+      return setClipColor(timeline, op);
     case TIMELINE_OPS.SET_TRANSFORM:
       return setTransform(timeline, op);
     case TIMELINE_OPS.SET_KEYFRAME:
@@ -649,7 +774,7 @@ export function clampMoveStart({ track, clip, start, targetIndex = NaN, publicOp
 function insertClip(timeline, op) {
   const track = findTrack(timeline, op.trackId);
   const rawClip = op.payload.clip || buildClipFromPayload(op.payload);
-  const clip = normalizeClip(rawClip);
+  const clip = normalizeClip({ ...rawClip, kind: rawClip.kind || track.kind });
   if (clip.end <= clip.start) throw invalid(`Clip ${clip.id} end must be greater than start`);
   if (timelineHasId(timeline, clip.id)) throw invalid(`Duplicate timeline id: ${clip.id}`);
   const index = Number.isFinite(numberOr(op.payload.index ?? op.payload.targetIndex ?? op.payload.target_index, NaN))
@@ -939,6 +1064,7 @@ function addText(timeline, op) {
     effects: [],
     keyframes: { transform: {}, effects: {} },
     source: "text",
+    kind: TIMELINE_KINDS.TEXT,
     name: op.payload.text || "Text clip",
     text: op.payload.text || "",
     titleProps: normalizeTitleProps({
@@ -999,6 +1125,10 @@ function keyframeTargetStore(clip, targetId) {
   if (targetId === "audio") {
     const effects = clip.keyframes.effects || (clip.keyframes.effects = {});
     return { store: effects.audio || (effects.audio = {}), kind: "audio" };
+  }
+  if (targetId === "color") {
+    const effects = clip.keyframes.effects || (clip.keyframes.effects = {});
+    return { store: effects.color || (effects.color = {}), kind: "color" };
   }
   const effect = clip.effects.find((item) => item.id === targetId);
   if (!effect) throw invalid(`Effect not found: ${targetId}`);
@@ -1124,6 +1254,32 @@ function setClipAudio(timeline, op) {
   };
 }
 
+function setClipColor(timeline, op) {
+  const { track, clip } = resolveClip(timeline, op.trackId, op.clipId);
+  if (!["video", "image"].includes(track.kind)) throw invalid("setClipColor only applies to visual clips");
+  if (!op.payload || typeof op.payload.color !== "object") throw invalid("setClipColor requires payload.color");
+  const previous = clone(clip.color || normalizeColorGrade({}));
+  const next = normalizeColorGrade(mergeColorFields(previous, op.payload.color));
+  clip.color = next;
+  return {
+    ...op,
+    payload: { color: previous },
+  };
+}
+
+function mergeColorFields(previous, patch) {
+  const next = clone(previous || {});
+  for (const key of Object.keys(patch || {})) {
+    const value = patch[key];
+    if (value && typeof value === "object" && !Array.isArray(value) && next[key] && typeof next[key] === "object" && !Array.isArray(next[key])) {
+      next[key] = mergeColorFields(next[key], value);
+    } else {
+      next[key] = clone(value);
+    }
+  }
+  return next;
+}
+
 function setTransform(timeline, op) {
   const { clip } = resolveClip(timeline, op.trackId, op.clipId);
   if (!op.payload || typeof op.payload.transform !== "object") throw invalid("setTransform requires payload.transform");
@@ -1216,6 +1372,7 @@ function buildClipFromPayload(payload) {
   if (!Number.isFinite(end) || end <= start) throw invalid("insertClip requires end greater than start");
   const clip = {
     id: payload.id || payload.clipId || newId("clp"),
+    kind: payload.kind || TIMELINE_KINDS.VIDEO,
     assetId: payload.assetId ?? payload.asset_id ?? "",
     start,
     end,
@@ -1230,6 +1387,7 @@ function buildClipFromPayload(payload) {
     muted: Boolean(payload.muted),
     text: payload.text == null ? "" : String(payload.text),
     titleProps: normalizeTitleProps(payload.titleProps),
+    color: normalizeColorGrade(payload.color),
     audio: normalizeAudioClip(payload.audio),
     volume: numberOr(payload.volume, 1),
   };

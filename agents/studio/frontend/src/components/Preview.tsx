@@ -6,7 +6,7 @@ import { formatTimecode, formatShortTime } from '../utils/time';
 import type { PreviewTab, Clip } from '../types';
 import clsx from 'clsx';
 import { clipDuration, hasRealMediaPath, previewModeForClip, transformPosition } from '../timelinePlayback';
-import { evalParamAtTime } from '../../../../../packages/shared/index.js';
+import { evalParamAtTime, computeClipColorAt } from '../../../../../packages/shared/index.js';
 
 interface Props {
   tab: PreviewTab;
@@ -41,6 +41,17 @@ function transformStyle(clip: Clip, playhead = 0) {
     transform: `translate(${Number.isFinite(x) ? x : 0}px, ${Number.isFinite(y) ? y : 0}px) scale(${Number.isFinite(scale) ? Math.max(0, scale) : 1})`,
     opacity: Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1,
   };
+}
+
+function colorFilterStyle(clip: Clip, playhead: number) {
+  if (!clip?.color) return undefined;
+  const color = computeClipColorAt({ tracks: [] } as any, clip, playhead);
+  const brightness = Math.max(0, 1 + color.basic.exposure / 2.5);
+  const contrast = Math.max(0, 1 + color.basic.contrast / 100);
+  const saturate = Math.max(0, color.basic.saturation / 100);
+  const sepia = Math.max(0, Math.min(1, Math.abs(color.basic.temperature) / 100));
+  const hue = (color.basic.tint + color.basic.temperature) * 0.18;
+  return `brightness(${brightness.toFixed(2)}) contrast(${contrast.toFixed(2)}) saturate(${saturate.toFixed(2)}) sepia(${sepia.toFixed(2)}) hue-rotate(${hue.toFixed(1)}deg)`;
 }
 
 export function Preview({
@@ -117,7 +128,10 @@ export function Preview({
               src={activeVideoClip.source_file}
               muted
               playsInline
-              style={videoTransform}
+              style={{
+                ...videoTransform,
+                filter: colorFilterStyle(activeVideoClip, playhead),
+              }}
             />
           ) : null}
 
@@ -125,7 +139,10 @@ export function Preview({
             <div
               data-testid="preview-placeholder"
               className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center"
-              style={videoTransform}
+              style={{
+                ...videoTransform,
+                filter: colorFilterStyle(activeVideoClip, playhead),
+              }}
             >
               <div className="rounded-2xl border border-dashed border-border-2 bg-bg-1/80 p-8 shadow-inner">
                 <div className="text-[11px] uppercase tracking-[0.3em] text-accent font-bold mb-2">Simulated media</div>
@@ -191,6 +208,7 @@ export function Preview({
 
           <div className="absolute top-3 right-3 z-[4]">
             <SourceBadge>{activeMode === 'real' ? 'real media' : activeMode === 'placeholder' ? 'poster card' : 'empty'}</SourceBadge>
+            {activeVideoClip?.color ? <SourceBadge>approx preview</SourceBadge> : null}
           </div>
 
           {/* Video controls */}

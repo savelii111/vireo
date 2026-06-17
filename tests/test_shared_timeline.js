@@ -6,10 +6,13 @@ import {
   applyTimelineOp,
   createEmptyTimelineDocument,
   createTimelineOp,
+  computeClipColorAt,
   computeClipGainDb,
   computeDuckingReductionDb,
+  computeSimulatedColorScopes,
   deserializeTimelineDocument,
   evalParamAtTime,
+  normalizeColorGrade,
   normalizeTitleProps,
   serializeTimelineDocument,
   snapTime,
@@ -469,4 +472,72 @@ test("setTrackFlag supports soloed through shared track state", () => {
   assert.equal(next.tracks.find((track) => track.id === "trk_v1").soloed, true);
   const restored = applyTimelineOp(next, next.inverse);
   assert.equal(restored.tracks.find((track) => track.id === "trk_v1").soloed, false);
+});
+
+test("setClipColor merges visual color fields, rejects text/audio, and resolves keyframed exposure", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "shot", assetId: "shot.mp4", start: 0, end: 10, kind: "video" } }));
+
+  const human = createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { color: { basic: { exposure: 1.5, contrast: 20 } } } });
+  doc = applyTimelineOp(doc, human);
+  const bot = createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, actor: "bot", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { color: { basic: { saturation: 140 }, creative: { lut: { id: "lut_teal", name: "Teal", intensity: 70 }, faded: 25, sharpen: 12 }, metadata: { simulated_scopes: true, real_pixel_analysis: false, real_lut_apply: false } } } });
+  doc = applyTimelineOp(doc, bot);
+  const clip = doc.tracks[0].clips.find((item) => item.id === "shot");
+  assert.equal(clip.color.basic.exposure, 1.5);
+  assert.equal(clip.color.basic.contrast, 20);
+  assert.equal(clip.color.basic.saturation, 140);
+  assert.equal(clip.color.creative.lut.id, "lut_teal");
+  assert.equal(clip.color.creative.lut.intensity, 70);
+  assert.deepEqual(clip.color.metadata, { simulated_scopes: true, real_pixel_analysis: false, real_lut_apply: false });
+
+  const key0 = createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { targetId: "color", param: "exposure", keyframe: { time: 0, value: 0 } } });
+  const key0Result = applyTimelineOp(doc, key0);
+  doc = key0Result;
+  const key4 = createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "bot", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { targetId: "color", param: "exposure", keyframe: { time: 4, value: 3 } } });
+  const key4Result = applyTimelineOp(doc, key4);
+  doc = key4Result;
+  assert.equal(Math.round(evalParamAtTime(doc.tracks[0].clips[0].keyframes.effects.color.exposure, 2) * 10) / 10, 1.5);
+  assert.equal(Math.round(computeClipColorAt(doc, doc.tracks[0].clips[0], 2).basic.exposure * 10) / 10, 1.5);
+
+  const restoredKey4 = applyTimelineOp(doc, key4Result.inverse);
+  assert.deepEqual(restoredKey4.tracks[0].clips[0].keyframes.effects.color.exposure, [{ time: 0, value: 0, interp: "linear" }]);
+  assert.equal(applyTimelineOp(restoredKey4, key0Result.inverse).tracks[0].clips[0].keyframes.effects.color, undefined);
+
+  const textDoc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  const textResult = applyTimelineOp(textDoc, createTimelineOp({ op: TIMELINE_OPS.ADD_TEXT, timelineId: textDoc.timelineId, trackId: "trk_t1", payload: { id: "title", text: "Title", start: 0, end: 3 } }));
+  assert.throws(() => applyTimelineOp(textResult, createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, timelineId: textResult.timelineId, trackId: "trk_t1", clipId: "title", payload: { color: { basic: { exposure: 1 } } } })), /visual clips/);
+
+  const audioDoc = createEmptyTimelineDocument({ projectId: "p_1", userId: "u_1" });
+  const audioResult = applyTimelineOp(audioDoc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, timelineId: audioDoc.timelineId, trackId: "trk_a1", payload: { id: "music", assetId: "music.wav", start: 0, end: 5 } }));
+  assert.throws(() => applyTimelineOp(audioResult, createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, timelineId: audioResult.timelineId, trackId: "trk_a1", clipId: "music", payload: { color: { basic: { exposure: 1 } } } })), /visual clips/);
+
+  const scopes = computeSimulatedColorScopes(doc, doc.tracks[0].clips[0], 2);
+  assert.equal(scopes.histogram.length, 7);
+  assert.equal(scopes.waveform.length, 7);
+  assert.equal(scopes.vectorscope.length, 3);
+  assert.deepEqual(scopes.metadata, { simulated_scopes: true, real_pixel_analysis: false, approx_preview: true });
+});
+
+test("normalizeColorGrade clamps Lumetri fields and preserves neutral defaults", () => {
+  const grade = normalizeColorGrade({
+    basic: { exposure: 99, saturation: -5 },
+    creative: {
+      tintShadows: "#ABC",
+      lut: { intensity: 200 },
+      faded: -1,
+      sharpen: 500,
+      tintHighlights: "bad",
+    },
+    curves: { r: [{ x: 2, y: 2 }, { x: 0, y: 0.5 }] },
+    wheels: { highlights: { r: 9, g: -9, b: 0.5 } },
+    metadata: { simulated_scopes: true, real_pixel_analysis: false, real_lut_apply: false },
+  });
+  assert.equal(grade.basic.exposure, 5);
+  assert.equal(grade.basic.saturation, 0);
+  assert.equal(grade.creative.tintShadows, "#abc");
+  assert.equal(grade.creative.lut.intensity, 100);
+  assert.equal(grade.creative.tintHighlights, null);
+  assert.deepEqual(grade.curves.r, [{ x: 0, y: 0.5 }, { x: 1, y: 1 }]);
+  assert.deepEqual(grade.wheels.highlights, { r: 1, g: -1, b: 0.5 });
+  assert.deepEqual(normalizeColorGrade({}).metadata, { simulated_scopes: true, real_pixel_analysis: false, real_lut_apply: false });
 });

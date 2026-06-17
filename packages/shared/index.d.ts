@@ -40,6 +40,69 @@ export interface AudioClip {
 export function normalizeTrackRole(value: unknown): TrackRole;
 export function normalizeAudioTrack(value: unknown): AudioTrack;
 export function normalizeAudioClip(value: unknown): AudioClip;
+export interface ColorLut {
+  id: string;
+  name: string;
+  intensity: number;
+}
+export interface ColorCreative {
+  lut: ColorLut;
+  faded: number;
+  sharpen: number;
+  tintShadows: string | null;
+  tintHighlights: string | null;
+}
+export interface ColorPoint {
+  x: number;
+  y: number;
+}
+export interface ColorCurves {
+  master: ColorPoint[];
+  r: ColorPoint[];
+  g: ColorPoint[];
+  b: ColorPoint[];
+}
+export interface ColorWheelChannel {
+  r: number;
+  g: number;
+  b: number;
+}
+export interface ColorWheels {
+  shadows: ColorWheelChannel;
+  midtones: ColorWheelChannel;
+  highlights: ColorWheelChannel;
+}
+export interface ColorMetadata {
+  simulated_scopes: boolean;
+  real_pixel_analysis: boolean;
+  real_lut_apply: boolean;
+}
+export interface ColorGrade {
+  basic: {
+    temperature: number;
+    tint: number;
+    exposure: number;
+    contrast: number;
+    highlights: number;
+    shadows: number;
+    whites: number;
+    blacks: number;
+    saturation: number;
+    vibrance: number;
+  };
+  creative: ColorCreative;
+  curves: ColorCurves;
+  wheels: ColorWheels;
+  metadata: ColorMetadata;
+}
+export function normalizeColorGrade(value: unknown): ColorGrade;
+export function computeClipColorAt(timeline: unknown, clip: unknown, t: number): ColorGrade;
+export function computeSimulatedColorScopes(timeline: unknown, clip: unknown, t: number): {
+  histogram: number[];
+  waveform: number[];
+  vectorscope: Array<{ x: number; y: number }>;
+  metadata: { simulated_scopes: true; real_pixel_analysis: false; approx_preview: true };
+};
 export function computeDuckingReductionDb(timeline: unknown, trackId: string, t: number): number;
 export function computeClipGainDb(timeline: unknown, clip: unknown, t: number): number;
 export type KeyframeInterpolation = 'linear' | 'hold';
@@ -68,6 +131,7 @@ export interface TimelineOps {
   readonly SET_TITLE_PROPS: 'setTitleProps';
   readonly SET_TRACK_AUDIO: 'setTrackAudio';
   readonly SET_CLIP_AUDIO: 'setClipAudio';
+  readonly SET_CLIP_COLOR: 'setClipColor';
   readonly SET_TRANSFORM: 'setTransform';
   readonly SET_KEYFRAME: 'setKeyframe';
   readonly REMOVE_KEYFRAME: 'removeKeyframe';

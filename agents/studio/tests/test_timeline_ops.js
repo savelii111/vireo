@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   TIMELINE_OPS,
   applyOp,
+  computeClipColorAt,
   computeClipGainDb,
   computeDuckingReductionDb,
   createEmptyTimelineDocument,
@@ -131,6 +132,17 @@ test("applyOp round-trips every forward op through its inverse without mutating 
     op(TIMELINE_OPS.ADD_EFFECT, { effect: { id: "fx_zoom", name: "Zoom" } }, { trackId: "trk_v1", clipId: "clip_1" }),
     op(TIMELINE_OPS.ADD_TEXT, { id: "txt_2", text: "Subtitle", start: 4, end: 7 }, { trackId: "trk_t1" }),
     op(TIMELINE_OPS.SET_EFFECT, { effect: { id: "fx_base", name: "Zoom Strong", intensity: 0.9 }, index: 0 }, { trackId: "trk_v1", clipId: "clip_1" }),
+    op(
+      TIMELINE_OPS.SET_CLIP_COLOR,
+      {
+        color: {
+          basic: { exposure: 1, contrast: 20 },
+          creative: { lut: { id: "lut_1", intensity: 50 } },
+          curves: { master: [{ x: 0, y: 0 }], r: [] },
+        },
+      },
+      { trackId: "trk_v1", clipId: "clip_1" },
+    ),
     op(TIMELINE_OPS.REPLACE_ASSET, { assetId: "ast_new" }, { trackId: "trk_v1", clipId: "clip_1" }),
     op(TIMELINE_OPS.SET_TRACK_FLAG, { muted: true, soloed: true, locked: false, hidden: false }, { trackId: "trk_v1" }),
   ];
@@ -204,7 +216,97 @@ test("studio human/bot audio ops merge, undo stepwise, and compute deterministic
   }
 });
 
-test("applyOp throws typed errors and leaves the document unchanged for invalid ops", () => {
+test("studio human/bot color ops merge, undo stepwise, and guard visual clips", async () => {
+  const pool = makeMockPool();
+  const { server } = buildServer({ secret: "s", pool, llm: { model: "mock", isMock: () => true, costUsd: () => 0, chat: async () => ({ content: "ok", tool_calls: null, usage: {} }), getUsage: () => ({}) } });
+  const { baseUrl, close } = await listen(server);
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${await token("u_day17_color")}` };
+
+  try {
+    const project = await (await fetch(`${baseUrl}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "Day17 Color" }) })).json();
+    const projectId = project.project.id;
+    const asset = await (await fetch(`${baseUrl}/api/assets`, { method: "POST", headers, body: JSON.stringify({ project_id: projectId, source_uri: "tus://asset", kind: "clip" }) })).json();
+    const apply = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: 1,
+        actor: "human",
+        ops: [
+          op(TIMELINE_OPS.INSERT_CLIP, { id: "color_shot", assetId: asset.asset.id, start: 0, end: 10, kind: "video" }, { trackId: "trk_v1" }),
+          op(TIMELINE_OPS.SET_CLIP_COLOR, { color: { basic: { exposure: 1, contrast: 20 }, creative: { lut: { id: "lut_teal", name: "Teal", intensity: 60 } } } }, { trackId: "trk_v1", clipId: "color_shot" }),
+          op(TIMELINE_OPS.SET_KEYFRAME, { targetId: "color", param: "exposure", keyframe: { time: 0, value: 0, interp: "linear" } }, { trackId: "trk_v1", clipId: "color_shot" }),
+        ],
+      }),
+    });
+    assert.equal(apply.status, 200);
+    const applied = await json(apply);
+    const shot = applied.doc.tracks.find((track) => track.id === "trk_v1").clips.find((clip) => clip.id === "color_shot");
+    assert.equal(shot.color.basic.exposure, 1);
+    assert.equal(shot.color.basic.contrast, 20);
+    assert.equal(shot.color.creative.lut.id, "lut_teal");
+
+    const bot = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: applied.version,
+        actor: "bot",
+        ops: [
+          op(TIMELINE_OPS.SET_CLIP_COLOR, { color: { basic: { saturation: 140, exposure: 2 }, creative: { faded: 30, sharpen: 10 } } }, { trackId: "trk_v1", clipId: "color_shot" }),
+          op(TIMELINE_OPS.SET_KEYFRAME, { targetId: "color", param: "exposure", keyframe: { time: 4, value: 4, interp: "linear" } }, { trackId: "trk_v1", clipId: "color_shot" }),
+        ],
+      }),
+    });
+    assert.equal(bot.status, 200);
+    const botApplied = await json(bot);
+    const botShot = botApplied.doc.tracks.find((track) => track.id === "trk_v1").clips.find((clip) => clip.id === "color_shot");
+    assert.equal(botShot.color.basic.exposure, 2);
+    assert.equal(botShot.color.basic.contrast, 20);
+    assert.equal(botShot.color.basic.saturation, 140);
+    assert.equal(Math.round(computeClipColorAt(botApplied.doc, botShot, 2).basic.exposure * 10) / 10, 2);
+    assert.deepEqual(botShot.color.metadata, { simulated_scopes: true, real_pixel_analysis: false, real_lut_apply: false });
+
+    const undoKey = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoKey.status, 200);
+    const undoneKey = await json(undoKey);
+    const undoneKeyShot = undoneKey.doc.tracks.find((track) => track.id === "trk_v1").clips.find((clip) => clip.id === "color_shot");
+    assert.deepEqual(undoneKeyShot.keyframes.effects.color.exposure, [{ time: 0, value: 0, interp: "linear" }]);
+
+    const undoColor = await fetch(`${baseUrl}/api/timelines/${projectId}/undo`, { method: "POST", headers });
+    assert.equal(undoColor.status, 200);
+    const undoneColor = await json(undoColor);
+    const undoneColorShot = undoneColor.doc.tracks.find((track) => track.id === "trk_v1").clips.find((clip) => clip.id === "color_shot");
+    assert.equal(undoneColorShot.color.basic.saturation, 100);
+    assert.equal(undoneColorShot.color.basic.exposure, 1);
+
+    const textReject = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: undoneColor.version,
+        actor: "human",
+        ops: [op(TIMELINE_OPS.SET_CLIP_COLOR, { color: { basic: { exposure: 1 } } }, { trackId: "trk_t1", clipId: "clip_text" })],
+      }),
+    });
+    assert.equal(textReject.status, 400);
+
+    const audioReject = await fetch(`${baseUrl}/api/timelines/${projectId}/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        baseVersion: undoneColor.version,
+        actor: "human",
+        ops: [op(TIMELINE_OPS.SET_CLIP_COLOR, { color: { basic: { exposure: 1 } } }, { trackId: "trk_a1", clipId: "clip_audio" })],
+      }),
+    });
+    assert.equal(audioReject.status, 400);
+  } finally {
+    await close();
+  }
+});
+
+test("applyOp throws typed errors and leaves the document unchanged for invalid ops", async () => {
   const doc = baseDoc();
   const before = clone(doc);
   assert.throws(() => applyOp(doc, op(TIMELINE_OPS.TRIM_CLIP, { start: 5, end: 1 }, { trackId: "trk_v1", clipId: "clip_1" })), { code: "timeline_op_invalid" });

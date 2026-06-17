@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Sparkles, Wand2, Move, Captions, Music2, Scissors, RotateCcw,
 } from 'lucide-react';
 import { formatSeconds } from '../utils/time';
-import type { Clip, Keyframe, TitleProps, Track, AudioTrack, AudioClip } from '../types';
+import type { Clip, Keyframe, TitleProps, Track, AudioTrack, AudioClip, ColorGrade } from '../types';
 import clsx from 'clsx';
 import { thumbnailUrl, fallbackGradient } from '../hooks/useThumbnails';
 import { hasRealMediaPath } from '../timelinePlayback';
@@ -23,9 +23,10 @@ interface Props {
   onVolumeChange?: (volume: number) => void;
   onTrackAudioChange?: (audio: Partial<AudioTrack>) => void;
   onClipAudioChange?: (audio: Partial<AudioClip>) => void;
+  onClipColorChange?: (color: Partial<ColorGrade>) => void;
 }
 
-type Tab = 'clip' | 'controls' | 'audio';
+type Tab = 'clip' | 'controls' | 'audio' | 'color';
 
 interface ParamSliderProps {
   label: string;
@@ -107,6 +108,7 @@ export function Inspector({
   onVolumeChange,
   onTrackAudioChange,
   onClipAudioChange,
+  onClipColorChange,
 }: Props) {
   const [tab, setTab] = useState<Tab>('clip');
   const [effectKind, setEffectKind] = useState('colorGrade');
@@ -120,6 +122,13 @@ export function Inspector({
     { id: 'stabilize', label: 'Stabilize' },
   ];
   const currentTime = playhead ?? 0;
+  const neutralColor = useMemo<ColorGrade>(() => ({
+    basic: { temperature: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, saturation: 100, vibrance: 0 },
+    creative: { lut: { id: '', name: '', intensity: 0 }, faded: 0, sharpen: 0, tintShadows: null, tintHighlights: null },
+    curves: { master: [], r: [], g: [], b: [] },
+    wheels: { shadows: { r: 0, g: 0, b: 0 }, midtones: { r: 0, g: 0, b: 0 }, highlights: { r: 0, g: 0, b: 0 } },
+    metadata: { simulated_scopes: true, real_pixel_analysis: false, real_lut_apply: false },
+  }), []);
   const transformRotation = Number(clip?.transform?.rotation ?? 0);
   const transformValue = (param: string, fallback: number) => {
     const keyframes = clip?.keyframes?.transform?.[param] ?? [];
@@ -141,6 +150,9 @@ export function Inspector({
   const audioMetadata = clipAudio?.metadata ?? { simulated_levels: true, real_decode: false };
   const volume = Number(clip?.volume ?? 1);
   const isTitleClip = clip?.source === 'text';
+  const color = clip?.color;
+  const colorBasic = color?.basic ?? neutralColor.basic;
+  const visualClip = Boolean(clipId && clip && !isTitleClip && ['video', 'image', 'overlay'].includes(clip.kind));
   const titleProps = isTitleClip ? (clip?.titleProps ?? {}) : {};
   const titleDisabled = !clipId || !isTitleClip;
   const transformDisabled = !clipId;
@@ -151,7 +163,7 @@ export function Inspector({
       {/* Clip info column */}
       <div className="p-3 px-4 border-r border-border-1">
         <div className="flex gap-0.5 mb-3">
-          {(['clip', 'controls', 'audio'] as const).map((t) => (
+          {(['clip', 'controls', 'audio', 'color'] as const).map((t) => (
             <button
               key={t}
               data-testid={`inspector-tab-${t}`}
@@ -482,6 +494,152 @@ export function Inspector({
                     testId="inspector-transform-rotation"
                     onChange={(rotation) => onTransformChange?.({ rotation })}
                   />
+                </div>
+              </>
+            )}
+          </div>
+        ) : tab === 'color' ? (
+          <div className="space-y-3">
+            {!visualClip ? (
+              <div className="rounded-md border border-border-1 bg-bg-2 p-3 text-[12px] text-ink-3">
+                Lumetri is available for video/image clips only.
+              </div>
+            ) : (
+              <>
+                <div className="rounded-md border border-border-1 bg-bg-2 p-3 space-y-3" data-testid="lumetri-panel">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold">Lumetri Color</div>
+                      <div className="text-[11px] text-ink-4">op-contract Basic / Creative / Curves / Wheels</div>
+                    </div>
+                    <span className="rounded bg-bg-3 px-2 py-1 text-[10px] text-ink-3 font-mono">approx preview</span>
+                  </div>
+                  <div className="rounded border border-border-1 bg-bg-1 p-2">
+                    <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Basic Correction</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        ['temperature', -100, 100],
+                        ['tint', -100, 100],
+                        ['exposure', -5, 5, 0.1],
+                        ['contrast', -100, 100],
+                        ['highlights', -100, 100],
+                        ['shadows', -100, 100],
+                        ['whites', -100, 100],
+                        ['blacks', -100, 100],
+                        ['saturation', 0, 200],
+                        ['vibrance', -100, 100],
+                      ] as const).map(([param, min, max, step = 1]) => {
+                        const value = Number(colorBasic[param as keyof typeof colorBasic] ?? 0);
+                        return (
+                          <div key={param} className="rounded bg-bg-2 p-2 space-y-1">
+                            <ParamSlider
+                              label={param}
+                              value={value}
+                              min={min}
+                              max={max}
+                              step={step}
+                              disabled={!clipId}
+                              onChange={(next) => onClipColorChange?.({ basic: { ...colorBasic, [param]: next } } as Partial<ColorGrade>)}
+                            />
+                            <div className="flex gap-1">
+                              <button
+                                data-testid={`add-color-${param}-keyframe`}
+                                disabled={!clipId || !onSetKeyframe}
+                                onClick={() => onSetKeyframe?.('color', param, { time: currentTime, value, interp: 'linear' })}
+                                className="flex-1 rounded bg-bg-3 px-2 py-1 text-[10px] text-ink-2 hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-50"
+                              >Add keyframe</button>
+                              <button
+                                data-testid={`remove-color-${param}-keyframe`}
+                                disabled={!clipId || !onRemoveKeyframe}
+                                onClick={() => onRemoveKeyframe?.('color', param, currentTime)}
+                                className="flex-1 rounded bg-bg-3 px-2 py-1 text-[10px] text-ink-2 hover:bg-bg-2 disabled:cursor-not-allowed disabled:opacity-50"
+                              >Remove</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="rounded border border-border-1 bg-bg-1 p-2">
+                    <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Creative / LUT slot</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="grid gap-1 text-[11px] text-ink-3">
+                        LUT id
+                        <input
+                          data-testid="color-lut-id"
+                          value={color?.creative?.lut?.id ?? ''}
+                          disabled={!clipId}
+                          onChange={(e) => onClipColorChange?.({ creative: { ...color?.creative, lut: { ...(color?.creative?.lut ?? {}), id: e.target.value, name: color?.creative?.lut?.name ?? '', intensity: color?.creative?.lut?.intensity ?? 0 } } } as Partial<ColorGrade>)}
+                          className="rounded-md bg-bg-2 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                      </label>
+                      <label className="grid gap-1 text-[11px] text-ink-3">
+                        LUT name
+                        <input
+                          data-testid="color-lut-name"
+                          value={color?.creative?.lut?.name ?? ''}
+                          disabled={!clipId}
+                          onChange={(e) => onClipColorChange?.({ creative: { ...color?.creative, lut: { ...(color?.creative?.lut ?? {}), id: color?.creative?.lut?.id ?? '', name: e.target.value, intensity: color?.creative?.lut?.intensity ?? 0 } } } as Partial<ColorGrade>)}
+                          className="rounded-md bg-bg-2 border border-border-1 px-2 py-1.5 text-[12px] text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                      </label>
+                      <ParamSlider label="LUT intensity" value={Number(color?.creative?.lut?.intensity ?? 0)} min={0} max={100} onChange={(next) => onClipColorChange?.({ creative: { ...color?.creative, lut: { ...(color?.creative?.lut ?? {}), id: color?.creative?.lut?.id ?? '', name: color?.creative?.lut?.name ?? '', intensity: next } } } as Partial<ColorGrade>)} />
+                      <ParamSlider label="Faded" value={Number(color?.creative?.faded ?? 0)} min={0} max={100} onChange={(next) => onClipColorChange?.({ creative: { ...color?.creative, faded: next } } as Partial<ColorGrade>)} />
+                      <ParamSlider label="Sharpen" value={Number(color?.creative?.sharpen ?? 0)} min={-100} max={100} onChange={(next) => onClipColorChange?.({ creative: { ...color?.creative, sharpen: next } } as Partial<ColorGrade>)} />
+                    </div>
+                  </div>
+                  <div className="rounded border border-border-1 bg-bg-1 p-2">
+                    <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Curves</div>
+                    <div className="text-[12px] text-ink-3">Curve points are stored as op data: master/r/g/b arrays of {`{x, y}`} in 0..1. Real pixel pipeline is not enabled.</div>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {(['master', 'r', 'g', 'b'] as const).map((channel) => (
+                        <div key={channel} className="rounded bg-bg-2 p-2 text-[11px] text-ink-3">
+                          <div className="font-mono mb-1">{channel}</div>
+                          {color?.curves?.[channel]?.map((point, index) => (
+                            <div key={`${channel}-${index}`} className="font-mono text-[10px]">{point.x.toFixed(2)}, {point.y.toFixed(2)}</div>
+                          )) ?? <div>No points</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded border border-border-1 bg-bg-1 p-2">
+                    <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-2">Color Wheels</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['shadows', 'midtones', 'highlights'] as const).map((wheel) => (
+                        <div key={wheel} className="rounded bg-bg-2 p-2 text-[11px] text-ink-3">
+                          <div className="uppercase tracking-wider mb-1">{wheel}</div>
+                          {(['r', 'g', 'b'] as const).map((channel) => (
+                            <ParamSlider
+                              key={`${wheel}-${channel}`}
+                              label={channel}
+                              value={Number(color?.wheels?.[wheel]?.[channel] ?? 0)}
+                              min={-1}
+                              max={1}
+                              step={0.01}
+                              disabled={!clipId}
+                              onChange={(next) => onClipColorChange?.({ wheels: { ...color?.wheels, [wheel]: { ...(color?.wheels?.[wheel] ?? {}), [channel]: next } } } as Partial<ColorGrade>)}
+                            />
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded border border-border-1 bg-bg-1 p-2 text-[11px] text-ink-3">
+                    <div className="font-bold mb-1">Scopes</div>
+                    <div className="flex gap-2 mb-2">
+                      <span className="rounded bg-bg-3 px-2 py-1">histogram simulated</span>
+                      <span className="rounded bg-bg-3 px-2 py-1">waveform simulated</span>
+                      <span className="rounded bg-bg-3 px-2 py-1">vectorscope simulated</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+                        <div key={`hist-${i}`} className="h-10 rounded bg-bg-3 flex items-end justify-center">
+                          <div className="w-5 bg-accent/70 rounded-t" style={{ height: `${20 + ((colorBasic.saturation + i * 13) % 70)}%` }} />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="text-[10px] mt-2 font-mono">simulated_scopes:true · real_pixel_analysis:false · real_lut_apply:false</div>
+                  </div>
                 </div>
               </>
             )}

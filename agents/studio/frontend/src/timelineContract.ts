@@ -6,7 +6,7 @@ import {
   createEmptyTimelineDocument,
   createTimelineOp,
 } from '../../../../packages/shared/index.js';
-import type { ProjectState, TimelineDocument, TimelineOp, TimelineTrack, AudioClip, AudioTrack } from './types';
+import type { ProjectState, TimelineDocument, TimelineOp, TimelineTrack, AudioClip, AudioTrack, ColorGrade } from './types';
 
 type TimelineOpName = string;
 
@@ -49,6 +49,7 @@ export function timelineToProject(doc: TimelineDocument, name = 'Untitled projec
           keyframes: clip.keyframes,
           volume: clip.volume,
           audio: clip.audio as AudioClip | undefined,
+          color: clip.color as ColorGrade | undefined,
           text: clip.text,
           titleProps: clip.titleProps,
           thumbnail_color: clip.source === 'generated' || clip.source === 'higgsfield'
@@ -105,6 +106,7 @@ export function projectToTimelineDocument(
         keyframes: clip.keyframes,
         volume: clip.volume,
         audio: clip.audio as AudioClip | undefined,
+        color: clip.color as ColorGrade | undefined,
         effects: clip.effects,
         selected: Boolean(clip.selected),
         titleProps: clip.titleProps,

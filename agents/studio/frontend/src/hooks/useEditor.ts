@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool, TitleProps, AudioClip, AudioTrack } from '../types';
+import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool, TitleProps, AudioClip, AudioTrack, ColorGrade } from '../types';
 import {
   applyTimelineOperation,
   createEmptyProjectState,
@@ -227,6 +227,19 @@ function createSetClipAudioOpFromDoc(doc: import('../types').TimelineDocument, c
     trackId: located.track.id,
     clipId,
     payload: { audio: patch },
+  });
+}
+
+function createSetClipColorOpFromDoc(doc: import('../types').TimelineDocument, clipId: string, color: Partial<ColorGrade>) {
+  const located = findClipInDoc(doc, clipId);
+  if (!located || !['video', 'image'].includes(located.track.kind)) return null;
+  return makeTimelineOp({
+    op: 'setClipColor',
+    actor: 'human',
+    timelineId: doc.timelineId,
+    trackId: located.track.id,
+    clipId,
+    payload: { color: color as Record<string, unknown> },
   });
 }
 
@@ -934,6 +947,12 @@ export function useEditor() {
     commitOp(createSetClipAudioOpFromDoc(current.doc, clipId, audio));
   }, [commitOp]);
 
+  const setClipColor = useCallback((clipId: string, color: Partial<ColorGrade>) => {
+    const current = serverRef.current;
+    if (!current) return;
+    commitOp(createSetClipColorOpFromDoc(current.doc, clipId, color));
+  }, [commitOp]);
+
   const undo = useCallback(async () => {
     const projectId = serverRef.current?.doc.projectId || getActiveProjectId();
     if (!projectId) return;
@@ -991,6 +1010,7 @@ export function useEditor() {
     setVolume,
     setTrackAudio,
     setClipAudio,
+    setClipColor,
     splitAtPlayhead,
     deleteSelected,
     duplicateSelected,

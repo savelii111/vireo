@@ -1,7 +1,7 @@
 // Domain types for Vireo Studio frontend.
 
-export type TrackKind = 'video' | 'audio' | 'overlay';
-export type TimelineTrackKind = 'video' | 'audio' | 'text' | 'overlay';
+export type TrackKind = 'video' | 'audio' | 'overlay' | 'image';
+export type TimelineTrackKind = 'video' | 'audio' | 'text' | 'overlay' | 'image';
 export type TrackRole = 'voice' | 'music' | 'sfx' | 'ambience' | 'other';
 export interface AudioDucking {
   enabled: boolean;
@@ -38,6 +38,62 @@ export interface AudioClip {
   waveform?: number[];
   metadata: AudioMetadata;
 }
+export interface ColorLut {
+  id: string;
+  name: string;
+  intensity: number;
+}
+export interface ColorCreative {
+  lut: ColorLut;
+  faded: number;
+  sharpen: number;
+  tintShadows: string | null;
+  tintHighlights: string | null;
+}
+export interface ColorPoint {
+  x: number;
+  y: number;
+}
+export interface ColorCurves {
+  master: ColorPoint[];
+  r: ColorPoint[];
+  g: ColorPoint[];
+  b: ColorPoint[];
+}
+export interface ColorWheelChannel {
+  r: number;
+  g: number;
+  b: number;
+}
+export interface ColorWheels {
+  shadows: ColorWheelChannel;
+  midtones: ColorWheelChannel;
+  highlights: ColorWheelChannel;
+}
+export interface ColorMetadata {
+  simulated_scopes: true;
+  real_pixel_analysis: false;
+  real_lut_apply: false;
+}
+export interface ColorBasic {
+  temperature: number;
+  tint: number;
+  exposure: number;
+  contrast: number;
+  highlights: number;
+  shadows: number;
+  whites: number;
+  blacks: number;
+  saturation: number;
+  vibrance: number;
+}
+export interface ColorGrade {
+  basic: ColorBasic;
+  creative: ColorCreative;
+  curves: ColorCurves;
+  wheels: ColorWheels;
+  metadata: ColorMetadata;
+}
 export type TimelineClipSource = 'upload' | 'higgsfield' | 'higgsfield_simulated' | 'stock' | 'generated' | 'text' | 'placeholder';
 export type TimelineOpName =
   | 'insertClip'
@@ -53,6 +109,7 @@ export type TimelineOpName =
   | 'setTitleProps'
   | 'setTrackAudio'
   | 'setClipAudio'
+  | 'setClipColor'
   | 'setTransform'
   | 'setKeyframe'
   | 'removeKeyframe'
@@ -132,6 +189,7 @@ export interface Clip {
   keyframes?: ClipKeyframes;
   volume?: number;
   audio?: AudioClip;
+  color?: ColorGrade;
   text?: string;
   titleProps?: Partial<TitleProps>;
 }

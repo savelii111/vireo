@@ -11,18 +11,18 @@
 
 ## Current Day
 
-Day 16 complete.
+Day 17 complete.
 
 ## What Changed
 
-- Finished Day 16 audio mixer without real decode/DSP:
-  - added shared `setTrackAudio` / `setClipAudio` op contract for gain, pan, fades, crossfade, ducking, metadata-only meters/waveform;
-  - added track `role` through `setTrackAudio` so deterministic ducking can mark `role: "voice"` through the op contract;
-  - reused existing `setKeyframe`/`evalParamAtTime` for volume keyframes via `targetId: "audio"`;
-  - wired frontend mixer/audio inspector controls, simulated meters/waveform badges, and timeline fade/ducking markers;
-  - added shared/backend/frontend tests for audio merge, inverse, deterministic ducking, human+bot path, and metadata-only visualization.
-- Updated shared timeline/keyframe contracts and Studio backend tests so human/bot audio state shares one undoable timeline.
-- Added frontend coverage for Inspector audio tab and simulated meters/waveform.
+- Finished Day 17 Color / Lumetri without real pixel analysis, real LUT application, or a real color pipeline:
+  - added shared `setClipColor` op contract for visual clips only (`video` / `image`), with field-level merge, inverse payloads, and version bump;
+  - added normalized Lumetri model for Basic Correction, Creative/LUT slot, Curves, Color Wheels, and simulated-scope metadata;
+  - reused existing `setKeyframe`/`computeClipColorAt` path with `targetId: "color"` under `clip.keyframes.effects.color.<param>`;
+  - wired frontend `Preview`, `Inspector`, `useEditor`, `types`, and `timelineContract` for Lumetri panel and CSS-filter approximation preview;
+  - added shared/backend/frontend tests for color merge, undo, visual-only guard, color keyframes, metadata flags, and simulated scopes.
+- Updated shared timeline contracts and Studio backend tests so human/bot color state shares one undoable timeline.
+- Added frontend coverage for Lumetri panel contract and preview approximation path.
 
 ## Day 15 — Titles / Essential Graphics panel
 
@@ -41,17 +41,38 @@ Day 16 complete.
 - Added frontend audio inspector controls, simulated meters/waveform badges, and timeline fade/ducking markers.
 - Added shared/backend/frontend tests for audio merge, inverse, deterministic ducking, human+bot path, and metadata-only visualization.
 
+## Day 17 — Color / Lumetri (Basic + Creative + Curves + Wheels)
+
+- Added shared `setClipColor` for visual clips only (`video` / `image`), with field-level merge, inverse payloads, and version bump.
+- Added normalized Lumetri model:
+  - Basic Correction: `temperature`, `tint`, `exposure`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `saturation`, `vibrance`;
+  - Creative: LUT slot `{id,name,intensity}`, `faded`, `sharpen`, `tintShadows`, `tintHighlights`;
+  - Curves: `master/r/g/b` point arrays in `0..1`;
+  - Wheels: `shadows/midtones/highlights` RGB shifts.
+- Reused existing keyframe store with `targetId: "color"` and `clip.keyframes.effects.color.<param>`.
+- Added deterministic `computeClipColorAt` and simulated scope metadata:
+  - `simulated_scopes: true`;
+  - `real_pixel_analysis: false`;
+  - `real_lut_apply: false`.
+- Wired frontend Lumetri panel and CSS-filter approximation preview; no real color pipeline / real LUT application was added.
+- Added shared/backend/frontend tests for merge, undo, guards, keyframes, metadata, and preview approximation.
+
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 16 changes:
+`node tests/run-all.mjs` after Day 17 changes:
 
-- `TOTAL: 1337 passed, 0 failed across 27 suites`
+- `TOTAL: 1340 passed, 0 failed across 27 suites`
 
 Frontend checks:
 
 - `npm run typecheck` → `exit 0`
-- `npm test` → `27 passed` (MediaPanel, useEditor insertAsset/keyframes, Timeline asset drop, playback)
+- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `4 passed` files, `27 passed` tests
+
+Shared/backend targeted checks:
+
+- `node tests/test_shared_timeline.js` → `18 passed`
+- `node --test agents/studio/tests/test_timeline_ops.js` → `22 passed`
 
 ## Next
 
-Day 16 ready for commit/push/zip.
+Day 17 ready for commit/push/zip.

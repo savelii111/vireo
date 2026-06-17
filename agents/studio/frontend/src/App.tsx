@@ -349,6 +349,9 @@ export default function App() {
                     onClipAudioChange={(audio) => {
                       if (editor.selectedClipId) editor.setClipAudio(editor.selectedClipId, audio);
                     }}
+                    onClipColorChange={(color) => {
+                      if (editor.selectedClipId) editor.setClipColor(editor.selectedClipId, color);
+                    }}
                   />
                 </Suspense>
               ) : (
