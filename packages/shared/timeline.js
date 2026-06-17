@@ -1269,7 +1269,7 @@ export function computeDuckingReductionDb(timeline, trackId, t) {
   const threshold = Number(ducking.thresholdDb ?? -30);
   let reduction = 0;
   for (const voiceTrack of timeline.tracks) {
-    if (voiceTrack.id === track.id || (voiceTrack.role !== "voice" && !/voice/i.test(String(voiceTrack.name || "")))) continue;
+    if (voiceTrack.id === track.id || voiceTrack.role !== "voice") continue;
     if (voiceTrack.muted) continue;
     for (const voiceClip of voiceTrack.clips) {
       const level = voiceLevelDb(voiceClip, t);
