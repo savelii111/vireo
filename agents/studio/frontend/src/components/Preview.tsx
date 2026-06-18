@@ -6,7 +6,7 @@ import { formatTimecode, formatShortTime } from '../utils/time';
 import type { PreviewTab, Clip } from '../types';
 import clsx from 'clsx';
 import { clipDuration, hasRealMediaPath, previewModeForClip, transformPosition } from '../timelinePlayback';
-import { evalParamAtTime, computeClipColorAt } from '../../../../../packages/shared/index.js';
+import { evalParamAtTime, computeClipColorAt, colorGradeToPreviewCss } from '../../../../../packages/shared/index.js';
 
 interface Props {
   tab: PreviewTab;
@@ -43,15 +43,9 @@ function transformStyle(clip: Clip, playhead = 0) {
   };
 }
 
-function colorFilterStyle(clip: Clip, playhead: number) {
-  if (!clip?.color) return undefined;
+function previewFilterStyle(clip: Clip, playhead: number) {
   const color = computeClipColorAt({ tracks: [] } as any, clip, playhead);
-  const brightness = Math.max(0, 1 + color.basic.exposure / 2.5);
-  const contrast = Math.max(0, 1 + color.basic.contrast / 100);
-  const saturate = Math.max(0, color.basic.saturation / 100);
-  const sepia = Math.max(0, Math.min(1, Math.abs(color.basic.temperature) / 100));
-  const hue = (color.basic.tint + color.basic.temperature) * 0.18;
-  return `brightness(${brightness.toFixed(2)}) contrast(${contrast.toFixed(2)}) saturate(${saturate.toFixed(2)}) sepia(${sepia.toFixed(2)}) hue-rotate(${hue.toFixed(1)}deg)`;
+  return colorGradeToPreviewCss(color).filter;
 }
 
 export function Preview({
@@ -130,7 +124,7 @@ export function Preview({
               playsInline
               style={{
                 ...videoTransform,
-                filter: colorFilterStyle(activeVideoClip, playhead),
+                filter: previewFilterStyle(activeVideoClip, playhead),
               }}
             />
           ) : null}
@@ -141,7 +135,7 @@ export function Preview({
               className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center"
               style={{
                 ...videoTransform,
-                filter: colorFilterStyle(activeVideoClip, playhead),
+                filter: previewFilterStyle(activeVideoClip, playhead),
               }}
             >
               <div className="rounded-2xl border border-dashed border-border-2 bg-bg-1/80 p-8 shadow-inner">

@@ -77,7 +77,8 @@ export interface ColorMetadata {
   real_pixel_analysis: false;
   real_lut_apply: false;
 }
-
+export interface ExportPreset {
+  id: string;
   name: string;
   width: number;
   height: number;
@@ -127,6 +128,10 @@ export function buildFfmpegArgs(renderPlan: ExportRenderPlan | { clips: ExportRe
 };
 export function colorGradeToPreviewCss(color: Partial<ColorGrade>): { filter: string; colorBalance: { rs: number; gs: number; bs: number } };
 export function colorGradeToFfmpegColorFilters(color: Partial<ColorGrade>): { eq: string; colorbalance: string; approximations: string[] };
+export function colorGradeToPixelParityBridge(color: Partial<ColorGrade>): {
+  css: { filter: string; colorBalance: { rs: number; gs: number; bs: number } };
+  ffmpeg: { eq: string; colorbalance: string; approximations: string[] };
+};
 export interface ColorGrade {
   basic: {
     temperature: number;

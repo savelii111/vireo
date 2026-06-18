@@ -1698,4 +1698,4 @@ function isPublicTimelineOp(op) {
   return PUBLIC_TIMELINE_OPS.includes(op);
 }
 
-export { clipsOverlap };
+export { clipsOverlap, colorGradeToPixelParityBridge };

@@ -8,6 +8,7 @@ import {
   applyTimelineOp,
   buildFfmpegArgs,
   buildRenderPlan,
+  colorGradeToPixelParityBridge,
   colorGradeToPreviewCss,
   colorGradeToFfmpegColorFilters,
   createEmptyTimelineDocument,
@@ -614,12 +615,18 @@ test("D: pixel parity bridge and empty timeline guard", () => {
   doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "shot", assetId: "shot.mp4", start: 0, end: 2, kind: "video" } }));
   doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { color: { basic: { exposure: 1, contrast: 20, saturation: 120, temperature: 20, tint: -10 } } } }));
   const color = computeClipColorAt(doc, doc.tracks[0].clips[0], 0);
+  const bridge = colorGradeToPixelParityBridge(color);
   const plan = buildRenderPlan(doc, "youtube_1080p");
   const args = buildFfmpegArgs(plan, "youtube_1080p");
   const ffmpeg = colorGradeToFfmpegColorFilters(color);
   const preview = colorGradeToPreviewCss(color);
+  assert.deepEqual(ffmpeg, bridge.ffmpeg);
+  assert.deepEqual(preview, bridge.css);
   assert.match(args.filter_complex, new RegExp(ffmpeg.eq.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(args.filter_complex, new RegExp(ffmpeg.colorbalance.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.equal(preview.filter, colorGradeToPreviewCss(computeClipColorAt(doc, doc.tracks[0].clips[0], 0)).filter);
+  const eqSaturation = ffmpeg.eq.match(/saturation=([0-9.]+)/)?.[1];
+  const cssSaturation = preview.filter.match(/saturate\(([0-9.]+)\)/)?.[1];
+  assert.equal(eqSaturation, "1.20");
+  assert.equal(cssSaturation, "1.200");
   assert.throws(() => buildRenderPlan(createEmptyTimelineDocument({ projectId: "p_empty", userId: "u_empty", fps: 30 }), "youtube_1080p"), /at least one visible clip/);
 });

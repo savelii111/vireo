@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Inspector } from '../src/components/Inspector';
 import { Preview } from '../src/components/Preview';
 import type { Clip, Keyframe, ProjectState, Track, AudioTrack, AudioClip } from '../src/types';
-import { TIMELINE_OPS, createTimelineOp } from '../../../../packages/shared/index.js';
+import { TIMELINE_OPS, createTimelineOp, computeClipColorAt, colorGradeToPreviewCss } from '../../../../packages/shared/index.js';
 import {
   activeClipAtTrack,
   activeClipsAt,
@@ -159,6 +159,39 @@ describe('Day 9 preview and inspector components', () => {
     const video = container.querySelector('[data-testid="preview-video"]') as HTMLVideoElement | null;
     expect(video?.getAttribute('src')).toBe('intro.mp4');
     expect(container.querySelector('[data-testid="preview-placeholder"]')).toBeNull();
+  });
+
+  it('routes Preview color filter through the shared pixel-parity bridge', () => {
+    const p = project();
+    const gradedClip: Clip = {
+      ...p.tracks[0].clips[0],
+      color: {
+        basic: { exposure: 0.5, contrast: 18, saturation: 125, temperature: 12, tint: -6 },
+      },
+    };
+    const expectedColor = computeClipColorAt({ tracks: [] } as any, gradedClip, 0);
+    const expectedFilter = colorGradeToPreviewCss(expectedColor).filter;
+
+    act(() => {
+      root.render(
+        <Preview
+          tab="program"
+          onTabChange={() => {}}
+          playing={false}
+          onTogglePlay={() => {}}
+          playhead={0}
+          duration={10}
+          fps={30}
+          width={1920}
+          height={1080}
+          activeVideoClip={gradedClip}
+          activeTextClips={[]}
+        />,
+      );
+    });
+
+    const video = container.querySelector('[data-testid="preview-video"]') as HTMLVideoElement | null;
+    expect(video?.style.filter).toBe(expectedFilter);
   });
 
   it('renders simulated media as a poster card instead of a fake frame', () => {
