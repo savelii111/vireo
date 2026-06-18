@@ -88,6 +88,14 @@ export const PUBLIC_TIMELINE_OPS = Object.freeze([
 
 export const DEFAULT_RESOLUTION = Object.freeze({ w: 1080, h: 1920 });
 
+export const EXPORT_PRESETS = Object.freeze([
+  Object.freeze({ id: "youtube_1080p", name: "YouTube 1080p", width: 1920, height: 1080, fps: 30, videoCodec: "h264", audioCodec: "aac", videoBitrateKbps: 8000, audioBitrateKbps: 192, container: "mp4" }),
+  Object.freeze({ id: "youtube_4k", name: "YouTube 4K", width: 3840, height: 2160, fps: 30, videoCodec: "h264", audioCodec: "aac", videoBitrateKbps: 35000, audioBitrateKbps: 192, container: "mp4" }),
+  Object.freeze({ id: "instagram_square_1080", name: "Instagram Square 1080", width: 1080, height: 1080, fps: 30, videoCodec: "h264", audioCodec: "aac", videoBitrateKbps: 6000, audioBitrateKbps: 128, container: "mp4" }),
+  Object.freeze({ id: "tiktok_vertical_1080", name: "TikTok Vertical 1080", width: 1080, height: 1920, fps: 30, videoCodec: "h264", audioCodec: "aac", videoBitrateKbps: 6000, audioBitrateKbps: 128, container: "mp4" }),
+  Object.freeze({ id: "web_720p", name: "Web 720p", width: 1280, height: 720, fps: 30, videoCodec: "h264", audioCodec: "aac", videoBitrateKbps: 4000, audioBitrateKbps: 128, container: "mp4" }),
+]);
+
 export class TimelineOpError extends Error {
   constructor(code, message) {
     super(message);
@@ -1496,6 +1504,186 @@ function timelineHasId(timeline, id) {
     if (track.clips.some((clip) => clip.id === id)) return true;
   }
   return false;
+}
+
+function clampEven(value, min, max, fallback) {
+  const n = Math.round(Number.isFinite(value) ? value : fallback);
+  const clamped = Math.max(min, Math.min(max, n));
+  return clamped % 2 === 0 ? clamped : clamped - 1;
+}
+
+export function normalizeExportPreset(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const id = typeof value === "string" ? value : String(raw.id || "youtube_1080p");
+  const known = EXPORT_PRESETS.find((preset) => preset.id === id);
+  if (!known) throw invalid(`unknown export preset: ${id}`);
+  const width = clampEven(Number(raw.width ?? known.width), 16, 7680, known.width);
+  const height = clampEven(Number(raw.height ?? known.height), 16, 7680, known.height);
+  const fps = [24, 25, 30, 50, 60].includes(Number(raw.fps ?? known.fps)) ? Number(raw.fps ?? known.fps) : known.fps;
+  const videoBitrateKbps = Math.max(1, Number(raw.videoBitrateKbps ?? known.videoBitrateKbps));
+  const audioBitrateKbps = Math.max(1, Number(raw.audioBitrateKbps ?? known.audioBitrateKbps));
+  return Object.freeze({
+    id,
+    name: String(raw.name ?? known.name),
+    width,
+    height,
+    fps,
+    videoCodec: "h264",
+    audioCodec: "aac",
+    videoBitrateKbps,
+    audioBitrateKbps,
+    container: "mp4",
+  });
+}
+
+function isRenderVisibleTrack(track) {
+  return track && !track.muted && !track.hidden && !track.soloed;
+}
+
+function isRenderableClip(track, clip) {
+  return Boolean(clip && !clip.muted && (track.kind === TIMELINE_KINDS.AUDIO || [TIMELINE_KINDS.VIDEO, TIMELINE_KINDS.IMAGE, TIMELINE_KINDS.OVERLAY].includes(track.kind)));
+}
+
+export function buildRenderPlan(timeline, presetId) {
+  if (!timeline || !Array.isArray(timeline.tracks)) throw invalid("render plan requires a timeline document");
+  normalizeExportPreset({ id: presetId });
+  const plan = [];
+  const transitions = timeline.transitions || [];
+  for (const track of timeline.tracks) {
+    if (!isRenderVisibleTrack(track)) continue;
+    const clips = [...(track.clips || [])]
+      .filter((clip) => isRenderableClip(track, clip))
+      .sort((a, b) => clipStart(a) - clipStart(b) || String(a.id).localeCompare(String(b.id)));
+    for (const clip of clips) {
+      const start = clipStart(clip);
+      const end = clipEnd(clip);
+      const isAudio = track.kind === TIMELINE_KINDS.AUDIO;
+      const duckingDb = isAudio ? computeDuckingReductionDb(timeline, track.id, start) : 0;
+      const computedGainDb = isAudio ? computeClipGainDb(timeline, clip, start) : 0;
+      const color = isAudio ? null : computeClipColorAt(timeline, clip, start);
+      plan.push({
+        trackId: track.id,
+        clipId: clip.id,
+        kind: clip.kind || track.kind,
+        start,
+        end,
+        sourceIn: Number.isFinite(Number(clip.in)) ? Number(clip.in) : 0,
+        sourceOut: Number.isFinite(Number(clip.out)) ? Number(clip.out) : end - start,
+        color,
+        audioGainDb: computedGainDb,
+        audioDuckingDb: duckingDb,
+        audioGainKeyframes: isAudio ? [{ time: start, value: computedGainDb, duckingDb }] : [],
+        transitions: transitions
+          .filter((transition) => transition && (transition.fromClipId === clip.id || transition.toClipId === clip.id))
+          .map((transition) => ({
+            id: transition.id,
+            kind: transition.kind,
+            fromClipId: transition.fromClipId,
+            toClipId: transition.toClipId,
+            duration: transition.duration,
+          })),
+      });
+    }
+  }
+  plan.sort((a, b) => a.trackId.localeCompare(b.trackId) || a.start - b.start || a.clipId.localeCompare(b.clipId));
+  if (plan.length === 0) throw invalid("render plan requires at least one visible clip");
+  plan.metadata = { simulated_media: true, real_encode: false };
+  return plan;
+}
+
+function colorGradeToPixelParityBridge(color) {
+  const c = normalizeColorGrade(color);
+  const exposure = clampRange(c.basic.exposure / 5, 0, -1, 1);
+  const contrast = clampRange(1 + c.basic.contrast / 100, 1, 0.01, 2);
+  const saturation = clampRange(c.basic.saturation / 100, 1, 0, 4);
+  const temperature = clampRange(c.basic.temperature / 100, 0, -1, 1);
+  const tint = clampRange(c.basic.tint / 100, 0, -1, 1);
+  const hueDegrees = clampRange(c.basic.temperature / 2, 0, -30, 30);
+  const eq = `eq=brightness=${exposure.toFixed(2)}:contrast=${contrast.toFixed(2)}:saturation=${saturation.toFixed(2)}:gamma=1.00`;
+  const colorbalance = `colorbalance=rs=${temperature.toFixed(2)}:gs=${tint.toFixed(2)}:bs=${(-temperature).toFixed(2)}`;
+  return {
+    css: {
+      filter: [
+        `brightness(${(1 + exposure / 2).toFixed(3)})`,
+        `contrast(${contrast.toFixed(3)})`,
+        `saturate(${saturation.toFixed(3)})`,
+        `hue-rotate(${hueDegrees.toFixed(2)}deg)`,
+        `sepia(${Math.max(0, c.creative.faded / 100).toFixed(3)})`,
+      ].join(" "),
+      colorBalance: { rs: temperature, gs: tint, bs: -temperature },
+    },
+    ffmpeg: {
+      eq,
+      colorbalance,
+      approximations: ["eq", "colorbalance"],
+    },
+  };
+}
+
+export function colorGradeToPreviewCss(color) {
+  return colorGradeToPixelParityBridge(color).css;
+}
+
+export function colorGradeToFfmpegColorFilters(color) {
+  return colorGradeToPixelParityBridge(color).ffmpeg;
+}
+
+export function buildFfmpegArgs(renderPlan, preset) {
+  const plan = Array.isArray(renderPlan) ? renderPlan : renderPlan?.clips || [];
+  const metadata = Array.isArray(renderPlan) ? renderPlan.metadata : renderPlan?.metadata || {};
+  if (!Array.isArray(plan) || plan.length === 0) throw invalid("render plan requires at least one clip");
+  const normalizedPreset = normalizeExportPreset(preset);
+  const duration = Math.max(0.001, plan.reduce((max, item) => Math.max(max, Number(item.end || 0) - Number(item.start || 0)), 0));
+  const approximations = [];
+  const videoFilters = [];
+  const audioFilters = [];
+  const visualItems = plan.filter((item) => item.color !== null && item.color !== undefined);
+  const audioItems = plan.filter((item) => item.kind === TIMELINE_KINDS.AUDIO || Number.isFinite(Number(item.audioGainDb)));
+  visualItems.forEach((item, index) => {
+    const filters = colorGradeToFfmpegColorFilters(item.color || {});
+    const labelIn = index === 0 ? "0:v:0" : `v${index - 1}`;
+    const labelOut = `v${index}`;
+    videoFilters.push(`[${labelIn}]${filters.eq},${filters.colorbalance}[${labelOut}]`);
+    approximations.push(`clip:${item.clipId}:approx:${filters.approximations.join("+")}`);
+  });
+  if (visualItems.length === 0) {
+    videoFilters.push("[0:v:0]format=yuv420p[v0]");
+  }
+  audioItems.forEach((item, index) => {
+    const gain = Number(item.audioGainDb || 0);
+    const ducking = Number(item.audioDuckingDb || 0);
+    const parts = [`volume=${gain.toFixed(2)}dB`];
+    if (ducking !== 0) parts.push(`volume=${ducking.toFixed(2)}dB`);
+    const labelIn = index === 0 ? "1:a:0" : `a${index - 1}`;
+    const labelOut = `a${index}`;
+    audioFilters.push(`[${labelIn}]${parts.join(",")}[${labelOut}]`);
+  });
+  if (audioItems.length === 0) {
+    audioFilters.push("[1:a:0]anull[a0]");
+  }
+  const filterComplex = [
+    ...videoFilters,
+    ...audioFilters,
+    `[v${Math.max(0, visualItems.length - 1)}]format=yuv420p[vout]`,
+    `[a${Math.max(0, audioItems.length - 1)}]anull[aout]`,
+  ].join(";");
+  const argv = [
+    "-y",
+    "-f", "lavfi", "-i", `color=c=#111111:s=${normalizedPreset.width}x${normalizedPreset.height}:r=${normalizedPreset.fps}:d=${duration.toFixed(3)}`,
+    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+    "-filter_complex", filterComplex,
+    "-map", "[vout]",
+    "-map", "[aout]",
+    "-s", `${normalizedPreset.width}x${normalizedPreset.height}`,
+    "-r", String(normalizedPreset.fps),
+    "-b:v", `${normalizedPreset.videoBitrateKbps}k`,
+    "-b:a", `${normalizedPreset.audioBitrateKbps}k`,
+    "-c:v", "libx264",
+    "-c:a", "aac",
+    "-movflags", "+faststart",
+    "output.mp4",
+  ];
+  return { argv, filter_complex: filterComplex, approximations, metadata: { simulated_media: metadata.simulated_media !== false, real_encode: Boolean(metadata.real_encode) } };
 }
 
 function invalid(message) {

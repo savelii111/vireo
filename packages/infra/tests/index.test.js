@@ -1,6 +1,11 @@
 import { test } from "node:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { InMemoryQueue, NullQueue, InMemoryRedis, NullRedis, S3Client, S3Error, createQueue, createRedis, createS3 } from "../src/index.js";
+
+describe("infra node:test compatibility", () => {
+  it("keeps vitest happy while node:test runs the suite", () => {});
+});
 
 // ---------- InMemoryQueue ----------
 test("InMemoryQueue: enqueue + claim returns the job", async () => {

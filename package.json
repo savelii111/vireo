@@ -12,6 +12,7 @@
     "packages/*"
   ],
   "scripts": {
+    "typecheck": "cd agents/studio/frontend && npm run typecheck",
     "test": "node tests/run-all.mjs",
     "test:style-learner": "cd agents/style-learner && python -m pytest tests/ -v",
     "test:editor": "cd agents/editor && python -m pytest tests/ -v",

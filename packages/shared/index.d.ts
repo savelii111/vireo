@@ -73,10 +73,60 @@ export interface ColorWheels {
   highlights: ColorWheelChannel;
 }
 export interface ColorMetadata {
-  simulated_scopes: boolean;
-  real_pixel_analysis: boolean;
-  real_lut_apply: boolean;
+  simulated_scopes: true;
+  real_pixel_analysis: false;
+  real_lut_apply: false;
 }
+
+  name: string;
+  width: number;
+  height: number;
+  fps: 24 | 25 | 30 | 50 | 60;
+  videoCodec: 'h264';
+  audioCodec: 'aac';
+  videoBitrateKbps: number;
+  audioBitrateKbps: number;
+  container: 'mp4';
+}
+export interface ExportRenderPlanItem {
+  trackId: string;
+  clipId: string;
+  kind: string;
+  start: number;
+  end: number;
+  sourceIn: number;
+  sourceOut: number;
+  color: ColorGrade | null;
+  audioGainDb: number;
+  audioDuckingDb: number;
+  audioGainKeyframes: Array<{ time: number; value: number; duckingDb: number }>;
+  transitions: Array<{ id?: string; kind?: string; fromClipId?: string; toClipId?: string; duration?: number }>;
+}
+export type ExportRenderPlan = ExportRenderPlanItem[] & { metadata: { simulated_media: true; real_encode: false } };
+export interface ExportJob {
+  id: string;
+  projectId: string;
+  presetId: string;
+  baseVersion: number;
+  actor: 'human' | 'bot';
+  state: 'queued' | 'running' | 'done' | 'failed' | 'canceled';
+  progress: number;
+  result?: { path?: string; url?: string; metadata?: Record<string, unknown> };
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export const EXPORT_PRESETS: ExportPreset[];
+export function normalizeExportPreset(value: unknown): ExportPreset;
+export function buildRenderPlan(timeline: unknown, presetId: string): ExportRenderPlan;
+export function buildFfmpegArgs(renderPlan: ExportRenderPlan | { clips: ExportRenderPlanItem[]; metadata?: Record<string, unknown> }, preset: ExportPreset | unknown): {
+  argv: string[];
+  filter_complex: string;
+  approximations: string[];
+  metadata: { simulated_media: boolean; real_encode: boolean };
+};
+export function colorGradeToPreviewCss(color: Partial<ColorGrade>): { filter: string; colorBalance: { rs: number; gs: number; bs: number } };
+export function colorGradeToFfmpegColorFilters(color: Partial<ColorGrade>): { eq: string; colorbalance: string; approximations: string[] };
 export interface ColorGrade {
   basic: {
     temperature: number;

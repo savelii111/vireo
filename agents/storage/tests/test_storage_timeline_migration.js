@@ -53,17 +53,17 @@ class SchemaRecordingPool {
   }
 }
 
-test("012_studio_timeline migration is idempotent and registers Day 2 tables", async () => {
+test("013_studio_exports migration is idempotent and registers export tables", async () => {
   const pool = new SchemaRecordingPool();
 
   await applyMigrations(pool);
   await applyMigrations(pool);
 
-  assert.ok(pool.applied.includes("012_studio_timeline"), "012_studio_timeline should be applied once");
-  assert.equal(pool.applied.filter((name) => name === "012_studio_timeline").length, 1, "migration should not re-run on second apply");
+  assert.ok(pool.applied.includes("013_studio_exports"), "013_studio_exports should be applied once");
+  assert.equal(pool.applied.filter((name) => name === "013_studio_exports").length, 1, "migration should not re-run on second apply");
 
-  for (const table of ["vireo_assets", "vireo_timelines", "vireo_timeline_ops", "vireo_generations"]) {
-    assert.ok(pool.tables.has(table), `${table} should be declared by migration 012`);
+  for (const table of ["vireo_assets", "vireo_timelines", "vireo_timeline_ops", "vireo_generations", "vireo_exports"]) {
+    assert.ok(pool.tables.has(table), `${table} should be declared by migrations`);
   }
 
   for (const index of [
@@ -75,10 +75,12 @@ test("012_studio_timeline migration is idempotent and registers Day 2 tables", a
     "vireo_timeline_ops_project_idx",
     "vireo_generations_user_idx",
     "vireo_generations_status_idx",
+    "vireo_exports_project_idx",
+    "vireo_exports_user_state_idx",
   ]) {
-    assert.ok(pool.indexes.has(index), `${index} should be declared by migration 012`);
+    assert.ok(pool.indexes.has(index), `${index} should be declared by migrations`);
   }
 
   const applied = await listAppliedMigrations(pool);
-  assert.equal(applied.at(-1).name, "012_studio_timeline", "012_studio_timeline should be the last applied migration");
+  assert.equal(applied.at(-1).name, "013_studio_exports", "013_studio_exports should be the last applied migration");
 });

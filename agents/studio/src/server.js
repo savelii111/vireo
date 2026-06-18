@@ -28,8 +28,11 @@
 //   POST   /api/chat                      — send a chat message (multi-turn w/ tool calls)
 
 import { createServer, request as httpRequest } from "node:http";
-import { randomUUID } from "node:crypto";
-import { createEmptyTimelineDocument, validateTimelineDocument, applyOp, PUBLIC_TIMELINE_OPS, createTimelineOp, TIMELINE_OPS } from "@vireo/shared";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { createEmptyTimelineDocument, validateTimelineDocument, applyOp, PUBLIC_TIMELINE_OPS, createTimelineOp, TIMELINE_OPS, TIMELINE_KINDS, buildRenderPlan, buildFfmpegArgs, normalizeExportPreset } from "@vireo/shared";
 import { authMiddleware, corsHeaders, readJsonBody, RateLimiter } from "../../../packages/auth-middleware/index.js";
 import { MessageFeedbackStore, WelcomeAnswersStore, UserPreferencesStore } from "../../storage/src/feedback_store.js";
 import {
@@ -1609,6 +1612,121 @@ function validateTimelineOpBatch(body) {
   };
 }
 
+function validateExportRequest(body) {
+  const baseVersion = Number(body.baseVersion);
+  if (!Number.isInteger(baseVersion) || baseVersion < 1) throw opError("validation", "baseVersion must be a positive integer");
+  if (!body.projectId || typeof body.projectId !== "string") throw opError("validation", "projectId must be a string");
+  if (!body.presetId || typeof body.presetId !== "string") throw opError("validation", "presetId must be a string");
+  if (!["human", "bot"].includes(body.actor || "human")) throw opError("validation", "actor must be human or bot");
+  return { projectId: body.projectId, presetId: body.presetId, baseVersion, actor: body.actor || "human" };
+}
+
+function deterministicExportJobId({ projectId, presetId, baseVersion, actor }) {
+  const digest = createHash("sha256").update(JSON.stringify({ projectId, presetId, baseVersion, actor })).digest("hex").slice(0, 20);
+  return `ex_${digest}`;
+}
+
+function publicExportJob(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    projectId: row.project_id || row.projectId,
+    userId: row.user_id || row.userId,
+    presetId: row.preset_id || row.presetId,
+    baseVersion: row.base_version ?? row.baseVersion,
+    actor: row.actor,
+    state: row.state,
+    progress: row.progress,
+    result: row.result || undefined,
+    error: row.error || undefined,
+    createdAt: row.created_at || row.createdAt,
+    updatedAt: row.updated_at || row.updatedAt,
+  };
+}
+
+async function saveExportJob(store, pool, job) {
+  if (pool && typeof pool.query === "function") {
+    const result = await pool.query(
+      `INSERT INTO vireo_exports (id, project_id, user_id, preset_id, base_version, actor, state, progress, result, error, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
+       ON CONFLICT (id) DO UPDATE SET
+         state = EXCLUDED.state,
+         progress = EXCLUDED.progress,
+         result = EXCLUDED.result,
+         error = EXCLUDED.error,
+         updated_at = EXCLUDED.updated_at
+       RETURNING *`,
+      [job.id, job.projectId, job.userId, job.presetId, job.baseVersion, job.actor, job.state, job.progress, JSON.stringify(job.result || null), job.error || null, job.createdAt, job.updatedAt]
+    );
+    return publicExportJob(result.rows[0]);
+  }
+  return publicExportJob(await store.upsert(job));
+}
+
+async function fetchExportJob(store, pool, id) {
+  if (pool && typeof pool.query === "function") {
+    const result = await pool.query("SELECT * FROM vireo_exports WHERE id = $1", [id]);
+    return publicExportJob(result.rows[0]);
+  }
+  return publicExportJob(await store.get(id));
+}
+
+async function updateExportJob(store, pool, id, updates) {
+  const next = { ...updates, updatedAt: new Date().toISOString() };
+  if (pool && typeof pool.query === "function") {
+    const result = await pool.query(
+      `UPDATE vireo_exports
+       SET state = COALESCE($2, state), progress = COALESCE($3, progress), result = COALESCE($4::jsonb, result), error = COALESCE($5, error), updated_at = $6
+       WHERE id = $1
+       RETURNING *`,
+      [id, next.state || null, next.progress ?? null, next.result ? JSON.stringify(next.result) : null, next.error ?? null, next.updatedAt]
+    );
+    return publicExportJob(result.rows[0]);
+  }
+  return publicExportJob(await store.update(id, next));
+}
+
+async function renderExportPlaceholder(job, timeline, store, pool) {
+  const preset = normalizeExportPreset({ id: job.presetId });
+  const plan = buildRenderPlan(timeline.doc, job.presetId);
+  const args = buildFfmpegArgs(plan, preset);
+  const outputDir = process.env.VIREO_EXPORT_DIR || path.join(process.cwd(), "tmp_exports");
+  mkdirSync(outputDir, { recursive: true });
+  const outputPath = path.join(outputDir, `${job.id}.mp4`);
+  const argv = [...args.argv];
+  argv[argv.lastIndexOf("output.mp4")] = outputPath;
+  const result = spawnSync("ffmpeg", argv, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (result.status !== 0) throw Object.assign(new Error((result.stderr || result.error?.message || "ffmpeg placeholder render failed").trim()), { code: "export_render_failed", httpStatus: 500 });
+  const metadata = { simulated_media: true, real_encode: false, ffmpeg: { args_snapshot: args.filter_complex } };
+  await updateExportJob(store, pool, job.id, { state: "done", progress: 100, result: { path: outputPath, metadata }, error: null });
+}
+
+async function runExportWorker(store, pool, timelines) {
+  if (runExportWorker.running) return;
+  runExportWorker.running = true;
+  try {
+    while (true) {
+      const queued = pool
+        ? await pool.query("SELECT * FROM vireo_exports WHERE state = 'queued' ORDER BY created_at LIMIT 1")
+        : { rows: [...store.items.values()].filter((job) => job.state === "queued").sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(0, 1) };
+      const row = queued.rows[0];
+      if (!row) break;
+      const job = publicExportJob(row);
+      await updateExportJob(store, pool, job.id, { state: "running", progress: 5 });
+      try {
+        const timeline = await timelines.get(job.projectId);
+        if (!timeline) throw Object.assign(new Error("timeline not found"), { code: "timeline_not_found", httpStatus: 404 });
+        await renderExportPlaceholder({ ...job, state: "running", progress: 5 }, timeline, store, pool);
+      } catch (error) {
+        await updateExportJob(store, pool, job.id, { state: "failed", progress: 100, error: error.message });
+      }
+    }
+  } finally {
+    runExportWorker.running = false;
+  }
+}
+runExportWorker.running = false;
+
 async function getOwnedProject(pool, projectId, userId) {
   const r = await pool.query("SELECT * FROM vireo_projects WHERE id = $1 AND user_id = $2", [projectId, userId]);
   return r.rows[0] || null;
@@ -1898,6 +2016,7 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
   const projects = pool ? new ProjectStore(pool) : new InMemoryProjectStore();
   const assets = pool ? new StudioAssetStore(pool) : new InMemoryStudioAssetStore();
   const timelines = pool ? new StudioTimelineStore(pool) : new InMemoryStudioTimelineStore();
+  const exports = pool ? null : new InMemoryExportStore();
   const pieces = pool ? new ContentPieceStorePg(pool) : new InMemoryPieceStore();
   const conversations = pool ? new ConversationStore(pool) : new InMemoryConvStore();
   const messages = pool ? new MessageStore(pool) : new InMemoryMsgStore();
@@ -2288,6 +2407,66 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
               version: saved.version,
             },
           });
+        }
+      }
+
+      // ---- studio exports ----
+      const exportMatch = url.match(/^\/api\/exports(?:\/([^/]+)(?:\/result)?)?$/);
+      if (exportMatch) {
+        const jobId = exportMatch[1] ? decodeURIComponent(exportMatch[1]) : null;
+        if (key === "POST /api/exports") {
+          if (await guardBody(req, res)) return;
+          let body; try { body = await readJsonBody(req, MAX_BODY_BYTES); } catch (e) { return err(res, 400, "bad_json", e.message); }
+          let request;
+          try { request = validateExportRequest(body); } catch (e) { return err(res, e.httpStatus || 400, e.code || "export_validation", e.message); }
+          const p = await projects.get(request.projectId);
+          if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
+          let preset;
+          try { preset = normalizeExportPreset({ id: request.presetId }); } catch (e) { return err(res, 400, e.code || "export_validation", e.message); }
+          const jobId = deterministicExportJobId(request);
+          const existing = await fetchExportJob(exports, pool, jobId);
+          if (existing && existing.state !== "failed") {
+            return json(res, 200, { ok: true, job: existing });
+          }
+          const now = new Date().toISOString();
+          const job = {
+            id: jobId,
+            projectId: request.projectId,
+            userId,
+            presetId: preset.id,
+            baseVersion: request.baseVersion,
+            actor: request.actor,
+            state: "queued",
+            progress: 0,
+            result: null,
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          const saved = await saveExportJob(exports, pool, job);
+          void runExportWorker(exports, pool, timelines);
+          return json(res, 202, { ok: true, job: saved });
+        }
+        if (key === "GET /api/exports") {
+          if (pool) return err(res, 503, "export_list_requires_pg_store");
+          return json(res, 200, { ok: true, jobs: await exports.listForUser(userId) });
+        }
+        if (jobId && key === `GET /api/exports/${jobId}`) {
+          const job = await fetchExportJob(exports, pool, jobId);
+          if (!job || job.projectId !== undefined && job.projectId) {
+            const project = await projects.get(job.projectId);
+            if (!project || project.user_id !== userId) return err(res, 404, "export_not_found");
+          }
+          return json(res, 200, { ok: true, job });
+        }
+        if (jobId && key === `GET /api/exports/${jobId}/result`) {
+          const job = await fetchExportJob(exports, pool, jobId);
+          if (!job || job.projectId !== undefined && job.projectId) {
+            const project = await projects.get(job.projectId);
+            if (!project || project.user_id !== userId) return err(res, 404, "export_not_found");
+          }
+          if (!job || job.state !== "done" || !job.result) return err(res, 404, "export_result_not_ready");
+          return json(res, 200, { ok: true, result: job.result });
         }
       }
 
@@ -3511,6 +3690,36 @@ class InMemoryStudioTimelineStore {
     return this._row(next);
   }
   _row(t) { return { ...t, doc: { ...t.doc } }; }
+}
+
+class InMemoryExportStore {
+  constructor() { this.items = new Map(); }
+  async upsert(job) { this.items.set(job.id, { ...job }); return this._row(job); }
+  async get(id) { const job = this.items.get(id); return job ? this._row(job) : null; }
+  async listForUser(userId) { return [...this.items.values()].filter((job) => job.user_id === userId).sort((a, b) => b.created_at.localeCompare(a.created_at)).map((job) => this._row(job)); }
+  async update(id, updates) {
+    const job = this.items.get(id);
+    if (!job) return null;
+    const next = { ...job, ...updates, updatedAt: new Date().toISOString() };
+    this.items.set(id, next);
+    return this._row(next);
+  }
+  _row(job) {
+    return {
+      id: job.id,
+      project_id: job.projectId,
+      user_id: job.userId,
+      preset_id: job.presetId,
+      base_version: job.baseVersion,
+      actor: job.actor,
+      state: job.state,
+      progress: job.progress,
+      result: job.result || null,
+      error: job.error || null,
+      created_at: job.createdAt,
+      updated_at: job.updatedAt,
+    };
+  }
 }
 
 class InMemoryConvStore {

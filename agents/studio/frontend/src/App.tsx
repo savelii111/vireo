@@ -6,6 +6,7 @@ import { activeTextClipsAt, activeVideoClipAt } from './timelinePlayback';
 
 // Lazy-load heavy components — splits initial bundle
 const TopBar = lazy(() => import('./components/TopBar').then(m => ({ default: m.TopBar })));
+const ExportDialog = lazy(() => import('./components/ExportDialog').then(m => ({ default: m.ExportDialog })));
 const SideRail = lazy(() => import('./components/SideRail').then(m => ({ default: m.SideRail })));
 const Preview = lazy(() => import('./components/Preview').then(m => ({ default: m.Preview })));
 const Inspector = lazy(() => import('./components/Inspector').then(m => ({ default: m.Inspector })));
@@ -147,6 +148,7 @@ export default function App() {
   const editor = useEditor();
   const [helpOpen, setHelpOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>('program');
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector');
   const chatProjectId = useMemo(() => localStorage.getItem('vireo.activeProjectId') || undefined, []);
@@ -262,8 +264,8 @@ export default function App() {
         <Suspense fallback={<Fallback label="top bar" />}>
           <TopBar
             projectName={editor.project.name}
-            onExport={() => {}}
-            onRender={() => {}}
+            onExport={() => setExportOpen(true)}
+            onRender={() => setExportOpen(true)}
           />
         </Suspense>
 
@@ -402,6 +404,9 @@ export default function App() {
       </div>
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
       {cmdOpen && <CommandPalette onClose={() => setCmdOpen(false)} commands={commands} />}
+      <Suspense fallback={<Fallback label="export dialog" />}>
+        <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
+      </Suspense>
     </div>
   );
 }

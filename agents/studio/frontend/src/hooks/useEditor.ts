@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Keyframe, ProjectAsset, ProjectState, Clip, Track, Tool, TitleProps, AudioClip, AudioTrack, ColorGrade } from '../types';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AudioClip, AudioTrack, Clip, ColorGrade, ExportJob, Keyframe, ProjectAsset, ProjectState, TitleProps, Tool, Track } from '../types';
+import { createExportClient } from "../exportClient";
 import {
   applyTimelineOperation,
   createEmptyProjectState,
@@ -566,6 +567,9 @@ export function useEditor() {
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [exportPresetId, setExportPresetId] = useState('youtube_1080p');
+  const [exportJob, setExportJob] = useState<ExportJob | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const serverRef = useRef<TimelineServerState | null>(null);
   const pendingRef = useRef<PendingCommit | null>(null);
@@ -977,6 +981,26 @@ export function useEditor() {
     applyServerTimeline({ ...body, projectId });
   }, [applyServerTimeline]);
 
+  const exportClient = useMemo(() => createExportClient({ fetchImpl: fetch }), []);
+
+  const enqueueExport = useCallback(async (presetId = exportPresetId) => {
+    const projectId = serverRef.current?.doc.projectId || getActiveProjectId();
+    if (!projectId) throw new Error('No active project id for export');
+    const version = serverRef.current?.version || 1;
+    setExportError(null);
+    const result = await exportClient.enqueueExport({ projectId, presetId, baseVersion: version, actor: 'human' });
+    setExportJob(result.job);
+    return result.job;
+  }, [exportClient, exportPresetId]);
+
+  const pollExport = useCallback(async (jobId = exportJob?.id) => {
+    if (!jobId) return null;
+    const result = await exportClient.pollExport(jobId);
+    setExportJob(result.job);
+    if (result.job.error) setExportError(result.job.error);
+    return result.job;
+  }, [exportClient, exportJob?.id]);
+
   return {
     project,
     setProject,
@@ -1024,5 +1048,11 @@ export function useEditor() {
     toggleTrackSolo,
     toggleTrackLock,
     toggleTrackHidden,
+    exportPresetId,
+    setExportPresetId,
+    exportJob,
+    exportError,
+    enqueueExport,
+    pollExport,
   };
 }

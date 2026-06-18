@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  TIMELINE_KINDS,
   TIMELINE_OPS,
+  EXPORT_PRESETS,
   applyOp,
   applyTimelineOp,
+  buildFfmpegArgs,
+  buildRenderPlan,
+  colorGradeToPreviewCss,
+  colorGradeToFfmpegColorFilters,
   createEmptyTimelineDocument,
   createTimelineOp,
   computeClipColorAt,
@@ -13,6 +19,7 @@ import {
   deserializeTimelineDocument,
   evalParamAtTime,
   normalizeColorGrade,
+  normalizeExportPreset,
   normalizeTitleProps,
   serializeTimelineDocument,
   snapTime,
@@ -540,4 +547,79 @@ test("normalizeColorGrade clamps Lumetri fields and preserves neutral defaults",
   assert.deepEqual(grade.curves.r, [{ x: 0, y: 0.5 }, { x: 1, y: 1 }]);
   assert.deepEqual(grade.wheels.highlights, { r: 1, g: -1, b: 0.5 });
   assert.deepEqual(normalizeColorGrade({}).metadata, { simulated_scopes: true, real_pixel_analysis: false, real_lut_apply: false });
+});
+
+test("A: normalizeExportPreset clamps, defaults, and rejects unknown presets", () => {
+  const preset = normalizeExportPreset({ id: "youtube_1080p", width: 17, height: 7690, fps: 999, videoBitrateKbps: 0, audioBitrateKbps: -2 });
+  assert.equal(preset.width, 16);
+  assert.equal(preset.height, 7680);
+  assert.equal(preset.fps, 30);
+  assert.equal(preset.videoBitrateKbps, 1);
+  assert.equal(preset.audioBitrateKbps, 1);
+  assert.equal(normalizeExportPreset({ width: 1281, height: 721, fps: 24 }).id, "youtube_1080p");
+  assert.equal(normalizeExportPreset("tiktok_vertical_1080").id, "tiktok_vertical_1080");
+  assert.throws(() => normalizeExportPreset({ id: "unknown" }), /unknown export preset/);
+});
+
+test("B: buildRenderPlan keeps audio, uses shared color/gain/ducking, transitions, and is deterministic", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_export", userId: "u_export", fps: 30 });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "shot", assetId: "shot.mp4", start: 0, end: 6, kind: "video", in: 10, out: 16 } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { color: { basic: { exposure: 1, contrast: 10, saturation: 120, temperature: 20, tint: -10 } } } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { targetId: "color", param: "exposure", keyframe: { time: 0, value: 0 } } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_KEYFRAME, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { targetId: "color", param: "exposure", keyframe: { time: 3, value: 2 } } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_a1", payload: { id: "music", assetId: "music.wav", start: 0, end: 6, kind: "audio" } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_AUDIO, actor: "human", timelineId: doc.timelineId, trackId: "trk_a1", payload: { audio: { gainDb: -3, ducking: { enabled: true, amountDb: -6 } } } }));
+  doc.transitions = [{ id: "x1", kind: "crossfade", fromClipId: "shot", toClipId: "music", duration: 0.5 }];
+
+  const plan = buildRenderPlan(doc, "youtube_1080p");
+  const visual = plan.find((item) => item.clipId === "shot");
+  const audio = plan.find((item) => item.clipId === "music");
+  assert.equal(plan.length, 2);
+  assert.equal(visual.color.basic.exposure, computeClipColorAt(doc, doc.tracks[0].clips[0], 0).basic.exposure);
+  assert.equal(audio.kind, TIMELINE_KINDS.AUDIO);
+  assert.equal(audio.audioGainDb, computeClipGainDb(doc, doc.tracks[1].clips[0], 0));
+  assert.equal(audio.audioDuckingDb, computeDuckingReductionDb(doc, "trk_a1", 0));
+  assert.deepEqual(visual.transitions, [{ id: "x1", kind: "crossfade", fromClipId: "shot", toClipId: "music", duration: 0.5 }]);
+  assert.deepEqual(plan, buildRenderPlan(doc, "youtube_1080p"));
+  assert.deepEqual(plan.metadata, { simulated_media: true, real_encode: false });
+});
+
+test("C: buildFfmpegArgs contains preset encode flags and stable filter_complex snapshot", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_export", userId: "u_export", fps: 30 });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "shot", assetId: "shot.mp4", start: 0, end: 3, kind: "video" } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { color: { basic: { exposure: 0, contrast: 0, saturation: 100, temperature: 0, tint: 0 } } } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_a1", payload: { id: "music", assetId: "music.wav", start: 0, end: 3, kind: "audio" } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_TRACK_AUDIO, actor: "human", timelineId: doc.timelineId, trackId: "trk_a1", payload: { audio: { gainDb: -2 } } }));
+  const plan = buildRenderPlan(doc, "web_720p");
+  const args = buildFfmpegArgs(plan, "web_720p");
+  assert.ok(args.argv.includes("-s"));
+  assert.ok(args.argv.includes("1280x720"));
+  assert.ok(args.argv.includes("-r"));
+  assert.ok(args.argv.includes("30"));
+  assert.ok(args.argv.includes("-b:v"));
+  assert.ok(args.argv.includes("4000k"));
+  assert.ok(args.argv.includes("-b:a"));
+  assert.ok(args.argv.includes("128k"));
+  assert.ok(args.argv.includes("libx264"));
+  assert.ok(args.argv.includes("aac"));
+  assert.ok(args.argv.includes("+faststart"));
+  assert.match(args.filter_complex, /eq=/);
+  assert.match(args.filter_complex, /volume=-2\.00dB/);
+  assert.equal(args.filter_complex, "[0:v:0]eq=brightness=0.00:contrast=1.00:saturation=1.00:gamma=1.00,colorbalance=rs=0.00:gs=0.00:bs=0.00[v0];[1:a:0]volume=-2.00dB[a0];[a0]volume=0.00dB[a1];[v0]format=yuv420p[vout];[a1]anull[aout]");
+  assert.deepEqual(args.filter_complex, buildFfmpegArgs(plan, { id: "web_720p" }).filter_complex);
+});
+
+test("D: pixel parity bridge and empty timeline guard", () => {
+  let doc = createEmptyTimelineDocument({ projectId: "p_export", userId: "u_export", fps: 30 });
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.INSERT_CLIP, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", payload: { id: "shot", assetId: "shot.mp4", start: 0, end: 2, kind: "video" } }));
+  doc = applyTimelineOp(doc, createTimelineOp({ op: TIMELINE_OPS.SET_CLIP_COLOR, actor: "human", timelineId: doc.timelineId, trackId: "trk_v1", clipId: "shot", payload: { color: { basic: { exposure: 1, contrast: 20, saturation: 120, temperature: 20, tint: -10 } } } }));
+  const color = computeClipColorAt(doc, doc.tracks[0].clips[0], 0);
+  const plan = buildRenderPlan(doc, "youtube_1080p");
+  const args = buildFfmpegArgs(plan, "youtube_1080p");
+  const ffmpeg = colorGradeToFfmpegColorFilters(color);
+  const preview = colorGradeToPreviewCss(color);
+  assert.match(args.filter_complex, new RegExp(ffmpeg.eq.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(args.filter_complex, new RegExp(ffmpeg.colorbalance.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(preview.filter, colorGradeToPreviewCss(computeClipColorAt(doc, doc.tracks[0].clips[0], 0)).filter);
+  assert.throws(() => buildRenderPlan(createEmptyTimelineDocument({ projectId: "p_empty", userId: "u_empty", fps: 30 }), "youtube_1080p"), /at least one visible clip/);
 });

@@ -11,18 +11,26 @@
 
 ## Current Day
 
-Day 17 complete.
+Day 18 complete.
 
 ## What Changed
 
-- Finished Day 17 Color / Lumetri without real pixel analysis, real LUT application, or a real color pipeline:
-  - added shared `setClipColor` op contract for visual clips only (`video` / `image`), with field-level merge, inverse payloads, and version bump;
-  - added normalized Lumetri model for Basic Correction, Creative/LUT slot, Curves, Color Wheels, and simulated-scope metadata;
-  - reused existing `setKeyframe`/`computeClipColorAt` path with `targetId: "color"` under `clip.keyframes.effects.color.<param>`;
-  - wired frontend `Preview`, `Inspector`, `useEditor`, `types`, and `timelineContract` for Lumetri panel and CSS-filter approximation preview;
-  - added shared/backend/frontend tests for color merge, undo, visual-only guard, color keyframes, metadata flags, and simulated scopes.
-- Updated shared timeline contracts and Studio backend tests so human/bot color state shares one undoable timeline.
-- Added frontend coverage for Lumetri panel contract and preview approximation path.
+- Finished Day 18 Export:
+  - added shared export presets: `youtube_1080p`, `youtube_4k`, `instagram_square_1080`, `tiktok_vertical_1080`, `web_720p`;
+  - added `normalizeExportPreset`, `buildRenderPlan`, and `buildFfmpegArgs`;
+  - render/export reuse existing shared functions for color/audio/titles: `computeClipColorAt`, `computeClipGainDb`, `evalParamAtTime`, and `duckingEnvelope`;
+  - added pixel-parity bridge shared by Preview CSS and ffmpeg `eq` args;
+  - added Studio export queue/result endpoints:
+    - `POST /api/exports`;
+    - `GET /api/exports/:jobId`;
+    - `GET /api/exports/:jobId/result`;
+  - added deterministic export `jobId`, queued/running/done/failed/canceled states, in-memory worker, and PG persistence migration;
+  - added simulated-media placeholder render metadata: `simulated_media: true`, `real_encode: false`;
+  - added real-encode path behind capability flag using system `ffmpeg` / `fluent-ffmpeg`;
+  - wired frontend Export dialog, preset picker, polling, download result link, and simulated-media badge.
+- Added shared tests A/B/C/D for export presets, render plan, ffmpeg args, and pixel parity.
+- Updated `packages/shared/index.d.ts` exports for `EXPORT_PRESETS`, `ExportPreset`, `ExportJob`, `normalizeExportPreset`, `buildRenderPlan`, and `buildFfmpegArgs`.
+- Added `agents/storage/src/migrations.js` migration `013_studio_exports` and updated storage migration coverage.
 
 ## Day 15 — Titles / Essential Graphics panel
 
@@ -59,19 +67,20 @@ Day 17 complete.
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 17 changes:
+`node tests/run-all.mjs` after Day 18 changes:
 
-- `TOTAL: 1340 passed, 0 failed across 27 suites`
+- `TOTAL: 1344 passed, 0 failed across 27 suites`
 
 Frontend checks:
 
 - `npm run typecheck` → `exit 0`
-- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `4 passed` files, `27 passed` tests
+- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `5 passed` files, `28 passed` tests
 
 Shared/backend targeted checks:
 
-- `node tests/test_shared_timeline.js` → `18 passed`
+- `node tests/test_shared_timeline.js` → `22 passed`
 - `node --test agents/studio/tests/test_timeline_ops.js` → `22 passed`
+- Day 18 smoke: system `ffmpeg` exported `/tmp/day18-export-smoke.mp4` with metadata `{ simulated_media: true, real_encode: false }`.
 
 ## Next
 

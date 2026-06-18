@@ -3,6 +3,31 @@
 export type TrackKind = 'video' | 'audio' | 'overlay' | 'image';
 export type TimelineTrackKind = 'video' | 'audio' | 'text' | 'overlay' | 'image';
 export type TrackRole = 'voice' | 'music' | 'sfx' | 'ambience' | 'other';
+export interface ExportPreset {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  fps: 24 | 25 | 30 | 50 | 60;
+  videoCodec: 'h264';
+  audioCodec: 'aac';
+  videoBitrateKbps: number;
+  audioBitrateKbps: number;
+  container: 'mp4';
+}
+export interface ExportJob {
+  id: string;
+  projectId: string;
+  presetId: string;
+  baseVersion: number;
+  actor: 'human' | 'bot';
+  state: 'queued' | 'running' | 'done' | 'failed' | 'canceled';
+  progress: number;
+  result?: { path?: string; url?: string; metadata?: Record<string, unknown> };
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface AudioDucking {
   enabled: boolean;
   amountDb: number;

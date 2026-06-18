@@ -512,6 +512,27 @@ export const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS vireo_generations_status_idx ON vireo_generations(status);
     `,
   },
+  {
+    name: "013_studio_exports",
+    sql: `
+      CREATE TABLE IF NOT EXISTS vireo_exports (
+        id text PRIMARY KEY,
+        project_id text NOT NULL,
+        user_id text NOT NULL,
+        preset_id text NOT NULL,
+        base_version int NOT NULL,
+        actor text NOT NULL DEFAULT 'human',
+        state text NOT NULL DEFAULT 'queued',
+        progress int NOT NULL DEFAULT 0,
+        result jsonb,
+        error text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS vireo_exports_user_state_idx ON vireo_exports(user_id, state);
+      CREATE INDEX IF NOT EXISTS vireo_exports_project_idx ON vireo_exports(project_id);
+    `,
+  },
 ];
 
 export async function applyMigrations(pool) {
