@@ -103,6 +103,11 @@ secrets/
 .tmp/
 vireo-jobs/
 agents/studio/vireo-jobs/
+agents/vireo-jobs.db
+agents/vireo-jobs.db-shm
+agents/vireo-jobs.db-wal
+agents//vireo-jobs.db
+agents/studio/blue_test.png
 agents/studio/test-data/
 agents/studio/vireo-jobs.db
 agents/studio/vireo-jobs.db-shm
