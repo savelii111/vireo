@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FileAudio, FileVideo, FolderOpen, Image as ImageIcon, Search, Upload } from 'lucide-react';
 import clsx from 'clsx';
 import type { ProjectAsset, ProjectAssetKind } from '../types';
+import { getTusIngest, uploadMediaFile } from '../utils/tus_proxy';
 
 type BinFilter = 'all' | ProjectAssetKind;
 
@@ -29,9 +30,68 @@ function formatDuration(sec?: number | null) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-function authHeaders() {
-  const token = localStorage.getItem('vireo_token') || localStorage.getItem('vireo.auth.token');
-  return token ? { Authorization: `Bearer ${token}` } : undefined;
+function authHeaders(): Record<string, string> {
+  const tokenValue = localStorage.getItem('vireo_token') || localStorage.getItem('vireo.auth.token');
+  return tokenValue ? { Authorization: `Bearer ${tokenValue}` } : {};
+}
+
+function token() {
+  return (authHeaders().Authorization || '').replace(/^Bearer\s+/, '');
+}
+
+function formatFps(fps?: number | null) {
+  const value = Number(fps);
+  return Number.isFinite(value) && value > 0 ? `${value.toFixed(3).replace(/\.?0+$/, '')} fps` : '—';
+}
+
+async function waitForIngest(uploadId: string) {
+  const deadline = Date.now() + 30_000;
+  let lastError = '';
+  while (Date.now() < deadline) {
+    try {
+      const result = await getTusIngest(uploadId, token());
+      if (result.real_decode === true) return result;
+      if (result.error) throw new Error(String(result.error));
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      if (!lastError.includes('ingest_not_ready')) throw e;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(lastError || 'Timed out waiting for ffprobe ingest');
+}
+
+async function registerAssetFromIngest(projectId: string, ingest: Record<string, unknown>) {
+  const res = await fetch('/api/assets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({
+      project_id: projectId,
+      kind: (ingest.hasAudio === true ? 'video' : 'video') as ProjectAssetKind,
+      source: 'upload',
+      filename: ingest.filename,
+      storage_path: ingest.file_path,
+      duration_sec: ingest.duration_sec,
+      width: ingest.width,
+      height: ingest.height,
+      fps: ingest.fps,
+      codec: ingest.video_codec || ingest.codec,
+      container: ingest.container,
+      has_audio: ingest.hasAudio,
+      real_decode: ingest.real_decode,
+      metadata: {
+        ...(ingest.metadata && typeof ingest.metadata === 'object' ? ingest.metadata : {}),
+        real_decode: ingest.real_decode,
+        video_codec: ingest.video_codec || ingest.codec,
+        container: ingest.container,
+        fps: ingest.fps,
+        hasAudio: ingest.hasAudio,
+      },
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.message || body.error || `POST /api/assets failed (${res.status})`);
+  return body.asset as ProjectAsset;
 }
 
 export function MediaPanel({ projectId }: MediaPanelProps) {
@@ -40,10 +100,9 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [bin, setBin] = useState<BinFilter>('all');
   const [query, setQuery] = useState('');
-  const [importName, setImportName] = useState('');
-  const [importKind, setImportKind] = useState<ProjectAssetKind>('video');
-  const [importDuration, setImportDuration] = useState('5');
-  const [importing, setImporting] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,38 +136,36 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
       .filter((asset) => bin === 'all' || asset.kind === bin)
       .filter((asset) => {
         if (!q) return true;
-        const haystack = [assetName(asset), asset.id, asset.kind, asset.mime, asset.metadata?.label].filter(Boolean).join(' ').toLowerCase();
+        const haystack = [
+          assetName(asset), asset.id, asset.kind, asset.mime,
+          asset.metadata?.label, asset.codec, asset.container,
+          asset.real_decode === true ? 'real_decode' : '',
+        ].filter(Boolean).join(' ').toLowerCase();
         return haystack.includes(q);
       });
   }, [assets, bin, query]);
 
-  async function submitSimulatedImport(e: React.FormEvent) {
+  async function submitRealUpload(e: React.FormEvent) {
     e.preventDefault();
-    if (!projectId) return;
-    setImporting(true);
+    if (!projectId || !selectedFile) return;
+    setUploading(true);
     setError(null);
+    setUploadProgress(0);
     try {
-      const res = await fetch('/api/assets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({
-          project_id: projectId,
-          kind: importKind,
-          source: 'upload',
-          filename: importName.trim() || `simulated-${importKind}-${Date.now()}`,
-          duration_sec: Math.max(0.1, Number(importDuration) || 5),
-          metadata: { simulated_ingest: true, real_decode: false, registered_by: 'manual' },
-        }),
+      const uploadId = await uploadMediaFile(selectedFile, {
+        projectId,
+        token: token(),
+        onProgress: setUploadProgress,
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.message || `POST /api/assets failed (${res.status})`);
-      setAssets((prev) => [body.asset, ...prev]);
-      setImportName('');
-      setImportDuration('5');
+      const ingest = await waitForIngest(uploadId);
+      const asset = await registerAssetFromIngest(projectId, ingest);
+      setAssets((prev) => [asset, ...prev]);
+      setSelectedFile(null);
+      setUploadProgress(0);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setImporting(false);
+      setUploading(false);
     }
   }
 
@@ -120,42 +177,31 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
           <span className="text-[12px] font-semibold tracking-wide">Project / Media</span>
           <span className="rounded bg-bg-2 px-1.5 py-0.5 text-[10px] text-ink-3">{filtered.length}</span>
         </div>
-        <span className="text-[10px] text-ink-3">simulated ingest</span>
+        <span className="text-[10px] text-ink-3">TUS + ffprobe</span>
       </div>
 
       <div className="grid h-[calc(100%-40px)] grid-rows-[auto_auto_minmax(0,1fr)] gap-2 p-3">
-        <form onSubmit={submitSimulatedImport} className="grid grid-cols-[1fr_92px_72px_auto] gap-2">
+        <form onSubmit={submitRealUpload} className="grid grid-cols-[1fr_auto] gap-2">
           <input
-            value={importName}
-            onChange={(e) => setImportName(e.target.value)}
-            placeholder="asset.mp4 / audio.wav / image.png"
-            className="min-w-0 rounded border border-border-1 bg-bg-2 px-2 py-1.5 text-[12px] text-ink-1 outline-none placeholder:text-ink-4 focus:border-accent"
-          />
-          <select
-            value={importKind}
-            onChange={(e) => setImportKind(e.target.value as ProjectAssetKind)}
-            className="rounded border border-border-1 bg-bg-2 px-2 py-1.5 text-[12px] text-ink-1 outline-none focus:border-accent"
-          >
-            <option value="video">video</option>
-            <option value="audio">audio</option>
-            <option value="image">image</option>
-          </select>
-          <input
-            value={importDuration}
-            onChange={(e) => setImportDuration(e.target.value)}
-            placeholder="sec"
-            inputMode="decimal"
-            className="w-16 rounded border border-border-1 bg-bg-2 px-2 py-1.5 text-[12px] text-ink-1 outline-none focus:border-accent"
+            type="file"
+            accept="video/*,audio/*,image/*"
+            onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+            className="min-w-0 rounded border border-border-1 bg-bg-2 px-2 py-1.5 text-[12px] text-ink-1 outline-none placeholder:text-ink-4 focus:border-accent file:mr-2 file:rounded file:border-0 file:bg-bg-3 file:px-2 file:py-1 file:text-[11px] file:text-ink-1"
           />
           <button
-            data-testid="import-simulated"
-            disabled={importing || !projectId}
+            data-testid="import-real"
+            disabled={uploading || !projectId || !selectedFile}
             className="flex items-center gap-1 rounded bg-accent px-2 py-1.5 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:bg-bg-3 disabled:text-ink-3"
           >
             <Upload size={13} />
             Import
           </button>
         </form>
+        {uploading && (
+          <div className="h-1.5 overflow-hidden rounded bg-bg-3">
+            <div className="h-full bg-accent transition-all duration-300 ease-out" style={{ width: `${Math.round(uploadProgress * 100)}%` }} />
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
@@ -191,7 +237,7 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
           {loading && <EmptyState title="Loading assets…" subtitle="Reading metadata from /api/assets." />}
           {error && <div className="rounded border border-danger/30 bg-danger/10 p-2 text-[11px] text-danger">{error}</div>}
           {!loading && !error && filtered.length === 0 && (
-            <EmptyState title="No assets yet" subtitle="Use Import to register simulated metadata only." />
+            <EmptyState title="No assets yet" subtitle="Use Import to upload through TUS and ffprobe." />
           )}
           <div className="space-y-2">
             {filtered.map((asset) => (
@@ -206,6 +252,7 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
 
 function AssetCard({ asset }: { asset: ProjectAsset }) {
   const Icon = asset.kind === 'audio' ? FileAudio : asset.kind === 'image' ? ImageIcon : FileVideo;
+  const realDecode = asset.real_decode === true || asset.metadata?.real_decode === true;
   return (
     <article
       data-testid="asset-card"
@@ -224,11 +271,15 @@ function AssetCard({ asset }: { asset: ProjectAsset }) {
           <div className="flex items-center gap-2">
             <h3 className="truncate text-[12px] font-semibold text-ink-1" title={assetName(asset)}>{assetName(asset)}</h3>
             <span className="rounded bg-bg-1 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-ink-3">{asset.kind}</span>
+            {realDecode ? <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold text-accent">real_decode</span> : null}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-ink-3">
             <span>{formatDuration(asset.duration_sec)} duration</span>
+            {asset.width && asset.height ? <span>{asset.width}×{asset.height}</span> : null}
+            {asset.fps ? <span>{formatFps(asset.fps)}</span> : null}
+            {asset.codec ? <span>{asset.codec}</span> : null}
+            {asset.container ? <span>{asset.container}</span> : null}
             <span>{asset.status || 'ready'}</span>
-            {asset.metadata?.simulated_ingest === true && <span className="text-accent">metadata only</span>}
           </div>
           <p className="mt-1 truncate text-[10px] text-ink-4">Drag to any timeline track → insertClip</p>
         </div>

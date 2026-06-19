@@ -40,6 +40,50 @@ def _post(port: int, path: str, body: dict) -> dict:
     conn.close()
 
 
+def _request(port: int, method: str, path: str, body: bytes = b"", headers: dict | None = None) -> tuple[int, dict, dict]:
+  conn = HTTPConnection("127.0.0.1", port, timeout=10)
+  try:
+    conn.request(method, path, body=body, headers=headers or {})
+    resp = conn.getresponse()
+    raw = resp.read().decode() or "{}"
+    try:
+      parsed = json.loads(raw)
+    except json.JSONDecodeError:
+      parsed = {"raw": raw}
+    return resp.status, dict(resp.getheaders()), parsed
+  finally:
+    conn.close()
+
+
+def _tus_upload(port: int, fixture: Path) -> dict:
+  data = fixture.read_bytes()
+  metadata = "filename " + __import__("base64").b64encode(fixture.name.encode()).decode()
+  status, headers, body = _request(port, "POST", "/upload/resumable", headers={
+    "Tus-Resumable": "1.0.0",
+    "Upload-Length": str(len(data)),
+    "Upload-Metadata": metadata,
+  })
+  assert status == 201, body
+  upload_id = headers.get("Location", "").rstrip("/").split("/")[-1] or body["id"]
+  status, _, patch_body = _request(port, "PATCH", f"/upload/resumable/{upload_id}", body=data, headers={
+    "Tus-Resumable": "1.0.0",
+    "Upload-Offset": "0",
+    "Content-Range": f"bytes 0-{len(data) - 1}/{len(data)}",
+    "Content-Type": "application/offset+octet-stream",
+  })
+  assert status == 204, patch_body
+  deadline = time.time() + 15
+  last = None
+  while time.time() < deadline:
+    status, _, last = _request(port, "GET", f"/upload/resumable/{upload_id}/ingest")
+    if status == 200:
+      return last
+    if status != 404:
+      raise AssertionError((status, last))
+    time.sleep(0.2)
+  raise AssertionError(("ingest timeout", last))
+
+
 def test_chapters_endpoint_happy_path():
   server, port = _start_server()
   try:
@@ -195,6 +239,19 @@ def test_unknown_route_returns_404():
     server.shutdown()
 
 
-if __name__ == "__main__":
-  import pytest
-  sys.exit(pytest.main([__file__, "-v"]))
+def test_tus_ingest_runs_real_ffprobe_on_sample_mp4():
+  server, port = _start_server()
+  try:
+    fixture = Path(__file__).parent / "fixtures" / "sample_10s.mp4"
+    result = _tus_upload(port, fixture)
+    assert result["real_decode"] is True, result
+    assert result["duration"] > 9.5 and result["duration"] < 10.5, result
+    assert result["width"] == 1280, result
+    assert result["height"] == 720, result
+    assert result["fps"] == 30, result
+    assert result["hasAudio"] is True, result
+    assert result["video_codec"] == "h264", result
+    assert result["container"], result
+  finally:
+    server.shutdown()
+

@@ -11,7 +11,21 @@
 
 ## Current Day
 
-Day 18 complete.
+Day 20 complete.
+
+## What Changed
+
+- Finished Day 20 Real media ingest:
+  - fixed Studio TUS proxy auth/header/body path to `video-agent`;
+  - forwarded `Authorization` to the upstream video agent;
+  - added `content-length` to required TUS passthrough headers;
+  - kept real TUS semantics: `POST /upload/resumable` creates the upload without a body, then `PATCH` streams the real bytes;
+  - forwarded `Authorization` on ingest GET so protected video-agent endpoints work with the same JWT;
+  - added detailed upstream logging behind `VIREO_TUS_DEBUG`;
+  - added `e?.stack` logging on proxy catch;
+  - added real e2e coverage through `studio proxy -> video-agent` using `agents/video/tests/fixtures/sample_10s.mp4`;
+  - verified real ffprobe metadata: `real_decode=true`, `duration=10`, `1280x720`, `30fps`, `h264`, `hasAudio=true`;
+  - captured real UI screenshot `docs/vireo-day20-ingest.png`.
 
 ## What Changed
 

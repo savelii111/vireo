@@ -35,13 +35,13 @@ function videoBaseUrl() {
  * Headers that must be passed through unchanged between client and upstream
  * (TUS protocol + a few HTTP transport headers).
  *
- * Auth (Cookie, Authorization) and CSRF are intentionally excluded — the
- * dashboard uses a different auth scheme than the agent and we don't want
- * to leak the agent's session cookie to the browser.
+ * Auth is forwarded because the video agent is a first-class protected
+ * service in compose. TUS protocol headers are preserved verbatim so PATCH
+ * and creation-with-upload keep the exact contract.
  */
 export const TUS_PASSTHROUGH_HEADERS = [
-  "upload-length", "upload-offset", "upload-metadata",
-  "content-range", "content-type", "tus-resumable",
+  "authorization", "upload-length", "upload-offset", "upload-metadata",
+  "content-length", "content-range", "content-type", "tus-resumable",
 ];
 
 /**
@@ -81,9 +81,28 @@ export function stampUserIdInMetadata(metadataValue, userId) {
 export function proxyTusRequest(req, res, passthroughHeaders, sessionId, userId) {
   const targetPath = `/upload/resumable${sessionId ? "/" + encodeURIComponent(sessionId) : ""}`;
   const target = `${videoBaseUrl()}${targetPath}`;
+  const upstreamHeaders = { ...passthroughHeaders };
+  if (req.method === "POST" && !sessionId) {
+    delete upstreamHeaders["content-length"];
+    delete upstreamHeaders["content-type"];
+    delete upstreamHeaders["content-range"];
+  }
+  const sanitizedHeaders = Object.fromEntries(
+    Object.entries(upstreamHeaders).map(([k, v]) => [
+      k,
+      k.toLowerCase() === "authorization" ? "Bearer [REDACTED]" : v,
+    ])
+  );
+  if (process.env.VIREO_TUS_DEBUG) {
+    console.log(`[studio] TUS proxy upstream ${req.method} ${target}`, {
+      headers: sanitizedHeaders,
+      sessionId,
+      userId,
+    });
+  }
   const upstreamReq = httpRequest(target, {
     method: req.method,
-    headers: passthroughHeaders,
+    headers: upstreamHeaders,
   }, (upstreamRes) => {
     // Forward upstream status and headers verbatim — TUS protocol requires
     // exact header echo (e.g. Upload-Offset, Location on POST 201).
@@ -91,11 +110,11 @@ export function proxyTusRequest(req, res, passthroughHeaders, sessionId, userId)
     upstreamRes.pipe(res);
   });
   upstreamReq.on("error", (e) => {
-    console.error(`[studio] TUS proxy error (${req.method} ${target}):`, e?.message || e);
+    console.error(`[studio] TUS proxy error (${req.method} ${target}):`, e?.stack || e);
     if (!res.headersSent) {
       try {
         res.writeHead(502, { "content-type": "application/json" });
-      } catch (_) { /* socket closed before we could write */ }
+      } catch (_) { /* socket may be closed */ }
     }
     try {
       res.end(JSON.stringify({
@@ -105,39 +124,35 @@ export function proxyTusRequest(req, res, passthroughHeaders, sessionId, userId)
       }));
     } catch (_) { /* socket may be closed */ }
   });
+
   // Client disconnected mid-upload? Abort the upstream request so we don't
   // silently consume its chunk and bill storage for a half-uploaded file.
-  req.on("close", () => {
+  req.on("aborted", () => {
     if (!upstreamReq.destroyed) upstreamReq.destroy();
   });
   req.on("error", (e) => {
     if (!upstreamReq.destroyed) upstreamReq.destroy(e);
   });
-  // Stream body (if any) to upstream. We collect data/end events from req
-  // and forward to upstreamReq. We deliberately do NOT use req.pipe() because
-  // pipe() couples the readable's lifecycle to the writable's `finish` event
-  // in ways that interact poorly with proxy error handling — manual
-  // forwarding lets us treat upstream errors and client disconnects cleanly.
-  //
-  // Empty-body workaround (Day 1): when req has no body and fires 'end'
-  // before the upstream socket is bound, calling upstreamReq.end() in 'end'
-  // races with httpRequest's internal write queue and the upstream hangs up.
-  // Writing a 0-byte chunk BEFORE end() forces the request headers onto
-  // the wire as soon as the socket binds, which is what the upstream needs
-  // to see a complete request. Cost: one extra syscall per empty-body verb.
-  let dataSeen = false;
-  req.on("data", (chunk) => {
-    dataSeen = true;
-    if (!upstreamReq.destroyed && !upstreamReq.writableEnded) {
-      upstreamReq.write(chunk);
-    }
-  });
-  req.on("end", () => {
-    if (!upstreamReq.destroyed && !upstreamReq.writableEnded) {
-      if (!dataSeen) {
-        try { upstreamReq.write(Buffer.alloc(0)); } catch (_) { /* socket closed */ }
-      }
-      upstreamReq.end();
-    }
-  });
+  // The video TUS handler supports TUS creation-with-upload headers but does
+  // not consume a POST body; it finalizes on PATCH. Forwarding the file body
+  // on POST lets Python close the HTTP/1.0 socket before Node finishes
+  // writing, which manifests as "socket hang up". For POST creation, send the
+  // headers only and drain the client body so the proxy can safely return the
+  // upstream 201 Location. All real bytes still flow through the proxy on
+  // PATCH, where the video agent consumes and ffprobes the upload.
+  if (req.method === "POST" && !sessionId) {
+    upstreamReq.end();
+    req.resume();
+    req.on("aborted", () => {
+      if (!upstreamReq.destroyed) upstreamReq.destroy();
+    });
+    return;
+  }
+
+  // Stream body (if any) to upstream. Node's pipe handles backpressure and
+  // lets the upstream see the real request body. For HEAD/DELETE, req ends
+  // immediately and we only send headers. Avoid the old zero-byte write: with
+  // Python BaseHTTP/1.0 it can race with socket shutdown and produces
+  // "socket hang up" even when the upstream URL is reachable.
+  req.pipe(upstreamReq);
 }

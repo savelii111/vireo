@@ -178,6 +178,11 @@ export interface ProjectAsset {
   duration_sec?: number | null;
   width?: number | null;
   height?: number | null;
+  fps?: number | null;
+  codec?: string | null;
+  container?: string | null;
+  has_audio?: boolean | null;
+  real_decode?: boolean;
   size_bytes?: number | null;
   status?: string;
   metadata?: Record<string, unknown>;

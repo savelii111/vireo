@@ -23,10 +23,10 @@ import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse, unquote
 
-from .ffmpeg_utils import find_ffmpeg, version
+from .ffmpeg_utils import find_ffmpeg, probe, version
 from .presets import list_platforms, get_preset
 from .subtitles import SUBTITLE_STYLES
 from .pipeline import VideoPipeline, EditRequest, EditResult, JobState
@@ -101,6 +101,48 @@ def _cors_headers_for(origin: str | None) -> dict[str, str]:
   return {**base, "Access-Control-Allow-Origin": allowed[0] if allowed else "*"}
 
 JWT_SECRET = os.environ.get("VIREO_JWT_SECRET", "")
+
+
+def _ingest_result_from_probe(upload_id: str, filename: str, final_path: str, info: dict[str, Any]) -> dict[str, Any]:
+  """Build the public TUS ingest result after a successful ffprobe."""
+  return {
+    "id": upload_id,
+    "upload_id": upload_id,
+    "filename": filename,
+    "file_path": final_path,
+    "duration": info.get("duration_sec", 0.0),
+    "duration_sec": info.get("duration_sec", 0.0),
+    "width": info.get("width", 0),
+    "height": info.get("height", 0),
+    "fps": info.get("fps", 0.0),
+    "video_codec": info.get("video_codec"),
+    "codec": info.get("video_codec"),
+    "hasAudio": bool(info.get("has_audio", False)),
+    "has_audio": bool(info.get("has_audio", False)),
+    "container": info.get("format_name"),
+    "real_decode": True,
+  }
+
+
+def _ingest_error(upload_id: str, filename: str, final_path: str, error: str) -> dict[str, Any]:
+  return {
+    "id": upload_id,
+    "upload_id": upload_id,
+    "filename": filename,
+    "file_path": final_path,
+    "duration": 0.0,
+    "duration_sec": 0.0,
+    "width": 0,
+    "height": 0,
+    "fps": 0.0,
+    "video_codec": None,
+    "codec": None,
+    "hasAudio": False,
+    "has_audio": False,
+    "container": None,
+    "real_decode": False,
+    "error": error,
+  }
 
 
 class JobStore:
@@ -244,12 +286,24 @@ def _multipart_upload(handler: BaseHTTPRequestHandler) -> tuple[bytes, str]:
 
 def make_handler(pipeline: VideoPipeline, jobs: JobStore,
                  whisper: Optional[WhisperClient], storage: FileStorage,
-                 tus_store: Optional[TusStore] = None):
+                 tus_store: Optional[TusStore] = None,
+                 tus_on_complete: Optional[Callable[[TusSession, str], None]] = None,
+                 ingest_cache: Optional[dict[str, dict[str, Any]]] = None,
+                 ingest_lock: Any = None):
   """Build a request handler with the pipeline + jobs + storage injected.
 
   ``tus_store`` enables the TUS resumable upload endpoints
   (POST/HEAD/PATCH/DELETE /upload/resumable[/...]).
   """
+  if ingest_cache is None:
+    ingest_cache = {}
+  if ingest_lock is None:
+    ingest_lock = threading.Lock()
+
+  if tus_store is None:
+    tus_store = TusStore(max_upload_bytes=DEFAULT_MAX_UPLOAD_BYTES, on_complete=tus_on_complete)
+  elif tus_on_complete is not None:
+    tus_store.on_complete = tus_on_complete
 
   class VireoVideoHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -459,6 +513,15 @@ def make_handler(pipeline: VideoPipeline, jobs: JobStore,
           return _json_response(self, 200, p.to_dict())
         if path == "/styles":
           return _json_response(self, 200, {"styles": list(SUBTITLE_STYLES.keys())})
+        ingest_match = re.match(r"^/upload/resumable/([^/]+)/ingest$", path)
+        if ingest_match:
+          upload_id = ingest_match.group(1)
+          with ingest_lock:
+            result = ingest_cache.get(upload_id)
+          if result is None:
+            return _json_response(self, 404, {"error": "ingest_not_ready", "upload_id": upload_id})
+          status = 500 if result.get("error") else 200
+          return _json_response(self, status, result)
         if path == "/files":
           # P0-3 fix (2026-06-07): Studio's LLM expects a flat {files: [...]} list
           # with {file_id, name, size, duration_sec, uploaded_at} so it can
@@ -857,6 +920,7 @@ def build_server(
   jobs: JobStore | None = None,
   storage: FileStorage | None = None,
   tus_store: TusStore | None = None,
+  tus_on_complete: Optional[Callable[[TusSession, str], None]] = None,
   use_cache: bool = True,
 ):
   from .cached_whisper import CachedWhisperClient
@@ -869,14 +933,34 @@ def build_server(
   if storage is None:
     storage = FileStorage()
   if tus_store is None:
-    tus_store = TusStore(max_upload_bytes=DEFAULT_MAX_UPLOAD_BYTES)
+    tus_store = TusStore(max_upload_bytes=DEFAULT_MAX_UPLOAD_BYTES, on_complete=tus_on_complete)
+  elif tus_on_complete is not None:
+    tus_store.on_complete = tus_on_complete
 
   # Wrap raw WhisperClient in CachedWhisperClient (if not already wrapped)
   effective_whisper = whisper
   if use_cache and isinstance(whisper, WhisperClient) and not isinstance(whisper, CachedWhisperClient):
     effective_whisper = CachedWhisperClient(whisper, cache=make_default_cache())
 
-  handler = make_handler(pipeline, jobs, effective_whisper, storage, tus_store)
+  ingest_cache: dict[str, dict[str, Any]] = {}
+  ingest_lock = threading.Lock()
+
+  def _finalize_tus_upload(sess: TusSession, partial_path: str) -> None:
+    try:
+      final_path = storage.register_existing(partial_path, sess.filename)
+      info = probe(final_path)
+      result = _ingest_result_from_probe(sess.id, sess.filename, final_path, info)
+    except Exception as e:
+      print(f"[video] ffprobe ingest failed for {sess.filename}: {e}")
+      final_path = partial_path
+      result = _ingest_error(sess.id, sess.filename, final_path, str(e))
+    with ingest_lock:
+      ingest_cache[sess.id] = result
+
+  if tus_store is not None:
+    tus_store.on_complete = _finalize_tus_upload
+
+  handler = make_handler(pipeline, jobs, effective_whisper, storage, tus_store, _finalize_tus_upload, ingest_cache, ingest_lock)
   server = ThreadingHTTPServer((host, port), handler)
   return {"server": server, "port": port, "host": host,
           "pipeline": pipeline, "jobs": jobs, "whisper": effective_whisper, "storage": storage}

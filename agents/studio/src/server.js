@@ -309,6 +309,19 @@ function fetchWithTimeout(fetchImpl, timeoutMs) {
   };
 }
 
+function videoAgentBaseUrl() {
+  return (process.env.VIREO_VIDEO_URL || "http://video:8004").replace(/\/+$/, "");
+}
+
+async function fetchVideoAgentJSON(path, opts = {}) {
+  const res = await fetchWithTimeout(globalThis.fetch, UPSTREAM_TIMEOUT_MS)(`${videoAgentBaseUrl()}${path}`, opts);
+  const text = await res.text().catch(() => "");
+  let body = {};
+  try { body = text ? JSON.parse(text) : {}; } catch (_) { body = { raw: text.slice(0, 500) }; }
+  if (!res.ok) throw Object.assign(new Error(body.message || body.error || `video-agent ${res.status}`), { httpStatus: res.status, body });
+  return body;
+}
+
 // Combine multiple AbortSignals into one. Aborts as soon as any fires.
 function anySignal(signals) {
   const ctrl = new AbortController();
@@ -2299,6 +2312,12 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
         }
         let meta = {}; try { meta = capMetadata(body.metadata || {}); } catch (e) { return err(res, e.httpStatus || 400, e.code || "validation", e.message); }
+        if (body.real_decode !== undefined) meta = { ...meta, real_decode: Boolean(body.real_decode) };
+        if (body.video_codec !== undefined) meta = { ...meta, video_codec: body.video_codec };
+        if (body.codec !== undefined && meta.video_codec === undefined) meta = { ...meta, video_codec: body.codec };
+        if (body.container !== undefined) meta = { ...meta, container: body.container };
+        if (body.fps !== undefined) meta = { ...meta, fps: body.fps };
+        if (body.hasAudio !== undefined) meta = { ...meta, hasAudio: body.hasAudio };
         const asset = await assets.create({
           userId,
           projectId: body.project_id || null,
@@ -2612,6 +2631,18 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       // multi-GB videos through the chat-agent port (no CORS, no double-auth).
       // For PATCH we MUST stream the request body — chunks are 8 MB and
       // buffering them in memory would OOM the studio process.
+      const tusIngestPath = url.match(/^\/api\/upload\/resumable\/([^/]+)\/ingest$/);
+      if (tusIngestPath && req.method === "GET") {
+        const uploadId = decodeURIComponent(tusIngestPath[1]);
+        try {
+          const result = await fetchVideoAgentJSON(`/upload/resumable/${encodeURIComponent(uploadId)}/ingest`, {
+            headers: req.headers.authorization ? { Authorization: req.headers.authorization } : undefined,
+          });
+          return json(res, 200, { ok: true, result });
+        } catch (e) {
+          return err(res, e.httpStatus || 502, e.body?.error || "video_ingest_failed", e.message, e.body || {});
+        }
+      }
       const tusPath = url.match(/^\/api\/upload\/resumable(?:\/([^/]+))?$/);
       if (tusPath) {
         if (req.method === "OPTIONS") {

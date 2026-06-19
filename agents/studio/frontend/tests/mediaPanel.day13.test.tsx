@@ -98,46 +98,105 @@ describe('Day 13 Project/Media panel', () => {
     expect(assetLabels()[0]).toContain('voice.wav');
   });
 
-  it('imports simulated metadata only through POST /api/assets', async () => {
-    fetchMock
-      .mockResolvedValueOnce(json({ assets: [] }))
-      .mockResolvedValueOnce(json({
-        asset: {
-          id: 'ast_imported',
-          kind: 'video',
-          filename: 'manual-import.mp4',
-          duration_sec: 4,
-          status: 'ready',
-          metadata: { simulated_ingest: true, real_decode: false, registered_by: 'manual' },
-        },
-      }, 201));
+  it('imports real media through TUS + ffprobe and posts real_decode asset metadata', async () => {
+    const ingest = {
+      id: 'upload1',
+      upload_id: 'upload1',
+      filename: 'sample_10s.mp4',
+      file_path: '/vireo_media/uploads/sample_10s.mp4',
+      duration: 10,
+      duration_sec: 10,
+      width: 1280,
+      height: 720,
+      fps: 30,
+      video_codec: 'h264',
+      hasAudio: true,
+      container: 'mov,mp4,m4a,3gp,3g2,mj2',
+      real_decode: true,
+    };
+    const asset = {
+      id: 'ast_real_import',
+      kind: 'video',
+      filename: 'sample_10s.mp4',
+      duration_sec: 10,
+      width: 1280,
+      height: 720,
+      fps: 30,
+      codec: 'h264',
+      container: 'mov,mp4,m4a,3gp,3g2,mj2',
+      has_audio: true,
+      real_decode: true,
+      status: 'ready',
+    };
+    fetchMock.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(url);
+      if (path === '/api/assets?project_id=p1&limit=200') {
+        return json({ assets: [] });
+      }
+      if (path === '/api/upload/resumable') {
+        const body = { id: 'upload1', upload_length: 100, offset: 0, filename: 'sample_10s.mp4' };
+        return {
+          ok: true,
+          status: 201,
+          headers: new Headers({ Location: '/api/upload/resumable/upload1' }),
+          async text() { return JSON.stringify(body); },
+          async json() { return body; },
+        } as Response;
+      }
+      if (path === '/api/upload/resumable/upload1' && init?.method === 'PATCH') {
+        const nextOffset = Number(init?.headers?.['Upload-Offset'] || 0) + 5;
+        return {
+          ok: true,
+          status: 204,
+          headers: new Headers({ 'Upload-Offset': String(nextOffset) }),
+          async text() { return ''; },
+        } as Response;
+      }
+      if (path === '/api/upload/resumable/upload1/ingest') {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'Content-Type': 'application/json' }),
+          async text() { return JSON.stringify(ingest); },
+          async json() { return ingest; },
+        };
+      }
+      if (path === '/api/assets' && init?.method === 'POST') {
+        const body = { asset };
+        return {
+          ok: true,
+          status: 201,
+          headers: new Headers({ 'Content-Type': 'application/json' }),
+          async text() { return JSON.stringify(body); },
+          async json() { return body; },
+        };
+      }
+      return json({ error: 'unexpected_fetch' }, 500);
+    });
 
     renderPanel();
     await waitFor(() => document.querySelector('[data-testid="media-panel"]')?.textContent?.includes('No assets yet'));
 
-    const name = document.querySelector('input[placeholder="asset.mp4 / audio.wav / image.png"]') as HTMLInputElement;
-    const duration = document.querySelector('input[placeholder="sec"]') as HTMLInputElement;
-    const form = document.querySelector('form') as HTMLFormElement;
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     await act(async () => {
-      setInputValue(name, 'manual-import.mp4');
-      setInputValue(duration, '4');
-      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      Object.defineProperty(input, 'files', { value: [new File(['video'], 'sample_10s.mp4', { type: 'video/mp4' })] });
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const button = document.querySelector('[data-testid="import-real"]') as HTMLButtonElement;
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    await waitFor(() => assetLabels().length === 1, 'imported asset should render');
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/assets', {
+    await waitFor(() => assetLabels().length === 1, 'real imported asset should render');
+    expect(assetLabels()[0]).toContain('sample_10s.mp4');
+    expect(assetLabels()[0]).toContain('10s duration');
+    expect(assetLabels()[0]).toContain('1280×720');
+    expect(assetLabels()[0]).toContain('h264');
+    expect(assetLabels()[0]).toContain('real_decode');
+    expect(fetchMock).toHaveBeenCalledWith('/api/assets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token-day13' },
-      body: JSON.stringify({
-        project_id: 'p1',
-        kind: 'video',
-        source: 'upload',
-        filename: 'manual-import.mp4',
-        duration_sec: 4,
-        metadata: { simulated_ingest: true, real_decode: false, registered_by: 'manual' },
-      }),
+      body: expect.stringContaining('"real_decode":true'),
     });
-    expect(assetLabels()[0]).toContain('manual-import.mp4');
-    expect(assetLabels()[0]).toContain('metadata only');
   });
 });
