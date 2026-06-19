@@ -13,7 +13,7 @@
 
 Day 20 complete.
 
-## What Changed
+## Day 20 — Real media ingest (TUS + ffprobe, real_decode)
 
 - Finished Day 20 Real media ingest:
   - fixed Studio TUS proxy auth/header/body path to `video-agent`;
@@ -81,21 +81,34 @@ Day 20 complete.
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 18 changes:
+`node tests/run-all.mjs` after Day 20 changes:
 
-- `TOTAL: 1344 passed, 0 failed across 27 suites`
+- `TOTAL: 1346 passed, 0 failed across 27 suites`
+
+Day 20 targeted checks:
+
+- `npm run typecheck` → `exit 0`
+- `node tests/test_shared_timeline.js` → `exit 0`
+- `node --test agents/studio/tests/test_timeline_ops.js` → `exit 0`
+- `pytest --maxfail=1` in `agents/video` → `exit 0`
+- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `exit 0`
+- `node tests/run-all.mjs > /tmp/runall.log 2>&1; echo EXIT=$?; tail -3 /tmp/runall.log` → `EXIT=0`
+- `Studio E2E (Node)` → `2 passed, 0 failed`
+- `studio TUS proxy -> video-agent ingest uses real auth and real ffprobe` → green
+- `docs/vireo-day20-ingest.png` → real UI screenshot captured
 
 Frontend checks:
 
 - `npm run typecheck` → `exit 0`
-- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `5 passed` files, `28 passed` tests
+- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `29 passed` tests
 
 Shared/backend targeted checks:
 
 - `node tests/test_shared_timeline.js` → `22 passed`
 - `node --test agents/studio/tests/test_timeline_ops.js` → `22 passed`
-- Day 18 smoke: system `ffmpeg` exported `/tmp/day18-export-smoke.mp4` with metadata `{ simulated_media: true, real_encode: false }`.
+- `pytest --maxfail=1` in `agents/video` → `exit 0`
+- Day 20 e2e: Studio TUS proxy uploads `sample_10s.mp4` to video-agent and `real_decode=true`.
 
 ## Next
 
-Day 17 ready for commit/push/zip.
+Day 21 — Postgres persistence.
