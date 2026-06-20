@@ -533,6 +533,32 @@ export const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS vireo_exports_project_idx ON vireo_exports(project_id);
     `,
   },
+  {
+    name: "014_studio_persistence_fields",
+    sql: `
+      -- Day 21: explicit studio media fields and timeline document alias.
+      -- The Day 20 schema already has id/storage_path/duration_sec/width/height.
+      -- Add stable aliases/columns used by the persistence repository and tests.
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS upload_id text;
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS duration numeric;
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS fps numeric;
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS video_codec text;
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS has_audio boolean NOT NULL DEFAULT false;
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS container text;
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS real_decode boolean NOT NULL DEFAULT false;
+      ALTER TABLE vireo_assets ADD COLUMN IF NOT EXISTS source_uri text;
+      CREATE INDEX IF NOT EXISTS vireo_assets_project_real_decode_idx ON vireo_assets(project_id, real_decode);
+      CREATE INDEX IF NOT EXISTS vireo_assets_project_created_idx ON vireo_assets(project_id, created_at DESC);
+
+      ALTER TABLE vireo_timeline_ops ADD COLUMN IF NOT EXISTS undone_at timestamptz;
+      ALTER TABLE vireo_timeline_ops ADD COLUMN IF NOT EXISTS redone_at timestamptz;
+      ALTER TABLE vireo_timelines ADD COLUMN IF NOT EXISTS document jsonb;
+      ALTER TABLE vireo_timelines ALTER COLUMN doc DROP NOT NULL;
+      UPDATE vireo_timelines SET document = doc WHERE document IS NULL AND doc IS NOT NULL;
+      ALTER TABLE vireo_timelines ALTER COLUMN document SET DEFAULT '{}'::jsonb;
+      CREATE INDEX IF NOT EXISTS vireo_timelines_project_version_idx ON vireo_timelines(project_id, version DESC);
+    `,
+  },
 ];
 
 export async function applyMigrations(pool) {

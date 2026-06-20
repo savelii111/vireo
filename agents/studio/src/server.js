@@ -1596,7 +1596,7 @@ function timelineFromRow(row) {
     id: row.id,
     project_id: row.project_id,
     user_id: row.user_id,
-    doc: parseTimelineJson(row.doc),
+    doc: parseTimelineJson(row.document ?? row.doc),
     version: Number(row.version),
     undo_cursor_seq: row.undo_cursor_seq == null ? null : Number(row.undo_cursor_seq),
     created_at: row.created_at,
@@ -1756,7 +1756,7 @@ async function getOrCreateTimelineInTx(pool, projectId, userId) {
 
   const doc = createEmptyTimelineDocument({ projectId, userId, timelineId: `tl_${randomUUID().replace(/-/g, "")}` });
   await pool.query(
-    `INSERT INTO vireo_timelines (id, project_id, user_id, doc, version)
+    `INSERT INTO vireo_timelines (id, project_id, user_id, document, version)
      VALUES ($1, $2, $3, $4, $5)`,
     [doc.timelineId, projectId, userId, JSON.stringify(doc), 1],
   );
@@ -1767,7 +1767,7 @@ async function saveTimelineInTx(pool, timeline, doc, version, baseVersion) {
   const previousVersion = baseVersion ?? version - 1;
   const r = await pool.query(
     `UPDATE vireo_timelines
-     SET doc = $2, version = $3, updated_at = now()
+     SET document = $2, version = $3, updated_at = now()
      WHERE id = $1 AND user_id = $4 AND version = $5
      RETURNING *`,
     [timeline.id, JSON.stringify(doc), version, timeline.user_id, previousVersion],
@@ -2323,12 +2323,20 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           projectId: body.project_id || null,
           kind: body.kind || "video",
           source: body.source || "upload",
+          sourceUri: body.source_uri || null,
           filename: body.filename || null,
           mime: body.mime || null,
           storagePath: body.storage_path || null,
+          uploadId: body.upload_id || null,
+          duration: body.duration ?? null,
           durationSec: body.duration_sec ?? null,
           width: body.width ?? null,
           height: body.height ?? null,
+          fps: body.fps ?? null,
+          videoCodec: body.video_codec || body.codec || null,
+          hasAudio: body.has_audio ?? body.hasAudio ?? null,
+          container: body.container ?? null,
+          realDecode: body.real_decode ?? false,
           sizeBytes: body.size_bytes ?? null,
           status: body.status || "ready",
           metadata: meta,
@@ -2412,7 +2420,11 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           if (!body.doc || typeof body.doc !== "object" || Array.isArray(body.doc)) return err(res, 400, "validation", "doc object required");
           let saved;
           try {
-            saved = await timelines.save(projectId, userId, { doc: body.doc, version });
+            if (pool) {
+              saved = await timelines.saveTimeline(projectId, body.doc, version);
+            } else {
+              saved = await timelines.save(projectId, userId, { doc: body.doc, version });
+            }
           } catch (e) {
             return err(res, e.httpStatus || 400, e.code || "timeline_validation", e.message);
           }
@@ -3975,17 +3987,18 @@ if (isMain) {
     poolErr = e;
   }
   let pool = null;
-  if (process.env.VIREO_PG_URL) {
+  const pgUrl = process.env.VIREO_PG_URL || process.env.DATABASE_URL || null;
+  if (pgUrl) {
     if (!Pool) {
-      // Fail loud: VIREO_PG_URL was set, meaning the operator wants Postgres.
+      // Fail loud: VIREO_PG_URL/DATABASE_URL was set, meaning the operator wants Postgres.
       // Silently falling back to in-memory would mean writes vanish on restart
       // and the user has no idea why. Crash with a clear error.
-      console.error("[studio] FATAL: VIREO_PG_URL is set but the 'pg' package is not installed.");
+      console.error("[studio] FATAL: VIREO_PG_URL/DATABASE_URL is set but the 'pg' package is not installed.");
       console.error("  Install it with:  npm install pg");
       if (poolErr) console.error("  Underlying error:", poolErr.message);
       process.exit(1);
     }
-    pool = new Pool({ connectionString: process.env.VIREO_PG_URL });
+    pool = new Pool({ connectionString: pgUrl });
   }
   start({ pool });
 }

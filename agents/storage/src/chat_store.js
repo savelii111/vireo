@@ -100,34 +100,52 @@ export class StudioAssetStore {
     projectId = null,
     kind = "video",
     source = "upload",
+    sourceUri = null,
     filename = null,
     mime = null,
     storagePath = null,
+    uploadId = null,
     durationSec = null,
+    duration = null,
     width = null,
     height = null,
+    fps = null,
+    videoCodec = null,
+    hasAudio = false,
+    container = null,
+    realDecode = false,
     sizeBytes = null,
     status = "ready",
     metadata = {},
   }) {
     const id = `ast_${randomUUID()}`;
+    const resolvedDuration = duration ?? durationSec;
     await this.pool.query(
       `INSERT INTO vireo_assets (
-         id, user_id, project_id, kind, source, filename, mime, storage_path,
-         duration_sec, width, height, size_bytes, status, metadata
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+         id, user_id, project_id, kind, source, source_uri, filename, mime, storage_path,
+         upload_id, duration_sec, duration, width, height, fps, video_codec, has_audio,
+         container, real_decode, size_bytes, status, metadata
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
       [
         id,
         userId,
         projectId,
         kind,
         source,
+        sourceUri,
         filename,
         mime,
         storagePath,
-        durationSec,
+        uploadId,
+        resolvedDuration,
+        resolvedDuration,
         width,
         height,
+        fps,
+        videoCodec,
+        Boolean(hasAudio),
+        container,
+        Boolean(realDecode),
         sizeBytes,
         status,
         JSON.stringify(metadata || {}),
@@ -164,6 +182,18 @@ export class StudioAssetStore {
     return r.rowCount > 0;
   }
 
+  async saveAsset(data) {
+    return await this.create(data);
+  }
+
+  async listAssets(projectId) {
+    const r = await this.pool.query(
+      `SELECT * FROM vireo_assets WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [projectId, 100],
+    );
+    return r.rows.map((row) => this._row(row));
+  }
+
   _row(row) {
     return {
       id: row.id,
@@ -171,12 +201,20 @@ export class StudioAssetStore {
       project_id: row.project_id,
       kind: row.kind,
       source: row.source,
+      source_uri: row.source_uri ?? null,
       filename: row.filename,
       mime: row.mime,
       storage_path: row.storage_path,
-      duration_sec: row.duration_sec,
-      width: row.width,
-      height: row.height,
+      upload_id: row.upload_id ?? null,
+      duration_sec: row.duration_sec == null ? null : Number(row.duration_sec),
+      duration: row.duration == null ? null : Number(row.duration),
+      width: row.width == null ? null : Number(row.width),
+      height: row.height == null ? null : Number(row.height),
+      fps: row.fps == null ? null : Number(row.fps),
+      video_codec: row.video_codec ?? null,
+      has_audio: row.has_audio == null ? null : Boolean(row.has_audio),
+      container: row.container ?? null,
+      real_decode: Boolean(row.real_decode),
       size_bytes: row.size_bytes,
       status: row.status,
       metadata: typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata,
@@ -194,6 +232,10 @@ export class StudioTimelineStore {
     return r.rows.length > 0 ? this._row(r.rows[0]) : null;
   }
 
+  async loadTimeline(projectId) {
+    return await this.get(projectId);
+  }
+
   async getOrCreate(projectId, userId) {
     const existing = await this.get(projectId);
     if (existing) return existing;
@@ -201,11 +243,11 @@ export class StudioTimelineStore {
     const id = `tl_${randomUUID()}`;
     const doc = createEmptyTimelineDocument({ projectId, userId, timelineId: id });
     await this.pool.query(
-      `INSERT INTO vireo_timelines (id, project_id, user_id, doc, version)
+      `INSERT INTO vireo_timelines (id, project_id, user_id, document, version)
        VALUES ($1, $2, $3, $4, $5)`,
       [id, projectId, userId, JSON.stringify(doc), 1],
     );
-    return this._row({ id, project_id: projectId, user_id: userId, doc: JSON.stringify(doc), version: 1 });
+    return this._row({ id, project_id: projectId, user_id: userId, document: JSON.stringify(doc), version: 1 });
   }
 
   async save(projectId, userId, { doc, version }) {
@@ -214,10 +256,10 @@ export class StudioTimelineStore {
       throw Object.assign(new Error("version must be a positive integer"), { code: "validation", httpStatus: 400 });
     }
     validateTimelineDocument(doc);
-    doc = { ...doc, projectId, userId, version: expectedVersion };
+    doc = { ...doc, projectId, userId, version: expectedVersion + 1 };
     const r = await this.pool.query(
       `UPDATE vireo_timelines
-       SET doc = $2, version = version + 1, updated_at = now()
+       SET document = $2, version = version + 1, updated_at = now()
        WHERE project_id = $1 AND user_id = $3 AND version = $4
        RETURNING *`,
       [projectId, JSON.stringify(doc), userId, expectedVersion],
@@ -225,12 +267,38 @@ export class StudioTimelineStore {
     return r.rows.length > 0 ? this._row(r.rows[0]) : null;
   }
 
+  async saveTimeline(projectId, doc, version) {
+    const targetVersion = Number(version);
+    if (!Number.isInteger(targetVersion) || targetVersion < 1) {
+      throw Object.assign(new Error("version must be a positive integer"), { code: "validation", httpStatus: 400 });
+    }
+    doc = { ...doc, projectId, userId: doc?.userId || null, version: targetVersion };
+    if (!doc.userId) {
+      throw Object.assign(new Error("userId is required when creating a timeline"), { code: "validation", httpStatus: 400 });
+    }
+    validateTimelineDocument(doc);
+    const id = doc.timelineId || `tl_${randomUUID()}`;
+    const serialized = JSON.stringify(doc);
+    const r = await this.pool.query(
+      `INSERT INTO vireo_timelines (id, project_id, user_id, document, version)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (project_id) DO UPDATE SET
+         document = EXCLUDED.document,
+         version = EXCLUDED.version,
+         updated_at = now()
+       WHERE vireo_timelines.version <= EXCLUDED.version
+       RETURNING *`,
+      [id, projectId, doc.userId, serialized, targetVersion],
+    );
+    return r.rows.length > 0 ? this._row(r.rows[0]) : this.get(projectId);
+  }
+
   _row(row) {
     return {
       id: row.id,
       project_id: row.project_id,
       user_id: row.user_id,
-      doc: typeof row.doc === "string" ? deserializeTimelineDocument(row.doc) : row.doc,
+      doc: typeof (row.document ?? row.doc) === "string" ? deserializeTimelineDocument(row.document ?? row.doc) : (row.document ?? row.doc),
       version: Number(row.version),
       undo_cursor_seq: row.undo_cursor_seq == null ? null : Number(row.undo_cursor_seq),
       created_at: row.created_at,

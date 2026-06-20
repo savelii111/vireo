@@ -127,7 +127,7 @@ services:
       PORT: "8011"
       HOST: "0.0.0.0"
       VIREO_JWT_SECRET: "${VIREO_JWT_SECRET:-change-me-in-prod}"
-      VIREO_PG_URL: "postgresql://vireo:vireo_dev_only@postgres:5432/vireo"
+      VIREO_PG_URL: "${VIREO_PG_URL:-postgresql://vireo:vireo_dev_only@postgres:5432/vireo}"
       VIREO_STYLE_URL: "http://style-learner:8001"
       VIREO_EDITOR_URL: "http://editor:8002"
       VIREO_DISTRIBUTOR_URL: "http://distributor:8003"

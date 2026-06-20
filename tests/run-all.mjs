@@ -41,7 +41,7 @@ const SUITES = [
   { name: "Integration (Node)", cmd: "node",  args: ["--test", "apps/orchestrator/tests/test_integration.js"] },
   { name: "Auth Integration (Node)", cmd: "node", args: ["--test", "tests/test_auth_integration.js"] },
   { name: "Shared Timeline Contract (Node)", cmd: "node", args: ["--test", "tests/test_shared_timeline.js"] },
-  { name: "Studio E2E (Node)",      cmd: "node",  args: ["--test", "tests/test_studio_e2e.mjs", "tests/test_studio_tus_proxy_e2e.mjs"] },
+  { name: "Studio E2E (Node)",      cmd: "node",  args: ["--test", "tests/test_studio_e2e.mjs", "tests/test_studio_tus_proxy_e2e.mjs", "tests/test_studio_persistence_e2e.mjs"] },
   { name: "Phase 3 Smoke (Node)",   cmd: "node",   args: ["--test", "tests/test_phase3_smoke.mjs"] },
   { name: "Phase 4 CI JUnit writer (Node)", cmd: "node", args: ["--test", "tests/test_junit_writer.mjs"] },
   { name: "Monitoring (Node)",      cmd: "node",  args: ["--test", "agents/monitoring/tests/test_monitoring.js"] },

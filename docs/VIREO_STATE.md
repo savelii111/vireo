@@ -11,7 +11,33 @@
 
 ## Current Day
 
-Day 20 complete.
+Day 21 complete.
+
+## Day 21 — Postgres persistence (timelines + assets survive reload)
+
+- Finished Day 21 Postgres persistence:
+  - added real PG persistence for Studio timelines and assets;
+  - timeline persistence mirrors the op-runner version: `saveTimeline(projectId, doc, version)` stores the passed target version, never increments it, and refuses to overwrite a newer persisted version;
+  - `vireo_timelines.document jsonb` is the single canonical writer for current timeline state; `doc` remains only as a read fallback for older rows;
+  - `GET /api/timelines/:projectId` hydrates from PG after reload;
+  - `PUT /api/timelines/:projectId`, `/ops`, `/undo`, and `/redo` write `document + version` through PG;
+  - `StudioAssetStore.listAssets(projectId)` remains the single asset-list source; no duplicate timeline asset list;
+  - added `014_studio_persistence_fields` migration columns:
+    - `vireo_timelines.document`
+    - `vireo_timelines.undone_at`
+    - `vireo_timelines.redone_at`
+    - `vireo_assets.upload_id`
+    - `vireo_assets.duration`
+    - `vireo_assets.fps`
+    - `vireo_assets.video_codec`
+    - `vireo_assets.has_audio`
+    - `vireo_assets.container`
+    - `vireo_assets.real_decode`
+    - `vireo_assets.source_uri`;
+  - migration is additive/idempotent and applies twice without failure;
+  - added real Postgres e2e: create project/asset/timeline ops, close server/pool, rebuild server on the same DB, then verify timeline version/document and asset metadata survive reload;
+  - verified real `/health`: `postgres:true`, `pg_ok:true`, `migrations:true` / `migrations_applied=14`;
+  - captured real UI screenshot `docs/vireo-day21-persist.png` showing the persisted asset after reload.
 
 ## Day 20 — Real media ingest (TUS + ffprobe, real_decode)
 
@@ -81,11 +107,11 @@ Day 20 complete.
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 20 changes:
+`node tests/run-all.mjs` after Day 21 changes:
 
-- `TOTAL: 1346 passed, 0 failed across 27 suites`
+- `TOTAL: 1347 passed, 0 failed across 28 suites`
 
-Day 20 targeted checks:
+Day 21 targeted checks:
 
 - `npm run typecheck` → `exit 0`
 - `node tests/test_shared_timeline.js` → `exit 0`
@@ -93,9 +119,11 @@ Day 20 targeted checks:
 - `pytest --maxfail=1` in `agents/video` → `exit 0`
 - `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `exit 0`
 - `node tests/run-all.mjs > /tmp/runall.log 2>&1; echo EXIT=$?; tail -3 /tmp/runall.log` → `EXIT=0`
-- `Studio E2E (Node)` → `2 passed, 0 failed`
-- `studio TUS proxy -> video-agent ingest uses real auth and real ffprobe` → green
-- `docs/vireo-day20-ingest.png` → real UI screenshot captured
+- `Studio E2E (Node)` → `3 passed, 0 failed`
+- real Postgres `/health` → `postgres:true`, `pg_ok:true`, `migrations:true`
+- real PG reload round-trip → same persisted timeline version/document and asset with `real_decode=true`, `1280x720`, `h264`, `10s`
+- `docs/vireo-day21-persist.png` → real UI screenshot captured after reload
+
 
 Frontend checks:
 
@@ -111,4 +139,4 @@ Shared/backend targeted checks:
 
 ## Next
 
-Day 21 — Postgres persistence.
+Day 22 — playback.
