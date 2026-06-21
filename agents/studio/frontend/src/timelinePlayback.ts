@@ -1,10 +1,15 @@
-import type { Clip, ProjectState, TimelineClip } from './types';
+import type { Clip, ClipKeyframes, ProjectState, TimelineClip } from './types';
+import { computeClipColorAt, colorGradeToPreviewCss, evalParamAtTime } from '@vireo/shared';
 
 type ClipTiming = {
   start_sec?: number;
   start?: number;
   end?: number;
   duration_sec?: number;
+  in_sec?: number;
+  in?: number;
+  transform?: Record<string, unknown>;
+  keyframes?: ClipKeyframes;
 };
 
 export const REAL_MEDIA_SOURCES = new Set<TimelineClip['source']>(['upload', 'stock', 'generated', 'higgsfield']);
@@ -12,6 +17,23 @@ export const PLACEHOLDER_SOURCES = new Set<TimelineClip['source']>(['higgsfield_
 
 export function clipStart(clip: ClipTiming): number {
   return Number(clip.start_sec ?? clip.start ?? 0);
+}
+
+function clipInPoint(clip: ClipTiming): number {
+  return Number(clip.in_sec ?? clip.in ?? 0);
+}
+
+export function clipTransformStyle(clip: ClipTiming, playhead = 0) {
+  const transform = clip.transform || {};
+  const keyframes = clip.keyframes?.transform || {};
+  const x = evalParamAtTime(keyframes.x, playhead, Number(transform.x ?? 0));
+  const y = evalParamAtTime(keyframes.y, playhead, Number(transform.y ?? 0));
+  const scale = evalParamAtTime(keyframes.scale, playhead, Number(transform.scale ?? 1));
+  const opacity = evalParamAtTime(keyframes.opacity, playhead, Number(transform.opacity ?? 1));
+  return {
+    transform: `translate(${Number.isFinite(x) ? x : 0}px, ${Number.isFinite(y) ? y : 0}px) scale(${Number.isFinite(scale) ? Math.max(0, scale) : 1})`,
+    opacity: Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1,
+  };
 }
 
 export function clipEnd(clip: ClipTiming): number {
@@ -23,6 +45,37 @@ export function clipEnd(clip: ClipTiming): number {
 
 export function clipDuration(clip: ClipTiming): number {
   return Math.max(0, clipEnd(clip) - clipStart(clip));
+}
+
+export type PlaybackFrame = {
+  activeClipId: string;
+  assetUrl: string;
+  seekTime: number;
+  filterCss: string;
+  transform: string;
+  opacity: number;
+};
+
+export function resolvePlaybackFrame(
+  timeline: ProjectState,
+  playhead: number,
+  assetUrlResolver: (clip: Clip) => string = (clip) => clip.source_file || '',
+): PlaybackFrame | null {
+  const clip = activeVideoClipAt(timeline, playhead);
+  if (!clip) return null;
+  const inSec = clipInPoint(clip);
+  const start = clipStart(clip);
+  const color = computeClipColorAt(timeline, clip, playhead);
+  const filterCss = colorGradeToPreviewCss(color).filter;
+  const transform = clipTransformStyle(clip, playhead);
+  return {
+    activeClipId: clip.id,
+    assetUrl: assetUrlResolver(clip),
+    seekTime: Math.max(0, playhead - start + inSec),
+    filterCss,
+    transform: transform.transform,
+    opacity: transform.opacity,
+  };
 }
 
 export function clipSource(clip: Clip): Clip['source'] {

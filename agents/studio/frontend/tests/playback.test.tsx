@@ -14,6 +14,7 @@ import {
   hasRealMediaPath,
   isPlaceholderClip,
   seekToFrame,
+  resolvePlaybackFrame,
 } from '../src/timelinePlayback';
 
 function project(): ProjectState {
@@ -115,6 +116,37 @@ describe('Day 9 timeline playback logic', () => {
     expect(isPlaceholderClip(p.tracks[0].clips[0])).toBe(false);
     expect(hasRealMediaPath(p.tracks[0].clips[1])).toBe(false);
     expect(isPlaceholderClip(p.tracks[0].clips[1])).toBe(true);
+  });
+
+  it('resolvePlaybackFrame uses the active clip, in-point seek, and shared Day 19 color bridge', () => {
+    const p = project();
+    const clip = p.tracks[0].clips[0];
+    const expectedFilter = colorGradeToPreviewCss(computeClipColorAt(p, clip, 2)).filter;
+
+    expect(resolvePlaybackFrame(p, 2, (c) => c.source_file || '')).toMatchObject({
+      activeClipId: 'intro',
+      assetUrl: 'intro.mp4',
+      seekTime: 2,
+      filterCss: expectedFilter,
+      opacity: 1,
+    });
+  });
+
+  it('resolvePlaybackFrame switches at clip boundaries and computes seek from clip in-point', () => {
+    const p = project();
+    const first = p.tracks[0].clips[0];
+    const second = p.tracks[0].clips[1];
+    first.in_sec = 1.5;
+    second.in_sec = 2.25;
+
+    expect(resolvePlaybackFrame(p, 4.5, (c) => c.source_file || '')).toMatchObject({
+      activeClipId: 'intro',
+      seekTime: 6,
+    });
+    expect(resolvePlaybackFrame(p, 5, (c) => c.source_file || '')).toMatchObject({
+      activeClipId: 'sim',
+      seekTime: 2.25,
+    });
   });
 });
 

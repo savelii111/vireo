@@ -1,12 +1,11 @@
-import { useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import {
   SkipBack, Rewind, Play, FastForward, SkipForward, ChevronsLeft, ChevronsRight, Maximize2,
 } from 'lucide-react';
-import { formatTimecode, formatShortTime } from '../utils/time';
-import type { PreviewTab, Clip } from '../types';
 import clsx from 'clsx';
-import { clipDuration, hasRealMediaPath, previewModeForClip, transformPosition } from '../timelinePlayback';
-import { evalParamAtTime, computeClipColorAt, colorGradeToPreviewCss } from '../../../../../packages/shared/index.js';
+import { formatTimecode, formatShortTime } from '../utils/time';
+import type { PreviewTab, Clip, ProjectState } from '../types';
+import { clipDuration, hasRealMediaPath, previewModeForClip, transformPosition, resolvePlaybackFrame, clipStart, clipTransformStyle } from '../timelinePlayback';
 
 interface Props {
   tab: PreviewTab;
@@ -18,8 +17,11 @@ interface Props {
   fps: number;
   width: number;
   height: number;
+  timeline?: ProjectState | null;
   activeVideoClip?: Clip | null;
   activeTextClips?: Clip[];
+  assetUrlResolver?: (clip: Clip) => string;
+  onSeek?: (t: number) => void;
 }
 
 function SourceBadge({ children }: { children: ReactNode }) {
@@ -30,34 +32,100 @@ function SourceBadge({ children }: { children: ReactNode }) {
   );
 }
 
-function transformStyle(clip: Clip, playhead = 0) {
-  const transform = clip.transform || {};
-  const keyframes = clip.keyframes?.transform || {};
-  const x = evalParamAtTime(keyframes.x, playhead, Number(transform.x ?? 0));
-  const y = evalParamAtTime(keyframes.y, playhead, Number(transform.y ?? 0));
-  const scale = evalParamAtTime(keyframes.scale, playhead, Number(transform.scale ?? 1));
-  const opacity = evalParamAtTime(keyframes.opacity, playhead, Number(transform.opacity ?? 1));
-  return {
-    transform: `translate(${Number.isFinite(x) ? x : 0}px, ${Number.isFinite(y) ? y : 0}px) scale(${Number.isFinite(scale) ? Math.max(0, scale) : 1})`,
-    opacity: Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1,
-  };
-}
-
-function previewFilterStyle(clip: Clip, playhead: number) {
-  const color = computeClipColorAt({ tracks: [] } as any, clip, playhead);
-  return colorGradeToPreviewCss(color).filter;
-}
-
 export function Preview({
   tab, onTabChange, playing, onTogglePlay, playhead, duration, fps, width, height,
+  timeline = null,
   activeVideoClip = null,
   activeTextClips = [],
+  assetUrlResolver = (clip) => clip.source_file || '',
+  onSeek,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const isSeekingProgrammatically = useRef(false);
+  const playbackTimeline = useMemo<ProjectState>(() => {
+    if (timeline) return timeline;
+    if (!activeVideoClip) return {
+      name: 'Preview source',
+      duration_sec: 0,
+      fps: 30,
+      width: 1920,
+      height: 1080,
+      tracks: [],
+    };
+    return {
+      tracks: [{
+        id: activeVideoClip.track_id || 'v1',
+        kind: 'video',
+        name: 'Video 1',
+        muted: false,
+        locked: false,
+        clips: [activeVideoClip],
+      }],
+    } as ProjectState;
+  }, [timeline, activeVideoClip]);
+  const playbackFrame = useMemo(() => activeVideoClip
+    ? resolvePlaybackFrame(playbackTimeline, playhead, assetUrlResolver)
+    : null, [activeVideoClip, playbackTimeline, playhead, assetUrlResolver]);
   const activeMode = activeVideoClip ? previewModeForClip(activeVideoClip) : 'empty';
   const activeText = activeTextClips;
   const sourceLabel = activeVideoClip?.source ?? 'upload';
-  const videoTransform = activeVideoClip ? transformStyle(activeVideoClip, playhead) : {};
+  const videoTransform = playbackFrame
+    ? { transform: playbackFrame.transform, opacity: playbackFrame.opacity, filter: playbackFrame.filterCss }
+    : {};
+  const handleVideoSeek = useCallback((t: number) => {
+    const video = videoRef.current;
+    if (!video || !activeVideoClip) return;
+    isSeekingProgrammatically.current = true;
+    try {
+      video.currentTime = Math.max(0, t);
+    } catch (_) {
+      // Metadata may not be loaded yet; loadedmetadata effect will retry.
+    }
+    window.setTimeout(() => {
+      isSeekingProgrammatically.current = false;
+    }, 0);
+  }, [activeVideoClip]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (playing) {
+      void video.play().catch(() => { /* Browser may block autoplay until user gesture. */ });
+    } else {
+      video.pause();
+    }
+  }, [playing, playbackFrame?.assetUrl]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !playbackFrame) return;
+    const seek = () => {
+      if (Math.abs(video.currentTime - playbackFrame.seekTime) <= 0.08) return;
+      handleVideoSeek(playbackFrame.seekTime);
+    };
+    if (video.readyState >= 1) seek();
+    video.addEventListener('loadedmetadata', seek);
+    return () => video.removeEventListener('loadedmetadata', seek);
+  }, [handleVideoSeek, playbackFrame?.assetUrl, playbackFrame?.seekTime]);
+
+  const handleVideoTimeUpdate = useCallback(() => {
+    if (isSeekingProgrammatically.current) return;
+    const video = videoRef.current;
+    if (!video || !activeVideoClip || !playbackFrame) return;
+    const delta = Math.abs(video.currentTime - playbackFrame.seekTime);
+    if (delta <= 0.08) return;
+    const inSec = Number(activeVideoClip.in_sec);
+    const nextPlayhead = Math.max(0, clipStart(activeVideoClip) + video.currentTime - inSec);
+    onSeek?.(nextPlayhead);
+  }, [activeVideoClip, onSeek, playbackFrame]);
+
+  const handleVideoSeeked = useCallback(() => {
+    if (isSeekingProgrammatically.current) return;
+    const video = videoRef.current;
+    if (!video || !activeVideoClip || !playbackFrame) return;
+    const inSec = Number(activeVideoClip.in_sec);
+    onSeek?.(Math.max(0, clipStart(activeVideoClip) + video.currentTime - inSec));
+  }, [activeVideoClip, onSeek, playbackFrame]);
 
   return (
     <section className="flex flex-col bg-bg-0 border-b border-border-1 min-h-0">
@@ -119,12 +187,16 @@ export function Preview({
               ref={videoRef}
               data-testid="preview-video"
               className="absolute inset-0 w-full h-full object-contain"
-              src={activeVideoClip.source_file}
+              src={playbackFrame?.assetUrl || activeVideoClip.source_file}
               muted
               playsInline
+              preload="metadata"
+              onTimeUpdate={handleVideoTimeUpdate}
+              onSeeked={handleVideoSeeked}
               style={{
-                ...videoTransform,
-                filter: previewFilterStyle(activeVideoClip, playhead),
+                transform: playbackFrame?.transform || videoTransform.transform,
+                opacity: playbackFrame?.opacity ?? videoTransform.opacity,
+                filter: playbackFrame?.filterCss,
               }}
             />
           ) : null}
@@ -134,8 +206,9 @@ export function Preview({
               data-testid="preview-placeholder"
               className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center"
               style={{
-                ...videoTransform,
-                filter: previewFilterStyle(activeVideoClip, playhead),
+                transform: videoTransform.transform,
+                opacity: videoTransform.opacity,
+                filter: videoTransform.filter,
               }}
             >
               <div className="rounded-2xl border border-dashed border-border-2 bg-bg-1/80 p-8 shadow-inner">
@@ -159,7 +232,7 @@ export function Preview({
           ) : null}
 
           {activeText.map((clip) => {
-            const textTransform = transformStyle(clip, playhead);
+            const textTransform = clipTransformStyle(clip, playhead);
             const position = transformPosition(clip);
             return (
               <div

@@ -29,11 +29,11 @@
 
 import { createServer, request as httpRequest } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, createReadStream, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createEmptyTimelineDocument, validateTimelineDocument, applyOp, PUBLIC_TIMELINE_OPS, createTimelineOp, TIMELINE_OPS, TIMELINE_KINDS, buildRenderPlan, buildFfmpegArgs, normalizeExportPreset } from "@vireo/shared";
-import { authMiddleware, corsHeaders, readJsonBody, RateLimiter } from "../../../packages/auth-middleware/index.js";
+import { authMiddleware, corsHeaders, corsHeadersFor, readJsonBody, RateLimiter } from "../../../packages/auth-middleware/index.js";
 import { MessageFeedbackStore, WelcomeAnswersStore, UserPreferencesStore } from "../../storage/src/feedback_store.js";
 import {
   ProjectStore,
@@ -193,6 +193,107 @@ const ALLOWED_PLATFORMS = new Set([
   "instagram_feed",
   "twitter_x",
 ]);
+
+function mediaRootDir() {
+  return path.resolve(process.env.VIREO_MEDIA_ROOT || path.resolve(process.cwd(), "vireo_media"));
+}
+
+function contentTypeForAsset(asset, filePath = "") {
+  if (asset?.mime) return asset.mime;
+  const ext = path.extname(filePath || asset?.filename || "").toLowerCase();
+  return {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".m4v": "video/x-m4v",
+    ".webm": "video/webm",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+  }[ext] || "application/octet-stream";
+}
+
+function resolveLocalAssetMediaPath(asset) {
+  const raw = asset?.storage_path || asset?.source_uri || (asset?.upload_id ? `vireo_media/uploads/${asset.upload_id}` : null);
+  if (!raw || String(raw).startsWith("http://") || String(raw).startsWith("https://")) return null;
+  const normalized = String(raw).startsWith("tus://") ? String(raw).slice(6) : String(raw);
+  const root = mediaRootDir();
+  const candidate = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(root, normalized);
+  try {
+    candidate.relativeTo ? candidate.relativeTo(root) : null;
+  } catch (_) {
+    return null;
+  }
+  if (path.relative(root, candidate).startsWith("..")) return null;
+  return candidate;
+}
+
+function parseByteRange(rangeHeader, size) {
+  if (!rangeHeader) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  if (!match) return { status: 416, contentRange: `bytes */${size}` };
+  const [, startRaw, endRaw] = match;
+  if (startRaw === "" && endRaw === "") return { status: 416, contentRange: `bytes */${size}` };
+  let start;
+  let end;
+  if (startRaw === "") {
+    const suffix = Number(endRaw);
+    if (!Number.isInteger(suffix) || suffix <= 0) return { status: 416, contentRange: `bytes */${size}` };
+    start = Math.max(size - suffix, 0);
+    end = size - 1;
+  } else {
+    start = Number(startRaw);
+    end = endRaw === "" ? size - 1 : Number(endRaw);
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= size) {
+    return { status: 416, contentRange: `bytes */${size}` };
+  }
+  return { start, end: Math.min(end, size - 1) };
+}
+
+async function streamAssetMedia(req, res, asset) {
+  const filePath = resolveLocalAssetMediaPath(asset);
+  if (!filePath) return err(res, 404, "asset_media_not_found");
+  let stat;
+  try {
+    stat = statSync(filePath);
+  } catch (_) {
+    return err(res, 404, "asset_media_not_found");
+  }
+  if (!stat.isFile()) return err(res, 404, "asset_media_not_found");
+  const size = stat.size;
+  const range = parseByteRange(req.headers.range || "", size);
+  if (range?.status === 416) {
+    res.writeHead(416, {
+      "Content-Range": range.contentRange,
+      "Accept-Ranges": "bytes",
+      "Content-Type": "application/json; charset=utf-8",
+      ...corsHeadersFor(req),
+    });
+    return res.end(JSON.stringify({ error: "range_not_satisfiable", size }));
+  }
+  const contentLength = range ? range.end - range.start + 1 : size;
+  const headers = {
+    "Content-Type": contentTypeForAsset(asset, filePath),
+    "Accept-Ranges": "bytes",
+    "Content-Length": String(contentLength),
+    "Cache-Control": "private, max-age=60",
+    ...corsHeadersFor(req),
+  };
+  if (range) {
+    headers["Content-Range"] = `bytes ${range.start}-${range.end}/${size}`;
+  }
+  res.writeHead(range ? 206 : 200, headers);
+  const stream = createReadStream(filePath, range ? { start: range.start, end: range.end } : undefined);
+  stream.on("error", () => {
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "asset_media_read_failed" }));
+    } else {
+      res.destroy();
+    }
+  });
+  stream.pipe(res);
+}
+
 /**
  * Validate and normalize the platforms array passed to distribute.
  *
@@ -2169,6 +2270,25 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       // know PG is broken.
       const status = (health.postgres && health.pg_ok === false) ? 503 : 200;
       return json(res, status, health);
+    }
+
+    // ---- asset media bytes (JWT via query token for HTML5 <video>) ----
+    const assetMediaMatch = url.match(/^\/api\/assets\/([^/]+)\/media$/);
+    if (assetMediaMatch && req.method === "GET") {
+      const id = decodeURIComponent(assetMediaMatch[1]);
+      const queryToken = u.searchParams.get("access_token");
+      const originalAuth = req.headers.authorization;
+      if (queryToken) {
+        req.headers.authorization = `Bearer ${queryToken}`;
+      }
+      await new Promise((r) => auth(req, res, r));
+      if (res.writableEnded) return;
+      if (originalAuth) req.headers.authorization = originalAuth;
+      const mediaUserId = req.user?.id;
+      if (!mediaUserId) return err(res, 401, "unauthenticated", "missing user id");
+      const asset = await assets.get(id);
+      if (!asset || asset.user_id !== mediaUserId) return err(res, 404, "asset_not_found");
+      return streamAssetMedia(req, res, asset);
     }
 
     // ---- auth gate ----

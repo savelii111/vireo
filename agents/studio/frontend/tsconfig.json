@@ -19,7 +19,8 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@vireo/shared": ["../../../packages/shared/index.d.ts"]
     }
   },
   "include": ["src"]

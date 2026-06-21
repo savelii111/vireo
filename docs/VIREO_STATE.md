@@ -11,7 +11,30 @@
 
 ## Current Day
 
-Day 21 complete.
+Day 22 complete.
+
+## Day 22 — Real video playback in Preview (HTML5 video + shared color bridge)
+
+- Finished Day 22 real media playback:
+  - `GET /api/assets/:id/media` resolves only `asset id -> DB row -> real TUS/media file path`;
+  - query-token auth for browser `<video>`: `?access_token=<session JWT>`;
+  - missing/invalid token returns `401`;
+  - no `Range` returns `200` with `Accept-Ranges: bytes` and real media bytes;
+  - `Range: bytes=0-1023` returns `206` with exact requested bytes and correct `Content-Range`;
+  - path traversal is blocked because callers cannot supply the file path;
+  - `Preview.tsx` now renders real media through native `<video src=...>` instead of fake canvas frames;
+  - `assetUrlResolver` prefers `clip.assetId || clip.source_file` and builds the media endpoint URL;
+  - `assetId` is carried through `Clip`, `timelineContract.ts`, and API conversions;
+  - `source_time = in + (playhead - start)` is now canonical; stale `seekTime: 4` assertion was updated to `6`;
+  - `timeupdate -> playhead` sync is guarded against feedback loops;
+  - Preview color/transform/opacity goes through the shared bridge (`computeClipColorAt`, `colorGradeToPreviewCss`, `evalParamAtTime`) rather than a second local formula.
+- Added Day 22 tests:
+  - A: `tests/test_studio_media_e2e.mjs` verifies `200`, `206`, `401`, exact Range bytes, and real file streaming;
+  - B: `agents/studio/frontend/tests/playback.test.tsx` verifies `resolvePlaybackFrame`, `seekTime`, shared color CSS, and real `<video>` rendering;
+  - C: gated `tests/test_studio_media_playwright_gated.mjs` runs `tests/playwright/studio_media_playwright.mjs`; Chromium decodes a real Studio media endpoint response with `drawImage` + `getImageData` and proves a non-black/non-homogeneous frame.
+- Security note for future pass: query `access_token` works for the local MVP but leaks through URLs/logs/referrers; future hardening should use a short-lived media-scoped token instead of the main session JWT.
+- Captured real screenshot `docs/vireo-day22-playback.png` showing Chromium playback from the Studio media endpoint.
+- Cleaned temporary screenshot/helper scripts; kept only committed Day 22 test/source files.
 
 ## Day 21 — Postgres persistence (timelines + assets survive reload)
 
@@ -107,22 +130,23 @@ Day 21 complete.
 
 ## Test Anchor
 
-`node tests/run-all.mjs` after Day 21 changes:
+`node tests/run-all.mjs` after Day 22 changes:
 
-- `TOTAL: 1347 passed, 0 failed across 28 suites`
+- `TOTAL: 1349 passed, 0 failed across 28 suites`
 
-Day 21 targeted checks:
+Day 22 targeted checks:
 
 - `npm run typecheck` → `exit 0`
 - `node tests/test_shared_timeline.js` → `exit 0`
 - `node --test agents/studio/tests/test_timeline_ops.js` → `exit 0`
-- `pytest --maxfail=1` in `agents/video` → `exit 0`
-- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `exit 0`
+- `pytest --maxfail=1` in `agents/video` with `VIREO_PG_URL=postgresql://vireo@127.0.0.1:55432/vireo` → `exit 0`
+- `npx --yes -p vitest -p jsdom vitest --environment jsdom --run` → `31 passed`
+- `node --test tests/test_studio_media_e2e.mjs` → `exit 0`
+- `node --test tests/test_studio_media_playwright_gated.mjs` → `1 passed`
 - `node tests/run-all.mjs > /tmp/runall.log 2>&1; echo EXIT=$?; tail -3 /tmp/runall.log` → `EXIT=0`
-- `Studio E2E (Node)` → `3 passed, 0 failed`
-- real Postgres `/health` → `postgres:true`, `pg_ok:true`, `migrations:true`
-- real PG reload round-trip → same persisted timeline version/document and asset with `real_decode=true`, `1280x720`, `h264`, `10s`
-- `docs/vireo-day21-persist.png` → real UI screenshot captured after reload
+- `Studio E2E (Node)` → `4 passed, 0 failed`
+- `Studio Day 22 Playwright C (gated)` → `1 passed, 0 failed`
+- real screenshot → `docs/vireo-day22-playback.png`
 
 
 Frontend checks:

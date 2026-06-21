@@ -1,6 +1,6 @@
 import { useState, Suspense, lazy, useEffect, useRef, useMemo } from 'react';
 import clsx from 'clsx';
-import type { PreviewTab } from './types';
+import type { PreviewTab, Clip } from './types';
 import { useEditor } from './hooks/useEditor';
 import { activeTextClipsAt, activeVideoClipAt } from './timelinePlayback';
 
@@ -155,6 +155,13 @@ export default function App() {
   const chatConversationId = useMemo(() => localStorage.getItem('vireo.conversation_id') || undefined, []);
   const activeVideoClip = useMemo(() => activeVideoClipAt(editor.project, editor.playhead), [editor.project, editor.playhead]);
   const activeTextClips = useMemo(() => activeTextClipsAt(editor.project, editor.playhead), [editor.project, editor.playhead]);
+  const assetUrlResolver = useMemo(() => (clip: Clip) => {
+    const raw = clip.assetId || clip.source_file || '';
+    if (!raw || raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('blob:') || raw.startsWith('data:')) return raw;
+    const token = localStorage.getItem('vireo_token') || localStorage.getItem('vireo.auth.token');
+    const prefix = raw.includes('?') ? '&' : '?';
+    return `/api/assets/${encodeURIComponent(raw)}/media${token ? `${prefix}access_token=${encodeURIComponent(token)}` : ''}`;
+  }, []);
   const selectedTrack = useMemo(() => {
     const selectedClip = editor.selectedClip;
     if (!selectedClip) return null;
@@ -290,6 +297,9 @@ export default function App() {
               height={editor.project.height}
               activeVideoClip={activeVideoClip}
               activeTextClips={activeTextClips}
+              timeline={editor.project}
+              assetUrlResolver={assetUrlResolver}
+              onSeek={editor.seek}
             />
           </Suspense>
         </div>

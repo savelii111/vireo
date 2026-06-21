@@ -37,6 +37,7 @@ export function timelineToProject(doc: TimelineDocument, name = 'Untitled projec
           id: clip.id,
           track_id: track.id,
           source_file: clip.assetId || clip.name || '',
+          assetId: clip.assetId || clip.name || '',
           source: clip.source,
           start_sec: Number(clip.start || 0),
           duration_sec: Math.max(0.1, Number((clip.end ?? (clip.start || 0) + 1) - (clip.start || 0))),
@@ -94,7 +95,7 @@ export function projectToTimelineDocument(
       hidden: Boolean(track.hidden),
       clips: track.clips.map((clip) => ({
         id: clip.id,
-        assetId: clip.source_file,
+        assetId: clip.assetId || clip.source_file,
         start: clip.start_sec,
         end: clip.start_sec + clip.duration_sec,
         in: clip.in_sec,

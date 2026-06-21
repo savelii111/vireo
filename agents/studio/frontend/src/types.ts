@@ -206,6 +206,7 @@ export interface Clip {
   id: string;
   track_id: string;
   source_file: string;
+  assetId?: string;
   start_sec: number;     // position on timeline
   duration_sec: number;  // length on timeline
   in_sec: number;        // in-point in source
