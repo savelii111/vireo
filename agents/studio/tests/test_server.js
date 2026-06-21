@@ -954,25 +954,6 @@ test("rate limit: VIREO_RATE_LIMIT_MAX=2 caps at 2 calls/window", async () => {
   }
 });
 
-// ---- vendor assets present (offline markdown + code highlighting) ----
-
-test("vendor assets exist for offline markdown rendering", async () => {
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const url = await import("node:url");
-  // Resolve relative to THIS test file so the path works regardless of
-  // where `node --test` was invoked from (was process.cwd()-relative, which
-  // broke when the repo moved into "случайный проект/vireo/").
-  // test file: agents/studio/tests/test_server.js
-  // target:    apps/dashboard/public/vendor   (up 2 levels)
-  const root = url.fileURLToPath(new URL("../../../apps/dashboard/public/vendor", import.meta.url));
-  for (const f of ["marked.umd.js", "purify.min.js", "highlight.min.js"]) {
-    const p = path.join(root, f);
-    const stat = await fs.stat(p);
-    assert.ok(stat.size > 1024, `${f} should be > 1KB, got ${stat.size}`);
-  }
-});
-
 // ---- welcome interview (one-shot guided onboarding) ----
 //
 // The /api/welcome route and its store layer (InMemoryWelcomeStore +

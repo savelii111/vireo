@@ -4,27 +4,15 @@
   "private": true,
   "description": "Vireo — Personal AI Creative Director",
   "workspaces": [
-    "apps/*",
-    "agents/distributor",
-    "agents/analyst",
-    "agents/monitoring",
     "agents/studio",
     "packages/*"
   ],
   "scripts": {
     "typecheck": "cd agents/studio/frontend && npm run typecheck",
     "test": "node tests/run-all.mjs",
-    "test:style-learner": "cd agents/style-learner && python -m pytest tests/ -v",
-    "test:editor": "cd agents/editor && python -m pytest tests/ -v",
-    "test:distributor": "cd agents/distributor && node --test tests/",
-    "test:analyst": "cd agents/analyst && node --test tests/",
     "test:studio": "cd agents/studio && node --test tests/",
     "test:infra": "cd packages/infra && node --test tests/",
     "test:e2e": "node tests/e2e.mjs",
-    "agent:style-learner": "cd agents/style-learner && python -m vireo_style_learner.server",
-    "agent:editor": "cd agents/editor && python -m vireo_editor.server",
-    "agent:distributor": "cd agents/distributor && node src/server.js",
-    "agent:analyst": "cd agents/analyst && node src/server.js",
     "agent:studio": "cd agents/studio && node src/server.js",
     "agents": "concurrently \"npm:agent:*\""
   },
