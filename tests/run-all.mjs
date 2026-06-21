@@ -63,6 +63,9 @@ function run(suite) {
       const nodeFail = out.match(/ℹ fail (\d+)/);
       if (nodePass) passed = Number(nodePass[1]);
       if (nodeFail) failed = Number(nodeFail[1]);
+      if (code !== 0 && failed === 0) {
+        failed = 1;
+      }
 
       resolve({ name: suite.name, code, passed, failed, dur, stdout: out, stderr: err });
     });
