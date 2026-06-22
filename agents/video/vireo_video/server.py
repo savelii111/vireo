@@ -25,14 +25,25 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse, unquote
+from pathlib import Path
 
-from .ffmpeg_utils import find_ffmpeg, probe, version
+from .ffmpeg_utils import find_ffmpeg, probe, version, FFmpegError
 from .presets import list_platforms, get_preset
 from .subtitles import SUBTITLE_STYLES
 from .pipeline import VideoPipeline, EditRequest, EditResult, JobState
 from .transcriber import WhisperClient
 from .file_storage import FileStorage
 from .tus import TusStore, TusError, TUS_VERSION, DEFAULT_MAX_UPLOAD_BYTES, _parse_upload_metadata
+from .thumbnails import (
+  extract_filmstrip,
+  extract_waveform,
+  filmstrip_cache_paths,
+  waveform_cache_path,
+  write_json as _write_thumb_json,
+  read_json as _read_thumb_json,
+  FILMSTRIP_DEFAULT_COUNT,
+  WAVEFORM_DEFAULT_BUCKETS,
+)
 
 # Optional JWT auth — gracefully degrade if vireo_shared not installed
 try:
@@ -573,6 +584,10 @@ def make_handler(pipeline: VideoPipeline, jobs: JobStore,
             if f.name == filename or f.path.endswith(filename):
               return self._send_file(f.path, f.name)
           return _json_response(self, 404, {"error": "file_not_found"})
+        # ---- Day 23: filmstrip sprite bytes (server-local cache) ----
+        fs_match = re.match(r"^/thumbnails/filmstrip/([^/]+)/sprite\.png$", path)
+        if fs_match:
+          return self._send_filmstrip_sprite(fs_match.group(1))
         return _json_response(self, 404, {"error": "not_found", "path": path})
       except Exception as e:
         return _json_response(self, 500, {"error": "server_error", "message": str(e)})
@@ -604,6 +619,150 @@ def make_handler(pipeline: VideoPipeline, jobs: JobStore,
             break
           self.wfile.write(chunk)
 
+    def _send_filmstrip_sprite(self, asset_id: str):
+      """GET /thumbnails/filmstrip/<safe-asset-id>/sprite.png
+
+      Day 23: serve a sprite PNG that was previously written into the
+      shared cache by POST /thumbnails/filmstrip. The path traversal
+      guard in `_handle_thumbnails` ensures the asset_id encodes a
+      sanitized token, so we re-use `_safe_filename_component` here.
+      """
+      from .thumbnails import _safe_filename_component, default_cache_dir
+      safe = _safe_filename_component(asset_id)
+      # The cache filename pattern is filmstrip_<safe>_<count>.png
+      # but the count varies; we search the cache dir for any matching
+      # file. The token uniqueness is enforced by the asset_id sanitization
+      # so this is safe.
+      cache_root = Path(default_cache_dir())
+      if not cache_root.is_dir():
+        return _json_response(self, 404, {"error": "sprite_not_found"})
+      candidates = sorted(cache_root.glob(f"filmstrip_{safe}_*.png"))
+      if not candidates:
+        return _json_response(self, 404, {"error": "sprite_not_found"})
+      path = str(candidates[-1])
+      size = os.path.getsize(path)
+      self.send_response(200)
+      origin = self.headers.get("Origin")
+      h = _cors_headers_for(origin)
+      h["Content-Type"] = "image/png"
+      h["Content-Length"] = str(size)
+      h["Cache-Control"] = "private, max-age=600"
+      for k, v in h.items():
+        self.send_header(k, v)
+      self.end_headers()
+      with open(path, "rb") as f:
+        while True:
+          chunk = f.read(65536)
+          if not chunk:
+            break
+          self.wfile.write(chunk)
+
+    def _handle_thumbnails(self, kind: str):
+      """POST /thumbnails/filmstrip|waveform  body={"file_path": "...", "asset_id": "..."}
+
+      Day 23: decode the asset's bytes via ffmpeg, return the manifest.
+      The Studio server is the only client — it has already enforced
+      the asset owner check and resolved the user-supplied `asset_id`
+      to a server-local file path. We only allow files that live under
+      the FileStorage roots and reject any `..` in the path.
+      """
+      body_len = int(self.headers.get("Content-Length") or "0")
+      if body_len <= 0 or body_len > 8192:
+        return _json_response(self, 400, {"error": "missing_or_huge_body"})
+      raw = self.rfile.read(body_len)
+      try:
+        body = json.loads(raw.decode("utf-8"))
+      except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        return _json_response(self, 400, {"error": "bad_json", "message": str(e)})
+      if not isinstance(body, dict):
+        return _json_response(self, 400, {"error": "body_must_be_object"})
+
+      file_path = body.get("file_path")
+      if not file_path or not isinstance(file_path, str):
+        return _json_response(self, 400, {"error": "missing_file_path"})
+      asset_id = body.get("asset_id") or ""
+      # Path-traversal hardening. `..` is rejected anywhere in the
+      # slash-normalized path. We also reject absolute Windows drive
+      # letters that point outside the storage roots.
+      norm = file_path.replace("\\", "/")
+      if ".." in [p for p in norm.split("/") if p]:
+        return _json_response(self, 404, {"error": "file_not_found"})
+
+      try:
+        p_resolved = Path(file_path).resolve()
+        upload_root = Path(storage.upload_dir).resolve()
+        output_root = Path(storage.output_dir).resolve()
+        ok = False
+        try:
+          p_resolved.relative_to(upload_root); ok = True
+        except ValueError:
+          pass
+        if not ok:
+          try:
+            p_resolved.relative_to(output_root); ok = True
+          except ValueError:
+            pass
+        if not ok:
+          return _json_response(self, 404, {"error": "file_not_found"})
+      except OSError:
+        return _json_response(self, 404, {"error": "file_not_found"})
+
+      cache_token = asset_id or os.path.basename(file_path)
+
+      if kind == "filmstrip":
+        try:
+          n = int(body.get("count") or FILMSTRIP_DEFAULT_COUNT)
+        except (TypeError, ValueError):
+          n = FILMSTRIP_DEFAULT_COUNT
+        sprite_path, manifest_path = filmstrip_cache_paths(cache_token, n)
+        cached_manifest = _read_thumb_json(manifest_path)
+        if cached_manifest and Path(sprite_path).is_file() and Path(sprite_path).stat().st_size > 0:
+          cached_manifest["cache_hit"] = True
+          return _json_response(self, 200, cached_manifest)
+        try:
+          manifest = extract_filmstrip(
+            str(p_resolved),
+            count=n,
+            out_path=sprite_path,
+          )
+        except FFmpegError as e:
+          return _json_response(self, 503, {
+            "error": "filmstrip_decode_failed",
+            "message": str(e),
+            "stderr_tail": (e.stderr or "")[-500:],
+          })
+        manifest["asset_id"] = asset_id or None
+        manifest["file_path"] = str(p_resolved)
+        manifest["cache_hit"] = False
+        _write_thumb_json(manifest_path, manifest)
+        return _json_response(self, 200, manifest)
+
+      if kind == "waveform":
+        try:
+          n = int(body.get("buckets") or WAVEFORM_DEFAULT_BUCKETS)
+        except (TypeError, ValueError):
+          n = WAVEFORM_DEFAULT_BUCKETS
+        cache_path = waveform_cache_path(cache_token, n)
+        cached = _read_thumb_json(cache_path)
+        if cached:
+          cached["cache_hit"] = True
+          return _json_response(self, 200, cached)
+        try:
+          manifest = extract_waveform(str(p_resolved), buckets=n)
+        except FFmpegError as e:
+          return _json_response(self, 503, {
+            "error": "waveform_decode_failed",
+            "message": str(e),
+            "stderr_tail": (e.stderr or "")[-500:],
+          })
+        manifest["asset_id"] = asset_id or None
+        manifest["file_path"] = str(p_resolved)
+        manifest["cache_hit"] = False
+        _write_thumb_json(cache_path, manifest)
+        return _json_response(self, 200, manifest)
+
+      return _json_response(self, 404, {"error": "thumb_kind_unknown", "kind": kind})
+
     def do_POST(self):
       url = urlparse(self.path)
       path = unquote(url.path)
@@ -631,6 +790,11 @@ def make_handler(pipeline: VideoPipeline, jobs: JobStore,
         #   DELETE /upload/resumable/<id>       -> abort
         if path == "/upload/resumable" or path.startswith("/upload/resumable/"):
           return self._handle_tus(path)
+
+        # ---- Day 23: filmstrip + waveform (POST takes server-local path) ----
+        if path == "/thumbnails/filmstrip" or path == "/thumbnails/waveform":
+          kind = "filmstrip" if path.endswith("filmstrip") else "waveform"
+          return self._handle_thumbnails(kind)
 
         if path == "/edit":
           body = _read_json_body(self)

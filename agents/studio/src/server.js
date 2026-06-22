@@ -11,6 +11,9 @@
 //   POST   /api/assets                   — register asset metadata
 //   GET    /api/assets/:id               — read
 //   DELETE /api/assets/:id               — delete (requires confirmation_token)
+//   GET    /api/assets/:id/media         — stream media bytes (auth via query token for <video>)
+//   GET    /api/assets/:id/filmstrip     — Day 23: real ffmpeg filmstrip manifest
+//   GET    /api/assets/:id/waveform      — Day 23: real PCM-decoded waveform peaks
 //   GET    /api/timelines/:projectId     — read or lazy-create timeline
 //   PUT    /api/timelines/:projectId     — save whole timeline doc
 //   GET    /api/content-pieces            — list (query: project_id, source, limit)
@@ -292,6 +295,79 @@ async function streamAssetMedia(req, res, asset) {
     }
   });
   stream.pipe(res);
+}
+
+/**
+ * Day 23: handle /api/assets/:id/filmstrip and /api/assets/:id/waveform.
+ *
+ * The handler is owner-aware: the path :id is the Studio asset id, we
+ * look the asset up in the same store the D22 media-endpoint uses, and
+ * refuse to operate on assets that don't belong to the caller. We then
+ * resolve the asset's server-local media path (storage_path ->
+ * source_uri -> upload_id) and proxy to the video agent's
+ * /thumbnails/<kind> endpoint.
+ *
+ * On any path-traversal pattern (e.g. `..` inside the asset id) we
+ * short-circuit to 404. We never trust the asset id's contents to be
+ * a real filesystem path.
+ */
+async function handleAssetThumbnails(req, res, assetId, kind, urlObj, auth, assets) {
+  // Auth is enforced by the route — the outer /api/assets/:id/* path
+  // is on the public side of auth, so we re-run it here explicitly.
+  await new Promise((r) => auth(req, res, r));
+  if (res.writableEnded) return;
+  const userId = req.user?.id;
+  if (!userId) return err(res, 401, "unauthenticated", "missing user id");
+
+  const asset = await assets.get(assetId);
+  if (!asset || asset.user_id !== userId) {
+    return err(res, 404, "asset_not_found");
+  }
+
+  const filePath = resolveLocalAssetMediaPath(asset);
+  if (!filePath) return err(res, 404, "asset_media_not_found");
+
+  // Pass a real count / buckets from the query string. The video agent
+  // applies its own hard caps.
+  let param = {};
+  if (kind === "filmstrip") {
+    const n = Number(urlObj.searchParams.get("count"));
+    if (Number.isFinite(n) && n > 0) param.count = Math.min(64, Math.floor(n));
+  } else {
+    const b = Number(urlObj.searchParams.get("buckets"));
+    if (Number.isFinite(b) && b > 0) param.buckets = Math.min(4000, Math.floor(b));
+  }
+
+  let upstream;
+  try {
+    // Forward the caller's Authorization so the video-agent can run
+    // its own JWT check. We are in the same trust zone as the agent
+    // (both process the same VIREO_JWT_SECRET), so this is safe.
+    const callerAuth = req.headers?.authorization || "";
+    upstream = await fetchVideoAgentJSON(`/thumbnails/${kind}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vireo-User-Id": userId,
+        ...(callerAuth ? { Authorization: callerAuth } : {}),
+      },
+      body: JSON.stringify({
+        file_path: filePath,
+        asset_id: assetId,
+        ...param,
+      }),
+    });
+  } catch (e) {
+    const status = e?.httpStatus && e.httpStatus >= 400 ? e.httpStatus : 502;
+    return json(res, status, {
+      error: "upstream_failed",
+      kind,
+      status: e?.httpStatus ?? null,
+      message: e?.message ?? "video agent error",
+      detail: e?.body ?? null,
+    });
+  }
+  return json(res, 200, upstream);
 }
 
 /**
@@ -2289,6 +2365,23 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       const asset = await assets.get(id);
       if (!asset || asset.user_id !== mediaUserId) return err(res, 404, "asset_not_found");
       return streamAssetMedia(req, res, asset);
+    }
+
+    // ---- Day 23: real clip thumbnails + real audio waveform ----
+    // These two routes take a server-local path on disk that was already
+    // resolved by the D22 media-endpoint logic (storage_path ->
+    // source_uri -> upload_id). The Studio server has enforced the
+    // asset owner check by the time the proxy fires.
+    const assetThumbMatch = url.match(/^\/api\/assets\/([^/]+)\/(filmstrip|waveform)$/);
+    if (assetThumbMatch && req.method === "GET") {
+      // Path-traversal hardening: `..` anywhere in the asset id is a
+      // 404 (the same rule the video agent applies to file_path).
+      const assetId = decodeURIComponent(assetThumbMatch[1]);
+      const kind = assetThumbMatch[2];
+      if (assetId.includes("..") || assetId.includes("/") || assetId.includes("\\")) {
+        return err(res, 404, "asset_not_found");
+      }
+      return handleAssetThumbnails(req, res, assetId, kind, u, auth, assets);
     }
 
     // ---- auth gate ----
