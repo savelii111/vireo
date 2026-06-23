@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FileAudio, FileVideo, FolderOpen, Image as ImageIcon, Search, Upload } from 'lucide-react';
 import clsx from 'clsx';
 import type { ProjectAsset, ProjectAssetKind } from '../types';
@@ -145,14 +145,14 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
       });
   }, [assets, bin, query]);
 
-  async function submitRealUpload(e: React.FormEvent) {
-    e.preventDefault();
-    if (!projectId || !selectedFile) return;
+  async function runImport(file: File) {
+    if (!projectId || !file) return;
     setUploading(true);
     setError(null);
     setUploadProgress(0);
+    setSelectedFile(file);
     try {
-      const uploadId = await uploadMediaFile(selectedFile, {
+      const uploadId = await uploadMediaFile(file, {
         projectId,
         token: token(),
         onProgress: setUploadProgress,
@@ -169,6 +169,12 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
     }
   }
 
+  async function submitRealUpload(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedFile) return;
+    await runImport(selectedFile);
+  }
+
   return (
     <aside data-testid="media-panel" className="min-h-0 min-w-0 overflow-hidden border border-border-1 bg-bg-1">
       <div className="h-10 flex items-center justify-between gap-2 border-b border-border-1 px-3">
@@ -181,19 +187,39 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
       </div>
 
       <div className="grid h-[calc(100%-40px)] grid-rows-[auto_auto_minmax(0,1fr)] gap-2 p-3">
-        <form onSubmit={submitRealUpload} className="grid grid-cols-[1fr_auto] gap-2">
+        {/* Day 26: visible, prominent Import zone with file
+            picker AND drag-and-drop from the OS file manager.
+            Disabled (with explanation) when no project is
+            active. */}
+        {projectId ? (
+          <ImportZone
+            disabled={uploading}
+            onFile={runImport}
+            progress={uploadProgress}
+            file={selectedFile}
+            onPickFile={(f) => setSelectedFile(f)}
+          />
+        ) : (
+          <div
+            data-testid="media-import-empty"
+            className="rounded border border-dashed border-border-1 bg-bg-2 px-3 py-2 text-[12px] text-ink-3"
+          >
+            Сначала выберите или создайте проект
+          </div>
+        )}
+        <form onSubmit={submitRealUpload} className="grid grid-cols-[1fr_auto] gap-2 sr-only" aria-hidden>
           <input
             type="file"
             accept="video/*,audio/*,image/*"
             onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-            className="min-w-0 rounded border border-border-1 bg-bg-2 px-2 py-1.5 text-[12px] text-ink-1 outline-none placeholder:text-ink-4 focus:border-accent file:mr-2 file:rounded file:border-0 file:bg-bg-3 file:px-2 file:py-1 file:text-[11px] file:text-ink-1"
+            data-testid="import-file-input"
           />
           <button
             data-testid="import-real"
-            disabled={uploading || !projectId || !selectedFile}
-            className="flex items-center gap-1 rounded bg-accent px-2 py-1.5 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:bg-bg-3 disabled:text-ink-3"
+            type="submit"
+            disabled
+            className="hidden"
           >
-            <Upload size={13} />
             Import
           </button>
         </form>
@@ -293,6 +319,95 @@ function EmptyState({ title, subtitle }: { title: string; subtitle: string }) {
     <div className="rounded border border-border-1 bg-bg-2 p-4 text-center text-[12px] text-ink-3">
       <div className="font-semibold text-ink-2">{title}</div>
       <div className="mt-1">{subtitle}</div>
+    </div>
+  );
+}
+
+// Day 26: prominent, accessible Import zone. Lets the user
+// either pick a file from the OS dialog or drag a file from
+// the file manager. Disables itself while a previous upload
+// is in flight. Surfaces the upload progress and the most
+// recent error in the same area.
+function ImportZone({
+  disabled,
+  onFile,
+  onPickFile,
+  progress,
+  file,
+}: {
+  disabled: boolean;
+  onFile: (f: File) => void | Promise<void>;
+  onPickFile: (f: File | null) => void;
+  progress: number;
+  file: File | null;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+  const inputEl = useRef<HTMLInputElement>(null);
+
+  return (
+    <div
+      data-testid="media-import-zone"
+      onDragEnter={(e) => { e.preventDefault(); if (!disabled) setDragOver(true); }}
+      onDragOver={(e) => { e.preventDefault(); if (!disabled) setDragOver(true); }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        // only clear when leaving the actual zone, not children
+        if (e.currentTarget === e.target) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        if (disabled) return;
+        const f = e.dataTransfer.files?.[0];
+        if (f) onFile(f);
+      }}
+      className={clsx(
+        'rounded-md border-2 border-dashed transition-colors p-2 flex flex-col gap-2',
+        dragOver ? 'border-accent bg-bg-2' : 'border-border-1 bg-bg-2',
+        disabled && 'opacity-60',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          data-testid="media-import-button"
+          disabled={disabled}
+          onClick={() => inputEl.current?.click()}
+          className="flex-1 flex items-center justify-center gap-1.5 rounded bg-accent px-2 py-1.5 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:bg-bg-3 disabled:text-ink-3"
+        >
+          <Upload size={13} />
+          {disabled ? 'Загрузка…' : 'Импортировать медиа'}
+        </button>
+        <input
+          ref={inputEl}
+          type="file"
+          accept="video/*,audio/*,image/*"
+          data-testid="media-import-file-input"
+          onChange={(e) => {
+            const f = e.target.files?.[0] || null;
+            onPickFile(f);
+            if (f) onFile(f);
+            e.target.value = '';
+          }}
+          className="hidden"
+        />
+      </div>
+      <div
+        data-testid="media-import-drop"
+        className="rounded border border-border-1 bg-bg-1 px-2 py-2 text-center text-[11px] text-ink-3"
+      >
+        Перетащите видео, аудио или картинку сюда
+      </div>
+      {file && (
+        <div className="text-[11px] text-ink-2 truncate" data-testid="media-import-filename">
+          {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
+        </div>
+      )}
+      {progress > 0 && progress < 100 && (
+        <div className="h-1 rounded bg-bg-3 overflow-hidden" data-testid="media-import-progress">
+          <div className="h-full bg-accent transition-all" style={{ width: `${progress}%` }} />
+        </div>
+      )}
     </div>
   );
 }

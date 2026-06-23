@@ -1,23 +1,36 @@
 import { useState } from 'react';
-import { Plus, Download, Play, ChevronRight, User, Folder, FolderPlus } from 'lucide-react';
+import { Download, Play, ChevronRight, Folder, FolderPlus, Layout, Eye, EyeOff } from 'lucide-react';
 import clsx from 'clsx';
 import type { WorkspaceMode } from '../types';
 import { listProjects, createProject, setActiveProjectId } from '../projectOnboarding';
+import type { WorkspaceLayout, PanelVisibility, WorkspacePreset } from '../hooks/useWorkspaceLayout';
 
 interface Props {
   projectName: string;
   onExport: () => void;
   onRender: () => void;
-  // Day 24: project picker. When set, the breadcrumb "Projects"
-  // button opens a dropdown to pick / create a project; pick
-  // dispatches vireo:active-project-changed and the editor
-  // re-fetches the timeline.
+  // Day 24: project picker.
   onProjectChanged?: () => void;
+  // Day 26: workspace layout controls.
+  layout?: WorkspaceLayout;
+  onTogglePanel?: (panel: keyof PanelVisibility) => void;
+  onApplyPreset?: (preset: WorkspacePreset) => void;
+  onResetLayout?: () => void;
 }
 
-export function TopBar({ projectName, onExport, onRender, onProjectChanged }: Props) {
+export function TopBar({
+  projectName,
+  onExport,
+  onRender,
+  onProjectChanged,
+  layout,
+  onTogglePanel,
+  onApplyPreset,
+  onResetLayout,
+}: Props) {
   const [mode, setMode] = useState<WorkspaceMode>('edit');
   const [showPicker, setShowPicker] = useState(false);
+  const [showLayoutMenu, setShowLayoutMenu] = useState(false);
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
@@ -61,13 +74,34 @@ export function TopBar({ projectName, onExport, onRender, onProjectChanged }: Pr
     }
   }
 
+  // Day 26: avatar initials come from the current user id
+  // stored in the token, not from a hard-coded name. The
+  // round button stays a neutral grey gradient so we don't
+  // pretend the user is someone we don't know.
+  const avatarInitials = (() => {
+    try {
+      const t = localStorage.getItem('vireo_token');
+      if (!t) return '?';
+      const p = t.split('.')[1];
+      const padded = p + '='.repeat((4 - (p.length % 4)) % 4);
+      const payload = JSON.parse(atob(padded.replace(/-/g, '+').replace(/_/g, '/')));
+      const sub = (payload?.sub || '').toString();
+      if (!sub) return '?';
+      // take leading letters/numbers (max 2)
+      const m = sub.replace(/^u-?/i, '').match(/[a-z0-9]/gi) || [];
+      return (m.slice(0, 2).join('') || '?').toUpperCase();
+    } catch {
+      return '?';
+    }
+  })();
+
   return (
     <header
-      className="col-span-full flex items-center justify-between h-11 px-4 bg-bg-1 border-b border-border-1 z-10"
-      style={{ gridColumn: '1 / -1' }}
+      className="flex items-center justify-between h-11 px-3 bg-bg-1 border-b border-border-1 w-full"
+      data-testid="topbar-root"
     >
       {/* Brand + breadcrumb */}
-      <div className="flex items-center gap-3 relative">
+      <div className="flex items-center gap-3 relative min-w-0">
         <div className="flex items-center gap-2 font-semibold text-[13px] tracking-tight">
           <div
             className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-white font-bold text-[12px] tracking-tighter"
@@ -77,7 +111,7 @@ export function TopBar({ projectName, onExport, onRender, onProjectChanged }: Pr
           </div>
           <span>Vireo Studio</span>
         </div>
-        <nav className="flex items-center gap-0.5 text-[12px] text-ink-3 ml-4">
+        <nav className="flex items-center gap-0.5 text-[12px] text-ink-3 ml-2">
           <div className="relative">
             <button
               type="button"
@@ -161,12 +195,8 @@ export function TopBar({ projectName, onExport, onRender, onProjectChanged }: Pr
             )}
           </div>
           <ChevronRight size={12} className="text-ink-4" />
-          <button className="px-2 py-0.5 rounded hover:bg-bg-2 hover:text-ink-1 transition-colors">
+          <button className="px-2 py-0.5 rounded hover:bg-bg-2 hover:text-ink-1 transition-colors truncate max-w-[20ch]" title={projectName}>
             {projectName}
-          </button>
-          <ChevronRight size={12} className="text-ink-4" />
-          <button className="px-2 py-0.5 rounded text-ink-1">
-            v3 — color graded
           </button>
         </nav>
       </div>
@@ -191,12 +221,88 @@ export function TopBar({ projectName, onExport, onRender, onProjectChanged }: Pr
 
       {/* Right actions */}
       <div className="flex items-center gap-2">
-        <button className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-ink-2 hover:text-ink-1 hover:bg-bg-2 rounded-md transition-colors">
-          <Plus size={13} strokeWidth={1.6} />
-          Invite
-        </button>
+        {/* Day 26: Layout menu — visibility toggles + presets. */}
+        {layout && onTogglePanel && onApplyPreset && (
+          <div className="relative">
+            <button
+              type="button"
+              data-testid="topbar-layout-button"
+              onClick={() => setShowLayoutMenu((v) => !v)}
+              className="flex items-center gap-1.5 px-2 py-1.5 text-[12px] text-ink-2 hover:text-ink-1 hover:bg-bg-2 rounded-md transition-colors"
+            >
+              <Layout size={13} strokeWidth={1.6} />
+              Layout
+            </button>
+            {showLayoutMenu && (
+              <div
+                className="absolute right-0 mt-1 z-20 w-56 bg-bg-2 border border-border-1 rounded shadow-lg p-2 text-[12px] text-ink-1"
+                onMouseLeave={() => setShowLayoutMenu(false)}
+                data-testid="topbar-layout-menu"
+              >
+                <div className="px-1 pt-0.5 pb-1 text-[10px] uppercase tracking-wider text-ink-3">Panels</div>
+                <PanelToggle
+                  label="Media"
+                  on={layout.visibility.media}
+                  onToggle={() => onTogglePanel('media')}
+                  testId="topbar-toggle-media"
+                />
+                <PanelToggle
+                  label="Inspector / Chat"
+                  on={layout.visibility.inspector}
+                  onToggle={() => onTogglePanel('inspector')}
+                  testId="topbar-toggle-inspector"
+                />
+                <PanelToggle
+                  label="Timeline"
+                  on={layout.visibility.timeline}
+                  onToggle={() => onTogglePanel('timeline')}
+                  testId="topbar-toggle-timeline"
+                />
+                <div className="border-t border-border-1 my-1" />
+                <div className="px-1 pt-0.5 pb-1 text-[10px] uppercase tracking-wider text-ink-3">Presets</div>
+                <button
+                  type="button"
+                  data-testid="topbar-preset-edit"
+                  onClick={() => onApplyPreset('edit')}
+                  className={clsx(
+                    'w-full text-left px-2 py-1 rounded text-[12px] hover:bg-bg-3',
+                    layout.preset === 'edit' ? 'text-ink-1 font-semibold' : 'text-ink-2',
+                  )}
+                >
+                  Edit (все панели)
+                </button>
+                <button
+                  type="button"
+                  data-testid="topbar-preset-monitor"
+                  onClick={() => onApplyPreset('monitor')}
+                  className={clsx(
+                    'w-full text-left px-2 py-1 rounded text-[12px] hover:bg-bg-3',
+                    layout.preset === 'monitor' ? 'text-ink-1 font-semibold' : 'text-ink-2',
+                  )}
+                >
+                  Monitor (макс. места)
+                </button>
+                {onResetLayout && (
+                  <>
+                    <div className="border-t border-border-1 my-1" />
+                    <button
+                      type="button"
+                      data-testid="topbar-layout-reset"
+                      onClick={onResetLayout}
+                      className="w-full text-left px-2 py-1 rounded text-[12px] text-ink-2 hover:bg-bg-3"
+                    >
+                      Reset sizes
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         <button
           onClick={onExport}
+          data-testid="topbar-export"
           className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-ink-1 bg-bg-2 border border-border-2 hover:bg-bg-3 rounded-md transition-colors"
         >
           <Download size={13} strokeWidth={1.6} />
@@ -204,19 +310,45 @@ export function TopBar({ projectName, onExport, onRender, onProjectChanged }: Pr
         </button>
         <button
           onClick={onRender}
+          data-testid="topbar-render"
           className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-white bg-accent hover:bg-accent-h rounded-md transition-colors"
         >
           <Play size={13} strokeWidth={1.6} fill="currentColor" />
           Render
         </button>
         <button
-          className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-white text-[11px] font-semibold ml-1"
-          style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)' }}
-          title="Anna K."
+          className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-white text-[11px] font-semibold ml-1 bg-bg-3 hover:bg-bg-2 transition-colors"
+          data-testid="topbar-avatar"
+          title="Current user"
         >
-          <User size={14} />
+          {avatarInitials}
         </button>
       </div>
     </header>
+  );
+}
+
+function PanelToggle({
+  label,
+  on,
+  onToggle,
+  testId,
+}: {
+  label: string;
+  on: boolean;
+  onToggle: () => void;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onToggle}
+      className="w-full flex items-center gap-2 px-2 py-1 rounded text-[12px] text-ink-1 hover:bg-bg-3"
+    >
+      {on ? <Eye size={12} className="text-accent" /> : <EyeOff size={12} className="text-ink-3" />}
+      <span className="flex-1 text-left">{label}</span>
+      <span className="text-[10px] uppercase tracking-wider text-ink-3">{on ? 'on' : 'off'}</span>
+    </button>
   );
 }

@@ -1,7 +1,9 @@
-import { useState, Suspense, lazy, useEffect, useRef, useMemo } from 'react';
+import { useState, Suspense, lazy, useEffect, useMemo, useRef } from 'react';
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import clsx from 'clsx';
 import type { PreviewTab, Clip } from './types';
 import { useEditor } from './hooks/useEditor';
+import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
 import { activeTextClipsAt, activeVideoClipAt } from './timelinePlayback';
 import { OnboardingGate } from './components/OnboardingGate';
 import { getActiveProjectId } from './projectOnboarding';
@@ -154,6 +156,7 @@ function CommandPalette({ onClose, commands }: { onClose: () => void; commands: 
 // ---------- Main App ----------
 export default function App() {
   const editor = useEditor();
+  const ws = useWorkspaceLayout();
   // Day 24: gate the editor behind a real active project. If
   // localStorage has no vireo_active_project_id, show
   // OnboardingGate. When the user picks or creates a project
@@ -295,29 +298,20 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [editor, helpOpen, cmdOpen]);
 
-  // Day 25: pro docked layout. The viewport is filled with a
-  // single 3-row × 4-column grid:
-  //   row 1: TopBar (col-span-full, h-11)
-  //   row 2: SideRail (56px) | Center column (Media / Monitor) | Inspector (340px)
-  //   row 3: Timeline (col-span-full, min 320px)
-  // No absolute positioning over the timeline / monitor.
-  // NOTE: hooks must run unconditionally every render. The
-  // onboarding gate below is implemented as a conditional
-  // *return value*, not as an early `return` that would skip
-  // the rest of the hooks (which would violate Rules of
-  // Hooks and crash on the project switch re-render).
+  // Day 26: pro docked layout. Resizable panel groups. Hooks
+  // must run unconditionally; OnboardingGate is a conditional
+  // *return value*, not an early `return` that would skip
+  // the rest of the hooks.
   return (
     activeProjectId
       ? (<div className="h-screen w-screen overflow-hidden bg-bg-0 text-ink-1" data-testid="app-root">
+      {/* TopBar — fixed height, full width */}
       <div
-        className="grid h-full w-full bg-bg-0"
-        style={{
-          gridTemplateColumns: "56px minmax(260px, 1fr) minmax(280px, 360px)",
-          gridTemplateRows: "44px minmax(0, 1fr) minmax(320px, 38vh)",
-        }}
+        className="flex items-center justify-between px-3 border-b border-border-1 bg-bg-1 text-[11px] text-ink-1"
+        style={{ height: 44 }}
       >
-        <Suspense fallback={<Fallback label="top bar" />}>
-          <div className="col-span-full min-h-0 min-w-0 border-b border-border-1">
+        <div className="flex items-center gap-3 min-w-0">
+          <Suspense fallback={<Fallback label="top bar" />}>
             <TopBar
               projectName={editor.project.name}
               onExport={() => setExportOpen(true)}
@@ -325,197 +319,280 @@ export default function App() {
               onProjectChanged={() => {
                 void editor.refreshTimeline(getActiveProjectId() ?? undefined);
               }}
+              layout={ws.layout}
+              onTogglePanel={ws.togglePanel}
+              onApplyPreset={ws.applyPreset}
+              onResetLayout={ws.reset}
             />
-          </div>
-        </Suspense>
-
-        <Suspense fallback={<Fallback label="rail" />}>
-          <div className="min-h-0 min-w-0 border-r border-border-1 bg-bg-1">
-            <SideRail active="media" onChange={() => {}} />
-          </div>
-        </Suspense>
-
-        {/* Center column: media panel on top, monitor below */}
-        <div
-          className="grid min-h-0 min-w-0 overflow-hidden bg-bg-1"
-          style={{ gridTemplateRows: "minmax(180px, 28%) minmax(0, 1fr)" }}
-        >
-          <div
-            className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
-            data-testid="media-panel-title"
-          >
-            <span>Project Media</span>
-            <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
-              {editor.projectId ? `id ${editor.projectId.slice(0, 8)}` : "no project"}
-            </span>
-          </div>
-          <div className="min-h-0 min-w-0 overflow-hidden">
-            <Suspense fallback={<Fallback label="media panel" />}>
-              <MediaPanel projectId={editor.projectId} />
-            </Suspense>
-          </div>
-          <div
-            className="flex items-center justify-between px-3 h-7 border-y border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
-            data-testid="monitor-title"
-          >
-            <span>Program Monitor</span>
-            <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
-              {previewTab}
-            </span>
-          </div>
-          <div className="min-h-0 min-w-0 overflow-hidden">
-            <Suspense fallback={<Fallback label="workspace" />}>
-              <Preview
-                tab={previewTab}
-                onTabChange={setPreviewTab}
-                playing={editor.playing}
-                onTogglePlay={editor.togglePlay}
-                playhead={editor.playhead}
-                duration={editor.project.duration_sec}
-                fps={editor.project.fps}
-                width={editor.project.width}
-                height={editor.project.height}
-                activeVideoClip={activeVideoClip}
-                activeTextClips={activeTextClips}
-                timeline={editor.project}
-                assetUrlResolver={assetUrlResolver}
-                onSeek={editor.seek}
-              />
-            </Suspense>
-          </div>
+          </Suspense>
         </div>
+      </div>
 
-        {/* Right column: Inspector / Chat */}
-        <div className="min-h-0 min-w-0 overflow-hidden border-l border-border-1 bg-bg-1">
-          <div className="grid h-full grid-rows-[28px_28px_minmax(0,1fr)]">
-            <div
-              className="flex items-center px-3 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
-              data-testid="right-panel-title"
-            >
-              <span>{rightPanel === 'inspector' ? 'Inspector' : 'Chat'}</span>
-            </div>
-            <div className="flex items-center gap-1 border-b border-border-1 px-2">
-              <button
-                onClick={() => setRightPanel('inspector')}
-                data-testid="right-tab-inspector"
-                className={clsx(
-                  'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
-                  rightPanel === 'inspector' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
-                )}
+      {/* Body: vertical split into editor (top) and timeline (bottom) */}
+      <div style={{ height: "calc(100% - 44px)" }} className="min-h-0 min-w-0">
+        <PanelGroup orientation="vertical" autoSave="vireo-workspace-vertical">
+          {/* Editor region: SideRail + (Media | Monitor | Inspector) */}
+          <Panel
+            id="editor"
+            minSize={40}
+            defaultSize={100 - ws.layout.timelineSize}
+            onResize={(p) => ws.setTimelineSize(100 - p.asPercentage)}
+            className="min-h-0 min-w-0"
+          >
+            <PanelGroup orientation="horizontal" autoSave="vireo-workspace-horizontal">
+              {/* SideRail — fixed 56px */}
+              <Panel
+                id="rail"
+                defaultSize={2}
+                minSize={2}
+                maxSize={2}
+                className="min-h-0 min-w-0"
               >
-                Inspector
-              </button>
-              <button
-                onClick={() => setRightPanel('chat')}
-                data-testid="right-tab-chat"
-                className={clsx(
-                  'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
-                  rightPanel === 'chat' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
-                )}
-              >
-                Chat
-              </button>
-            </div>
-            <div className="min-h-0 overflow-hidden">
-              {rightPanel === 'inspector' ? (
-                <Suspense fallback={<Fallback label="inspector" />}>
-                  <Inspector
-                    clip={editor.selectedClip}
-                    clipId={editor.selectedClipId}
-                    track={selectedTrack}
-                    playhead={editor.playhead}
-                    onQuickAction={(action) => {
-                      if (action === 'split') editor.splitAtPlayhead();
-                      if (action === 'undo') editor.undo();
-                    }}
-                    onAddEffect={(effect) => editor.addEffect(effect)}
-                    onSetEffect={(effect) => editor.setEffect(effect)}
-                    onTransformChange={(transform) => {
-                      if (editor.selectedClipId) editor.setTransform(editor.selectedClipId, transform);
-                    }}
-                    onTitlePropsChange={(titleProps) => {
-                      if (editor.selectedClipId) editor.setTitleProps(editor.selectedClipId, titleProps);
-                    }}
-                    onSetKeyframe={(targetId, param, keyframe) => {
-                      if (editor.selectedClipId) editor.setKeyframe(editor.selectedClipId, targetId, param, keyframe);
-                    }}
-                    onRemoveKeyframe={(targetId, param, time) => {
-                      if (editor.selectedClipId) editor.removeKeyframe(editor.selectedClipId, targetId, param, time);
-                    }}
-                    onVolumeChange={(volume) => {
-                      if (editor.selectedClipId) editor.setVolume(editor.selectedClipId, volume);
-                    }}
-                    onTrackAudioChange={(audio) => {
-                      if (selectedTrack) editor.setTrackAudio(selectedTrack.id, audio);
-                    }}
-                    onClipAudioChange={(audio) => {
-                      if (editor.selectedClipId) editor.setClipAudio(editor.selectedClipId, audio);
-                    }}
-                    onClipColorChange={(color) => {
-                      if (editor.selectedClipId) editor.setClipColor(editor.selectedClipId, color);
-                    }}
+                <SideRail active="media" onChange={() => {}} />
+              </Panel>
+              <PanelResizeHandle
+                className="w-px bg-border-1 hover:bg-accent transition-colors"
+                data-testid="resize-rail-media"
+                disabled
+              />
+
+              {/* Media column (optional) */}
+              {ws.layout.visibility.media && (
+                <>
+                  <Panel
+                    id="media"
+                    minSize={16}
+                    defaultSize={ws.layout.mediaSize}
+                    onResize={(p) => ws.setMediaSize(p.asPercentage)}
+                    className="min-h-0 min-w-0"
+                  >
+                    <div className="flex flex-col h-full min-h-0 bg-bg-1">
+                      <div
+                        className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+                        data-testid="media-panel-title"
+                      >
+                        <span>Project Media</span>
+                        <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
+                          {editor.projectId ? `id ${editor.projectId.slice(0, 8)}` : "no project"}
+                        </span>
+                      </div>
+                      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+                        <Suspense fallback={<Fallback label="media panel" />}>
+                          <MediaPanel projectId={editor.projectId} />
+                        </Suspense>
+                      </div>
+                    </div>
+                  </Panel>
+                  <PanelResizeHandle
+                    className="w-1 bg-border-1 hover:bg-accent transition-colors cursor-col-resize"
+                    data-testid="resize-media-monitor"
                   />
-                </Suspense>
-              ) : (
-                <Suspense fallback={<Fallback label="chat" />}>
-                  <ChatPanel
-                    projectId={chatProjectId}
-                    conversationId={chatConversationId}
-                    onBotInsertClip={(payload) => {
-                      editor.applyBotInsertClip(payload);
-                      localStorage.setItem('vireo.last_bot_clip', JSON.stringify(payload));
-                    }}
-                  />
-                </Suspense>
+                </>
               )}
-            </div>
-          </div>
-        </div>
 
-        {/* Timeline — full width */}
-        <div
-          className="col-span-full min-h-0 min-w-0 overflow-hidden border-t border-border-1 bg-bg-1"
-          data-testid="timeline-section"
-        >
-          <div
-            className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
-            data-testid="timeline-title"
-          >
-            <span>Timeline</span>
-            <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
-              {editor.project.tracks.length} tracks
-            </span>
-          </div>
-          <div className="min-h-0 min-w-0" style={{ height: "calc(100% - 28px)" }}>
-            <Suspense fallback={<Fallback label="timeline" />}>
-              <Timeline
-                project={editor.project}
-                tool={editor.tool}
-                onToolChange={editor.setTool}
-                selectedClipId={editor.selectedClipId}
-                onClipSelect={editor.selectClip}
-                playhead={editor.playhead}
-                onSeek={editor.seek}
-                zoom={editor.zoom}
-                onZoomChange={editor.setZoom}
-                onClipMove={editor.moveClip}
-                onClipResize={editor.resizeClip}
-                onAssetDrop={editor.insertAsset}
-                onDragEnd={editor.onDragEnd}
-                onUndo={editor.undo}
-                onRedo={editor.redo}
-                canUndo={editor.canUndo}
-                canRedo={editor.canRedo}
-                onToggleMute={editor.toggleTrackMute}
-                onToggleSolo={editor.toggleTrackSolo}
-                onToggleLock={editor.toggleTrackLock}
-                onToggleHidden={editor.toggleTrackHidden}
-                onAddTransition={(clipId, kind, duration) => editor.addTransition(clipId, kind, duration)}
-                onAddText={(text, start, duration, position) => editor.addText(text, start, duration, position)}
-              />
-            </Suspense>
-          </div>
-        </div>
+              {/* Program Monitor — always visible, never collapsed */}
+              <Panel
+                id="monitor"
+                minSize={28}
+                defaultSize={100 - ws.layout.mediaSize - ws.layout.inspectorSize}
+                className="min-h-0 min-w-0"
+              >
+                <div className="flex flex-col h-full min-h-0 bg-bg-1">
+                  <div
+                    className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+                    data-testid="monitor-title"
+                  >
+                    <span>Program Monitor</span>
+                    <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
+                      {previewTab}
+                    </span>
+                  </div>
+                  <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+                    <Suspense fallback={<Fallback label="workspace" />}>
+                      <Preview
+                        tab={previewTab}
+                        onTabChange={setPreviewTab}
+                        playing={editor.playing}
+                        onTogglePlay={editor.togglePlay}
+                        playhead={editor.playhead}
+                        duration={editor.project.duration_sec}
+                        fps={editor.project.fps}
+                        width={editor.project.width}
+                        height={editor.project.height}
+                        activeVideoClip={activeVideoClip}
+                        activeTextClips={activeTextClips}
+                        timeline={editor.project}
+                        assetUrlResolver={assetUrlResolver}
+                        onSeek={editor.seek}
+                      />
+                    </Suspense>
+                  </div>
+                </div>
+              </Panel>
+
+              {/* Inspector / Chat column (optional) */}
+              {ws.layout.visibility.inspector && (
+                <>
+                  <PanelResizeHandle
+                    className="w-1 bg-border-1 hover:bg-accent transition-colors cursor-col-resize"
+                    data-testid="resize-monitor-inspector"
+                  />
+                  <Panel
+                    id="inspector"
+                    minSize={16}
+                    defaultSize={ws.layout.inspectorSize}
+                    onResize={(p) => ws.setInspectorSize(p.asPercentage)}
+                    className="min-h-0 min-w-0"
+                  >
+                    <div className="min-h-0 min-w-0 h-full border-l border-border-1 bg-bg-1 grid grid-rows-[28px_28px_minmax(0,1fr)]">
+                      <div
+                        className="flex items-center px-3 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+                        data-testid="right-panel-title"
+                      >
+                        <span>{rightPanel === 'inspector' ? 'Inspector' : 'Chat'}</span>
+                      </div>
+                      <div className="flex items-center gap-1 border-b border-border-1 px-2">
+                        <button
+                          onClick={() => setRightPanel('inspector')}
+                          data-testid="right-tab-inspector"
+                          className={clsx(
+                            'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
+                            rightPanel === 'inspector' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
+                          )}
+                        >
+                          Inspector
+                        </button>
+                        <button
+                          onClick={() => setRightPanel('chat')}
+                          data-testid="right-tab-chat"
+                          className={clsx(
+                            'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
+                            rightPanel === 'chat' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
+                          )}
+                        >
+                          Chat
+                        </button>
+                      </div>
+                      <div className="min-h-0 overflow-hidden">
+                        {rightPanel === 'inspector' ? (
+                          <Suspense fallback={<Fallback label="inspector" />}>
+                            <Inspector
+                              clip={editor.selectedClip}
+                              clipId={editor.selectedClipId}
+                              track={selectedTrack}
+                              playhead={editor.playhead}
+                              onQuickAction={(action) => {
+                                if (action === 'split') editor.splitAtPlayhead();
+                                if (action === 'undo') editor.undo();
+                              }}
+                              onAddEffect={(effect) => editor.addEffect(effect)}
+                              onSetEffect={(effect) => editor.setEffect(effect)}
+                              onTransformChange={(transform) => {
+                                if (editor.selectedClipId) editor.setTransform(editor.selectedClipId, transform);
+                              }}
+                              onTitlePropsChange={(titleProps) => {
+                                if (editor.selectedClipId) editor.setTitleProps(editor.selectedClipId, titleProps);
+                              }}
+                              onSetKeyframe={(targetId, param, keyframe) => {
+                                if (editor.selectedClipId) editor.setKeyframe(editor.selectedClipId, targetId, param, keyframe);
+                              }}
+                              onRemoveKeyframe={(targetId, param, time) => {
+                                if (editor.selectedClipId) editor.removeKeyframe(editor.selectedClipId, targetId, param, time);
+                              }}
+                              onVolumeChange={(volume) => {
+                                if (editor.selectedClipId) editor.setVolume(editor.selectedClipId, volume);
+                              }}
+                              onTrackAudioChange={(audio) => {
+                                if (selectedTrack) editor.setTrackAudio(selectedTrack.id, audio);
+                              }}
+                              onClipAudioChange={(audio) => {
+                                if (editor.selectedClipId) editor.setClipAudio(editor.selectedClipId, audio);
+                              }}
+                              onClipColorChange={(color) => {
+                                if (editor.selectedClipId) editor.setClipColor(editor.selectedClipId, color);
+                              }}
+                            />
+                          </Suspense>
+                        ) : (
+                          <Suspense fallback={<Fallback label="chat" />}>
+                            <ChatPanel
+                              projectId={chatProjectId}
+                              conversationId={chatConversationId}
+                              onBotInsertClip={(payload) => {
+                                editor.applyBotInsertClip(payload);
+                                localStorage.setItem('vireo.last_bot_clip', JSON.stringify(payload));
+                              }}
+                            />
+                          </Suspense>
+                        )}
+                      </div>
+                    </div>
+                  </Panel>
+                </>
+              )}
+            </PanelGroup>
+          </Panel>
+
+          <PanelResizeHandle
+            className="h-1 bg-border-1 hover:bg-accent transition-colors cursor-row-resize"
+            data-testid="resize-editor-timeline"
+          />
+
+          {/* Timeline — full width */}
+          {ws.layout.visibility.timeline && (
+            <Panel
+              id="timeline"
+              minSize={20}
+              defaultSize={ws.layout.timelineSize}
+              onResize={(p) => ws.setTimelineSize(p.asPercentage)}
+              className="min-h-0 min-w-0"
+            >
+              <div
+                className="min-h-0 min-w-0 overflow-hidden border-t border-border-1 bg-bg-1 h-full"
+                data-testid="timeline-section"
+              >
+                <div
+                  className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+                  data-testid="timeline-title"
+                >
+                  <span>Timeline</span>
+                  <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
+                    {editor.project.tracks.length} tracks
+                  </span>
+                </div>
+                <div className="min-h-0 min-w-0" style={{ height: "calc(100% - 28px)" }}>
+                  <Suspense fallback={<Fallback label="timeline" />}>
+                    <Timeline
+                      project={editor.project}
+                      tool={editor.tool}
+                      onToolChange={editor.setTool}
+                      selectedClipId={editor.selectedClipId}
+                      onClipSelect={editor.selectClip}
+                      playhead={editor.playhead}
+                      onSeek={editor.seek}
+                      zoom={editor.zoom}
+                      onZoomChange={editor.setZoom}
+                      onClipMove={editor.moveClip}
+                      onClipResize={editor.resizeClip}
+                      onAssetDrop={editor.insertAsset}
+                      onDragEnd={editor.onDragEnd}
+                      onUndo={editor.undo}
+                      onRedo={editor.redo}
+                      canUndo={editor.canUndo}
+                      canRedo={editor.canRedo}
+                      onToggleMute={editor.toggleTrackMute}
+                      onToggleSolo={editor.toggleTrackSolo}
+                      onToggleLock={editor.toggleTrackLock}
+                      onToggleHidden={editor.toggleTrackHidden}
+                      onAddTransition={(clipId, kind, duration) => editor.addTransition(clipId, kind, duration)}
+                      onAddText={(text, start, duration, position) => editor.addText(text, start, duration, position)}
+                    />
+                  </Suspense>
+                </div>
+              </div>
+            </Panel>
+          )}
+        </PanelGroup>
       </div>
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
       {cmdOpen && <CommandPalette onClose={() => setCmdOpen(false)} commands={commands} />}

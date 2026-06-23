@@ -320,103 +320,121 @@ export function Timeline({
         </div>
       </div>
 
-      {(transitionOpen || textOpen) && (
-        <div className="flex items-center gap-3 border-b border-border-1 bg-bg-0 px-4 py-2 text-[12px]">
-          {transitionOpen && (
-            <div className="flex items-center gap-2">
-              <span className="text-ink-3">Переход</span>
-              <select
-                data-testid="transition-kind"
-                value={transitionKind}
-                onChange={(e) => setTransitionKind(e.target.value)}
-                className="rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
-              >
-                <option value="crossfade">crossfade</option>
-                <option value="fade">fade</option>
-                <option value="wipe">wipe</option>
-              </select>
-              <input
-                data-testid="transition-duration"
-                type="number"
-                min={0.1}
-                step={0.1}
-                value={transitionDuration}
-                onChange={(e) => setTransitionDuration(Number(e.target.value))}
-                className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
-              />
-              <span className="text-ink-3">сек</span>
+      {/* Day 26: popovers anchored to the trigger button, not
+          a full-width row. Both close on outside-click and Esc. */}
+      {transitionOpen && (
+        <TimelinePopover anchorTestId="timeline-transition-control" onClose={() => setTransitionOpen(false)}>
+          <div className="grid grid-cols-2 gap-2 items-center min-w-[260px]">
+            <label className="text-[11px] text-ink-3" htmlFor="popover-transition-kind">Тип</label>
+            <select
+              id="popover-transition-kind"
+              data-testid="transition-kind"
+              value={transitionKind}
+              onChange={(e) => setTransitionKind(e.target.value)}
+              className="rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-[12px] text-ink-1"
+            >
+              <option value="crossfade">crossfade</option>
+              <option value="fade">fade</option>
+              <option value="wipe">wipe</option>
+            </select>
+            <label className="text-[11px] text-ink-3" htmlFor="popover-transition-duration">Длительность (сек)</label>
+            <input
+              id="popover-transition-duration"
+              data-testid="transition-duration"
+              type="number"
+              min={0.1}
+              step={0.1}
+              value={transitionDuration}
+              onChange={(e) => setTransitionDuration(Number(e.target.value))}
+              className="w-20 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-[12px] text-ink-1"
+            />
+            <div className="col-span-2 flex items-center justify-between gap-2 pt-1">
+              <span className="text-[11px] text-ink-4">
+                {selectedClip && nextTransitionClip
+                  ? `${selectedClip.label} → ${nextTransitionClip.label}`
+                  : 'выберите clip с соседом справа'}
+              </span>
               <button
                 data-testid="add-transition"
                 disabled={!selectedClip || !nextTransitionClip}
-                onClick={() => selectedClip && onAddTransition?.(selectedClip.id, transitionKind, transitionDuration)}
-                className="rounded-md bg-accent px-2 py-1 font-semibold text-white disabled:opacity-40"
+                onClick={() => {
+                  if (selectedClip) onAddTransition?.(selectedClip.id, transitionKind, transitionDuration);
+                  setTransitionOpen(false);
+                }}
+                className="rounded-md bg-accent px-2 py-1 text-[12px] font-semibold text-white disabled:opacity-40"
               >
                 Добавить
               </button>
-              {selectedClip && nextTransitionClip ? (
-                <span className="text-ink-3">{selectedClip.label} → {nextTransitionClip.label}</span>
-              ) : (
-                <span className="text-ink-4">выберите clip с соседом справа</span>
-              )}
             </div>
-          )}
-          {textOpen && (
-            <div className="flex items-center gap-2">
-              <span className="text-ink-3">Текст trk_t1</span>
-              <input
-                data-testid="text-body"
-                value={textBody}
-                onChange={(e) => setTextBody(e.target.value)}
-                placeholder="Введите текст"
-                className="w-40 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
-              />
-              <input
-                data-testid="text-start"
-                type="number"
-                min={0}
-                step={0.1}
-                value={textStart}
-                onChange={(e) => setTextStart(Number(e.target.value))}
-                className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
-              />
-              <input
-                data-testid="text-duration"
-                type="number"
-                min={0.1}
-                step={0.1}
-                value={textDuration}
-                onChange={(e) => setTextDuration(Number(e.target.value))}
-                className="w-16 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
-              />
-              <input
-                data-testid="text-x"
-                type="number"
-                value={textX}
-                onChange={(e) => setTextX(Number(e.target.value))}
-                placeholder="X"
-                className="w-14 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
-              />
-              <input
-                data-testid="text-y"
-                type="number"
-                value={textY}
-                onChange={(e) => setTextY(Number(e.target.value))}
-                placeholder="Y"
-                className="w-14 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-ink-1"
-              />
+          </div>
+        </TimelinePopover>
+      )}
+      {textOpen && (
+        <TimelinePopover anchorTestId="timeline-text-control" onClose={() => setTextOpen(false)}>
+          <div className="grid grid-cols-2 gap-2 items-center min-w-[300px]">
+            <label className="text-[11px] text-ink-3" htmlFor="popover-text-body">Текст</label>
+            <input
+              id="popover-text-body"
+              data-testid="text-body"
+              value={textBody}
+              onChange={(e) => setTextBody(e.target.value)}
+              placeholder="Введите текст"
+              className="rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-[12px] text-ink-1"
+            />
+            <label className="text-[11px] text-ink-3" htmlFor="popover-text-start">Начало (сек)</label>
+            <input
+              id="popover-text-start"
+              data-testid="text-start"
+              type="number"
+              min={0}
+              step={0.1}
+              value={textStart}
+              onChange={(e) => setTextStart(Number(e.target.value))}
+              className="w-20 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-[12px] text-ink-1"
+            />
+            <label className="text-[11px] text-ink-3" htmlFor="popover-text-duration">Длительность (сек)</label>
+            <input
+              id="popover-text-duration"
+              data-testid="text-duration"
+              type="number"
+              min={0.1}
+              step={0.1}
+              value={textDuration}
+              onChange={(e) => setTextDuration(Number(e.target.value))}
+              className="w-20 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-[12px] text-ink-1"
+            />
+            <label className="text-[11px] text-ink-3" htmlFor="popover-text-x">X (px)</label>
+            <input
+              id="popover-text-x"
+              data-testid="text-x"
+              type="number"
+              value={textX}
+              onChange={(e) => setTextX(Number(e.target.value))}
+              className="w-20 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-[12px] text-ink-1"
+            />
+            <label className="text-[11px] text-ink-3" htmlFor="popover-text-y">Y (px)</label>
+            <input
+              id="popover-text-y"
+              data-testid="text-y"
+              type="number"
+              value={textY}
+              onChange={(e) => setTextY(Number(e.target.value))}
+              className="w-20 rounded-md bg-bg-2 border border-border-1 px-2 py-1 text-[12px] text-ink-1"
+            />
+            <div className="col-span-2 flex justify-end pt-1">
               <button
                 data-testid="add-text"
                 onClick={() => {
                   onAddText?.(textBody, textStart, textDuration, { x: textX, y: textY });
                   setTextOpen(false);
                 }}
-                className="rounded-md bg-accent px-2 py-1 font-semibold text-white"
+                className="rounded-md bg-accent px-2 py-1 text-[12px] font-semibold text-white"
               >
                 Добавить
               </button>
             </div>
-          )}
-        </div>
+          </div>
+        </TimelinePopover>
       )}
 
       {/* ── Body ── */}
@@ -611,5 +629,62 @@ export function Timeline({
         </div>
       </div>
     </section>
+  );
+}
+
+// Day 26: small popover anchored to a trigger button. We use
+// position: fixed because the timeline scroll container can
+// hide an absolute popover. The anchor is found via
+// document.querySelector on the data-testid, which works in
+// jsdom and in the real browser.
+function TimelinePopover({
+  anchorTestId,
+  onClose,
+  children,
+}: {
+  anchorTestId: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const anchor = document.querySelector(`[data-testid="${anchorTestId}"]`);
+    if (anchor instanceof HTMLElement) {
+      const r = anchor.getBoundingClientRect();
+      setPos({ left: r.left, top: r.bottom + 4 });
+    }
+  }, [anchorTestId]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    function onPointerDown(e: PointerEvent) {
+      const el = ref.current;
+      if (el && e.target instanceof Node && !el.contains(e.target)) {
+        const anchor = document.querySelector(`[data-testid="${anchorTestId}"]`);
+        if (!(anchor instanceof HTMLElement) || !anchor.contains(e.target)) onClose();
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [anchorTestId, onClose]);
+
+  if (!pos) return null;
+
+  return (
+    <div
+      ref={ref}
+      data-testid={`popover-${anchorTestId}`}
+      role="dialog"
+      className="fixed z-50 rounded-md border border-border-1 bg-bg-2 shadow-lg p-3 text-ink-1"
+      style={{ left: pos.left, top: pos.top }}
+    >
+      {children}
+    </div>
   );
 }
