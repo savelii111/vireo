@@ -2931,6 +2931,18 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           if (!p || p.user_id !== userId) return err(res, 404, "project_not_found");
           let preset;
           try { preset = normalizeExportPreset({ id: request.presetId }); } catch (e) { return err(res, 400, e.code || "export_validation", e.message); }
+          // Day 24: real_encode=true routes through the D24
+          // synchronous handler (real ffmpeg pipeline). We use
+          // the same project/timeline/asset stores the route
+          // already has, and synthesize an "exports" job record
+          // for /api/exports/:jobId compatibility.
+          if (body.real_encode !== false) {
+            const d24Result = await handleTimelineExport(
+              req, res, request.projectId, request.presetId, body.output_name || null,
+              { timelines, projects, assets, userId }
+            );
+            return; // handleTimelineExport already wrote the response
+          }
           const jobId = deterministicExportJobId(request);
           const existing = await fetchExportJob(exports, pool, jobId);
           if (existing && existing.state !== "failed") {
@@ -2975,6 +2987,57 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
           }
           if (!job || job.state !== "done" || !job.result) return err(res, 404, "export_result_not_ready");
           return json(res, 200, { ok: true, result: job.result });
+        }
+        // Day 24: GET /api/exports/:jobId/media — stream the
+        // encoded mp4 with Range support. Same as D22 asset
+        // media: accepts ?access_token=... for HTML5 <video>
+        // (which cannot set Authorization headers).
+        if (jobId && key === `GET /api/exports/${jobId}/media`) {
+          // Look up the export job. D18 simulated jobs store
+          // a metadata.path; D24 real_encode jobs use the in-memory
+          // job map from getExportJob. We try the D18 path first,
+          // then fall back to D24.
+          let mediaPath = null;
+          let ownerId = null;
+          let project = null;
+          // 1) D18 export job record (PG or in-memory store)
+          try {
+            const d18Job = await fetchExportJob(exports, pool, jobId);
+            if (d18Job && d18Job.projectId) {
+              const p = await projects.get(d18Job.projectId);
+              if (p && p.user_id === userId) {
+                project = p;
+                ownerId = p.user_id;
+                mediaPath = d18Job.result?.metadata?.path || d18Job.result?.path || null;
+              }
+            }
+          } catch (_) { /* fall through to D24 */ }
+          // 2) D24 in-memory job map
+          if (!mediaPath) {
+            const d24Job = getExportJob(jobId);
+            if (d24Job && d24Job.user_id === userId) {
+              ownerId = d24Job.user_id;
+              mediaPath = d24Job.output_path || null;
+            }
+          }
+          if (!mediaPath) {
+            _d24Trace(`GET /api/exports/${jobId}/media 404 no mediaPath user=${userId}`);
+            return err(res, 404, "export_media_not_found");
+          }
+          // Stream the file with Range support.
+          if (!existsSync(mediaPath)) {
+            return err(res, 404, "export_file_missing");
+          }
+          // Reuse D22's streamAssetMedia helper.
+          return await streamAssetMedia(req, res, {
+            kind: "export",
+            job_id: jobId,
+            user_id: ownerId,
+            storage_path: mediaPath,
+            source_uri: null,
+            upload_id: null,
+            filename: `${jobId}.mp4`,
+          });
         }
       }
 

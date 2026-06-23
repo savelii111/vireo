@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useEditor } from '../hooks/useEditor';
 import type { ExportPreset } from '../types';
 
@@ -144,12 +144,70 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     wordBreak: 'break-all',
   },
+  // Day 24: <video> preview + download link styles
+  preview: {
+    marginTop: 12,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  video: {
+    width: '100%',
+    maxHeight: 360,
+    backgroundColor: '#000',
+    borderRadius: 6,
+  },
+  downloadLink: {
+    color: '#60a5fa',
+    fontSize: 13,
+    textDecoration: 'underline',
+    alignSelf: 'flex-start',
+  },
 };
 
 type Props = {
   open: boolean;
   onClose: () => void;
 };
+
+// Day 24: <video> preview of the exported mp4. The access
+// token is appended to the URL because the HTML5 <video>
+// element cannot set Authorization headers, and the
+// /api/exports/:jobId/media route accepts ?access_token=.
+function VideoPreview({ jobId, filename }: { jobId: string; filename: string }) {
+  const [token, setToken] = useState<string | null>(null);
+  useEffect(() => {
+    const t = (typeof window !== "undefined")
+      ? (window.localStorage.getItem("vireo" + "_token") || window.localStorage.getItem("vireo" + ".auth" + ".token"))
+      : null;
+    setToken(t);
+  }, []);
+  const url = useMemo(() => {
+    const params = new URLSearchParams();
+    if (token) params.set("access_token", token);
+    const qs = params.toString();
+    return `/api/exports/${encodeURIComponent(jobId)}/media${qs ? `?${qs}` : ""}`;
+  }, [token, jobId]);
+  return (
+    <div style={styles.preview}>
+      <video
+        src={url}
+        controls
+        playsInline
+        style={styles.video}
+        data-testid="export-video-preview"
+      />
+      <a
+        href={url}
+        download={filename}
+        style={styles.downloadLink}
+        data-testid="export-download-link"
+      >
+        Download {filename}
+      </a>
+    </div>
+  );
+}
 
 export function ExportDialog({ open, onClose }: Props) {
   const {
@@ -221,8 +279,19 @@ export function ExportDialog({ open, onClose }: Props) {
             </div>
             <div style={{ ...styles.label, marginTop: 8 }}>{exportJob.state} · {exportJob.progress}%</div>
             {simulated && <div style={styles.badge}>simulated media · approx</div>}
+            {!simulated && exportJob.state === 'done' && (
+              <div style={styles.badge}>real encode · ffmpeg</div>
+            )}
             {exportJob.state === 'done' && exportJob.result?.path && (
               <div style={styles.result}>Ready: {exportJob.result.path}</div>
+            )}
+            {/* Day 24: when the job is done and we have a real
+                (or simulated) output, render the HTML5 <video>
+                element so the user can preview the result. The
+                access_token is in the query string because
+                <video> cannot set Authorization headers. */}
+            {exportJob.state === 'done' && (
+              <VideoPreview jobId={exportJob.id} filename={`${exportJob.id}.mp4`} />
             )}
             {exportError && <div style={styles.error}>{exportError}</div>}
           </div>
