@@ -2562,6 +2562,26 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       return json(res, status, health);
     }
 
+    // ---- dev-only: issue a session token for the local dev
+    //      account. Gated on BOTH NODE_ENV !== "production"
+    //      AND VIREO_DEV_LOGIN=1 so a misconfigured prod build
+    //      can never serve it. The frontend's index.html only
+    //      hits this endpoint when VIREO_DEV_LOGIN is also set
+    //      server-side (see index.html). If you don't set the
+    //      flag, this returns 403.
+    if (key === "GET /api/dev/issue-token" && process.env.NODE_ENV !== "production" && process.env.VIREO_DEV_LOGIN === "1") {
+      const { signToken } = await import("../../../packages/auth-middleware/index.js");
+      const user = (req.url.match(/[?&]user=([^&]+)/) || [])[1] || "u-dev";
+      const email = (req.url.match(/[?&]email=([^&]+)/) || [])[1] || "u@vireo.dev";
+      const decoded = decodeURIComponent(user);
+      const mail = decodeURIComponent(email);
+      const token = signToken({ sub: decoded, email: mail }, JWT_SECRET, 3600);
+      return json(res, 200, { ok: true, token, user: { id: decoded, email: mail } });
+    }
+    if (key === "GET /api/dev/issue-token") {
+      return err(res, 403, "dev_login_disabled", "set VIREO_DEV_LOGIN=1 to enable");
+    }
+
     // ---- asset media bytes (JWT via query token for HTML5 <video>) ----
     const assetMediaMatch = url.match(/^\/api\/assets\/([^/]+)\/media$/);
     if (assetMediaMatch && req.method === "GET") {

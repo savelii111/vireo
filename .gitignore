@@ -128,3 +128,8 @@ d25_debug*.png
 # Day 25 e2e debug screenshots
 d25_export_fail.png
 d25_*_fail*.png
+# Vireo dev session
+.vireo_secret.txt
+.vireo_login_url.txt
+# Frontend node_modules (Day 26)
+agents/studio/frontend/node_modules

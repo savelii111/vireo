@@ -16,6 +16,67 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Dev bootstrap: in development we want the owner to
+      // open http://localhost:5173/ (no query string) and
+      // land inside Studio with a working session. The
+      // strategy is, in order:
+      //   1. If the URL carries ?vireo_token=... (or a
+      //      vireo_active_project_id=...) copy them into
+      //      localStorage and strip the query string. This
+      //      wins over any stored value, so reloading the URL
+      //      forces a new session.
+      //   2. Otherwise, if localStorage already has a token,
+      //      do nothing — the existing session continues.
+      //   3. Otherwise, ask the Studio backend at
+      //      /dev/issue-token for a fresh dev token. That
+      //      endpoint is only mounted in non-production
+      //      builds and is a no-op in real deployments.
+      (function () {
+        try {
+          var u = new URL(location.href);
+          var t = u.searchParams.get("vireo_token");
+          var pid = u.searchParams.get("vireo_active_project_id");
+          var dirty = false;
+          if (t) {
+            localStorage.setItem("vireo_token", t);
+            u.searchParams.delete("vireo_token");
+            dirty = true;
+          }
+          if (pid) {
+            localStorage.setItem("vireo_active_project_id", pid);
+            u.searchParams.delete("vireo_active_project_id");
+            dirty = true;
+          }
+          if (dirty) {
+            history.replaceState({}, document.title, u.pathname + u.search + u.hash);
+          }
+        } catch (e) { /* ignore */ }
+
+        // Day 26: dev-only auto-fetch. Gated by a build-time
+        // constant set in vite.config.ts from
+        // VIREO_DEV_LOGIN=1. In production builds the
+        // constant is "0" and this block is dead code —
+        // even if an attacker hits /api/dev/issue-token
+        // the server returns 403 (see agents/studio/src/server.js).
+        if (!localStorage.getItem("vireo_token") && typeof __VIREO_DEV_LOGIN__ !== "undefined" && __VIREO_DEV_LOGIN__ === "1") {
+          try {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/api/dev/issue-token?user=u-dev&email=u@vireo.dev", false);
+            xhr.withCredentials = true;
+            xhr.send(null);
+            if (xhr.status === 200) {
+              try {
+                var body = JSON.parse(xhr.responseText);
+                if (body && body.token) {
+                  localStorage.setItem("vireo_token", body.token);
+                }
+              } catch (e2) { /* ignore parse */ }
+            }
+          } catch (e) { /* ignore */ }
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

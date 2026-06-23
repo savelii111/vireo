@@ -10,6 +10,15 @@ import react from '@vitejs/plugin-react';
 //   - Dev server proxies /api → :8011 to avoid CORS in dev
 
 export default defineConfig({
+  // Day 26: inject a build-time constant so the frontend
+  // knows whether the dev-login endpoint is enabled. The
+  // server (agents/studio/src/server.js) gates the same
+  // endpoint on VIREO_DEV_LOGIN=1, so they must match.
+  // In production (VIREO_DEV_LOGIN unset) this is "0" and
+  // index.html skips the dev bootstrap entirely.
+  define: {
+    __VIREO_DEV_LOGIN__: JSON.stringify(process.env.VIREO_DEV_LOGIN === "1" ? "1" : "0"),
+  },
   plugins: [react()],
   server: {
     port: 5173,
