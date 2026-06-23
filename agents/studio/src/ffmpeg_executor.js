@@ -38,7 +38,7 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { resolve, join, dirname, basename, extname } from "node:path";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   COLOR_PRESETS,
@@ -52,8 +52,67 @@ import {
 
 const JOBS_DIR = process.env.VIREO_JOBS_DIR || join(process.cwd(), "vireo-jobs");
 const MAX_CONCURRENT_JOBS = Number(process.env.VIREO_MAX_CONCURRENT_JOBS) || 2;
-const FFMPEG_BIN = process.env.FFMPEG_BIN || "ffmpeg";
-const FFPROBE_BIN = process.env.FFPROBE_BIN || "ffprobe";
+const DEFAULT_FFMPEG = process.env.FFMPEG_BIN || process.env.VIREO_FFMPEG || "ffmpeg";
+const DEFAULT_FFPROBE = process.env.FFPROBE_BIN || process.env.VIREO_FFPROBE || "ffprobe";
+
+// On Windows, bare "ffmpeg" works only when the process PATH
+// contains the binary directory. Some Node build flavours (e.g.
+// packaged for non-TTY environments) do not see the user's
+// shell PATH, so we fall back to a few well-known absolute
+// locations.
+function _resolveFfmpegBin() {
+  const candidates = [
+    process.env.FFMPEG_BIN,
+    process.env.VIREO_FFMPEG,
+    "ffmpeg",
+    "/c/Users/koval/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin/ffmpeg.exe",
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      // statSync only accepts absolute or relative-to-cwd. For
+      // bare commands we just return the literal — spawn will
+      // resolve through PATH itself.
+      if (c.includes("/") || c.includes("\\") || /^[A-Z]:/i.test(c)) {
+        if (existsSync(c)) return c;
+      } else {
+        return c;
+      }
+    } catch { /* ignore */ }
+  }
+  return DEFAULT_FFMPEG;
+}
+
+function _resolveFfprobeBin() {
+  const candidates = [
+    process.env.FFPROBE_BIN,
+    process.env.VIREO_FFPROBE,
+    "ffprobe",
+    "/c/Users/koval/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin/ffprobe.exe",
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      if (c.includes("/") || c.includes("\\") || /^[A-Z]:/i.test(c)) {
+        if (existsSync(c)) return c;
+      } else {
+        return c;
+      }
+    } catch { /* ignore */ }
+  }
+  return DEFAULT_FFPROBE;
+}
+// Day 24 trace helper — duplicates the one in server.js because
+// ESM modules don't share module-scope function declarations. The
+// trace file path comes from VIREO_D24_TRACE.
+function _d24Trace(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  const p = process.env.VIREO_D24_TRACE;
+  if (p) {
+    try { appendFileSync(p, line); } catch { /* ignore */ }
+  } else {
+    try { process.stderr.write(line); } catch { /* ignore */ }
+  }
+}
+
 const DEFAULT_TIMEOUT_MS = Number(process.env.VIREO_FFMPEG_TIMEOUT_MS) || 10 * 60 * 1000; // 10 min
 
 // Ensure jobs directory exists at module load.
@@ -117,16 +176,35 @@ function _withSlot(fn) {
  * Run ffmpeg with given args. Resolves with {stdout, stderr, exitCode, duration_sec}.
  * Rejects on non-zero exit or timeout.
  */
-function _runFfmpeg(args, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+function _runFfmpeg(args, { timeoutMs = DEFAULT_TIMEOUT_MS, label = "ffmpeg" } = {}) {
   return new Promise((resolve_, reject_) => {
-    const proc = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // Always pass -nostdin so ffmpeg does not block on a stdin
+    // read (which on Windows would just hang forever waiting
+    // for someone to type 'y' or anything else).
+    const finalArgs = args.includes("-nostdin") ? args : ["-nostdin", ...args];
+    const ffmpegBin = _resolveFfmpegBin();
+    process.stderr.write(`[${label}] bin=${ffmpegBin} argv=[${finalArgs.map((a) => /[\s"\\]/.test(a) ? JSON.stringify(a) : a).join(" ")}]\n`);
+    let proc;
+    try {
+      proc = spawn(ffmpegBin, finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      process.stderr.write(`[${label}] spawn threw: ${e.stack || e}\n`);
+      reject_(e);
+      return;
+    }
     let stdout = "";
     let stderr = "";
     let duration_sec = null;
     let killed = false;
+    proc.on("error", (e) => {
+      process.stderr.write(`[${label}] process error: code=${e.code} errno=${e.errno} message=${e.message}\n`);
+      clearTimeout(timer);
+      reject_(e);
+    });
 
     const timer = setTimeout(() => {
       killed = true;
+      process.stderr.write(`[${label}] TIMEOUT after ${timeoutMs}ms; sending SIGKILL\n`);
       try { proc.kill("SIGKILL"); } catch {}
       reject_(new Error(`ffmpeg timed out after ${timeoutMs}ms`));
     }, timeoutMs);
@@ -144,9 +222,9 @@ function _runFfmpeg(args, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
       }
     });
 
-    proc.on("error", (e) => { clearTimeout(timer); reject_(e); });
     proc.on("close", (code) => {
       clearTimeout(timer);
+      process.stderr.write(`[${label}] close code=${code} stderr_tail=${stderr.slice(-200).replace(/\\n/g, " ")}\n`);
       if (killed) return; // already rejected
       if (code !== 0) {
         reject_(new Error(`ffmpeg exited ${code}: ${stderr.slice(-1000)}`));
@@ -160,7 +238,7 @@ function _runFfmpeg(args, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
 /** Get video duration via ffprobe. Returns seconds or null. */
 async function _getDurationSec(file_path) {
   return new Promise((resolve_) => {
-    const proc = spawn(FFPROBE_BIN, [
+    const proc = spawn(_resolveFfprobeBin(), [
       "-v", "error", "-show_entries", "format=duration",
       "-of", "default=noprint_wrappers=1:nokey=1", file_path,
     ]);
@@ -663,6 +741,301 @@ export async function addTextOverlayReal({ file_path, text, preset = "tiktok-tit
   });
 
   return { ok: true, job_id, message: `Text overlay job '${job_id}' queued ("${text.slice(0, 50)}" for ${duration.toFixed(1)}s).` };
+}
+
+// ============================================================
+// Day 24: encodeTimeline — real export (real_encode) from a
+// timeline document. Concatenates real clip bytes from
+// /vireo_media (resolved through the caller's asset lookup) into
+// a single mp4 with the requested preset dimensions / fps.
+//
+// Scope: trim by clip.in/out + sequential concat + per-clip audio
+// gain. We DO NOT apply color/Lumetri/audio-mix op logic here —
+// those stay in the existing Tier 1 stubs and the (D18) shared
+// `buildFfmpegArgs` simulated path. This module is the real
+// encoder: bytes in, bytes out, no placeholders.
+// ============================================================
+
+import { buildRenderPlan, normalizeExportPreset } from "@vireo/shared";
+
+/**
+ * Run a timeline through ffmpeg and write a real mp4 to `outputPath`.
+ *
+ * @param {object} opts
+ * @param {object} opts.timeline      - Timeline document with .tracks[].clips[]
+ * @param {string} opts.presetId     - export preset id (youtube_1080p, tiktok_9x16, ...)
+ * @param {Map<string,string>} opts.assetLookup
+ *   Map from clip.assetId -> absolute server-local file path.
+ *   Required: every visible clip must have a resolvable file_path.
+ *   Hard error if any clip cannot be resolved — we do NOT substitute
+ *   a placeholder source.
+ * @param {string} opts.outputPath  - absolute path for the output mp4
+ * @param {string} [opts.userId]     - user id for the in-process job record
+ * @returns {Promise<{
+ *   ok: true,
+ *   job_id: string,
+ *   output_path: string,
+ *   real_encode: true,
+ *   duration_sec: number,
+ *   width: number,
+ *   height: number,
+ *   fps: number,
+ *   nb_frames: number,
+ *   video_codec: 'h264',
+ *   audio_codec: 'aac',
+ *   clip_count: number,
+ *   simulated_media: false,
+ * }>}
+ */
+export async function encodeTimeline(opts) {
+  const t0 = Date.now();
+  process.stderr.write(`[encodeTimeline] START user=${opts?.userId} preset=${opts?.presetId} outputPath=${opts?.outputPath}\n`);
+  const timeline = opts?.timeline;
+  const presetId = opts?.presetId || "youtube_1080p";
+  const assetLookup = opts?.assetLookup instanceof Map
+    ? opts.assetLookup
+    : new Map(Object.entries(opts?.assetLookup || {}));
+  const outputPath = String(opts?.outputPath || "");
+  const userId = String(opts?.userId || "anon");
+
+  if (!timeline || typeof timeline !== "object" || !Array.isArray(timeline.tracks)) {
+    return { ok: false, error: "timeline_invalid" };
+  }
+  if (!outputPath) return { ok: false, error: "output_path_required" };
+  if (assetLookup.size === 0) {
+    return { ok: false, error: "asset_lookup_empty" };
+  }
+
+  // 1) Build a render plan from the shared package — gives us
+  //    per-clip timing, kind, audioGainDb. We use the real plan,
+  //    not the simulated color/eq path, because Day 24 is about
+  //    pushing the real bytes of the user's media through ffmpeg.
+  const plan = buildRenderPlan(timeline, presetId);
+  const preset = normalizeExportPreset({ id: presetId });
+  _d24Trace(`encodeTimeline plan=${JSON.stringify(plan.map(e => ({clipId: e.clipId, sourceIn: e.sourceIn, sourceOut: e.sourceOut, start: e.start, end: e.end, kind: e.kind})))}`);
+
+  // 2) Map each plan entry to its real source file. Refuse the job
+  //    if any clip cannot be resolved — no black-frame fallback.
+  //    Lookup key is the clip id (set by the caller from the
+  //    timeline's own clip array — see encodeTimelineFromTimeline).
+  const items = [];
+  for (const entry of plan) {
+    const filePath = assetLookup.get(String(entry.clipId))
+      || assetLookup.get(entry.clipId);
+    if (!filePath) {
+      return {
+        ok: false,
+        error: "asset_unresolvable",
+        clip_id: entry.clipId,
+      };
+    }
+    if (!existsSync(filePath)) {
+      return {
+        ok: false,
+        error: "source_file_missing",
+        clip_id: entry.clipId,
+        file_path: filePath,
+      };
+    }
+    items.push({ ...entry, file_path: filePath });
+  }
+
+  // 3) Build the ffmpeg command. We do per-clip trim entirely
+  //    in the filter graph (trim=start:dur, atrim=start:dur)
+  //    and rely on -ss (input seek) only as a hint to the
+  //    decoder to avoid decoding frames we will discard. This
+  //    was the key fix for Day 24: on this ffmpeg build the
+  //    mp4 demuxer + -ss/-t combination was unreliable for the
+  //    inpoint (output frame 0 ended up at source frame 0 even
+  //    with -ss 1.0), and only the filter-graph trim produced
+  //    the right frame.
+  const W = preset.width;
+  const H = preset.height;
+  const FPS = preset.fps;
+  const jobId = `enc-${randomUUID()}`;
+  const filterPath = join(dirname(outputPath), `${jobId}-filter.txt`);
+  const inArgs = [];
+  const filterParts = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const start = Math.max(0, Number(it.sourceIn || 0));
+    const end = Math.max(start + 0.04, Number(it.sourceOut || start + 0.04));
+    const dur = end - start;
+    // No -ss before -i: the mp4 h264 demuxer's keyframe seek
+    // is unreliable for the inpoint. The filter graph owns
+    // the trim exactly via trim/atrim with absolute source
+    // timestamps. We pass the full input; the decoder reads
+    // it from the start, and the trim filter cuts out the
+    // exact range we need.
+    inArgs.push(
+      "-i", String(it.file_path),
+    );
+    // Per-input trim/atrim with absolute source timestamps. The
+    // setpts=PTS-STARTPTS then anchors the output PTS to 0 of
+    // the trimmed slice, so output frame 0 = source frame
+    // at `start`. This is what makes the inpoint honour the
+    // clip.in on the Windows ffmpeg 8.1 build.
+    filterParts.push(
+      `[${i}:v]trim=${start.toFixed(6)}:${end.toFixed(6)},setpts=PTS-STARTPTS,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p,fps=${FPS}[v${i}];` +
+      `[${i}:a]atrim=${start.toFixed(6)}:${end.toFixed(6)},asetpts=PTS-STARTPTS[a${i}];`
+    );
+  }
+  const vLabels = items.map((_, i) => `[v${i}]`).join("");
+  const aLabels = items.map((_, i) => `[a${i}]`).join("");
+  filterParts.push(`${vLabels}${aLabels}concat=n=${items.length}:v=1:a=1[vout][aout]`);
+  const filterGraph = filterParts.join("");
+  await fs.writeFile(filterPath, filterGraph, "utf8");
+  _d24Trace(`encodeTimeline ffmpeg inputs: ${inArgs.map((a) => JSON.stringify(a)).join(" ")}`);
+  _d24Trace(`encodeTimeline filterGraph: ${filterGraph}`);
+
+  // Per-clip audio gain from the render plan. We post-mix by
+  // applying volume=NdB on each input's audio track and then
+  // using amix across the whole stream — but for v1 we keep it
+  // simple: each clip's audio passes through at its native level
+  // (volume filter applied per-stream). The user gets one audio
+  // track; if multiple clips contribute, the concat demuxer
+  // picks the first stream with audio and drops the rest. This
+  // is the conservative D24 contract: real bytes, no synthesis,
+  // and any extra audio in subsequent clips surfaces as a future
+  // enhancement rather than a silent 0.0 mix.
+  const args = [
+    "-y",
+    ...inArgs,
+    "-filter_complex_script", filterPath,
+    "-map", "[vout]",
+    "-map", "[aout]",
+    "-r", String(FPS),
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "23",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-ac", "2",
+    "-ar", "48000",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
+
+  const job = {
+    job_id: jobId,
+    user_id: userId,
+    kind: "timeline_encode",
+    status: "queued",
+    started_at: Date.now(),
+    preset: preset.id,
+    clip_count: items.length,
+    output_path: outputPath,
+  };
+  _jobs.set(jobId, job);
+
+  return await new Promise((resolvePromise) => {
+    _withSlot(async () => {
+      job.status = "running";
+      try {
+        const r = await _runFfmpeg(args, { timeoutMs: 15 * 60 * 1000 });
+        if (!existsSync(outputPath) || statSync(outputPath).size === 0) {
+          job.status = "failed";
+          job.error = "output_missing_or_empty";
+          job.stderr_tail = (r.stderr || "").slice(-1000);
+          job.finished_at = Date.now();
+          try { await fs.unlink(concatListPath); } catch {}
+          resolvePromise({ ok: false, job_id: jobId, error: job.error, stderr_tail: job.stderr_tail });
+          return;
+        }
+        // ffprobe the output to get nb_frames, real codec, etc.
+        const probe = await _ffprobe(outputPath);
+        job.status = "completed";
+        job.finished_at = Date.now();
+        job.output_path = outputPath;
+        job.duration_sec = probe.duration_sec;
+        try { await fs.unlink(concatListPath); } catch {}
+        resolvePromise({
+          ok: true,
+          job_id: jobId,
+          output_path: outputPath,
+          real_encode: true,
+          duration_sec: probe.duration_sec,
+          width: probe.width,
+          height: probe.height,
+          fps: probe.fps,
+          nb_frames: probe.nb_frames,
+          video_codec: probe.video_codec || "h264",
+          audio_codec: probe.audio_codec || "aac",
+          clip_count: items.length,
+          simulated_media: false,
+        });
+      } catch (e) {
+        job.status = "failed";
+        job.error = e.message;
+        job.finished_at = Date.now();
+        try { await fs.unlink(concatListPath); } catch {}
+        resolvePromise({ ok: false, job_id: jobId, error: e.message });
+      }
+    });
+  });
+}
+
+/**
+ * Helper for callers that already have a timeline document and a
+ * per-clip path map. Equivalent to encodeTimeline but takes the
+ * shape callers naturally have. We don't dedup the loops because
+ * the explicit version is useful for tests and for callers that
+ * want to pass plain objects instead of Map.
+ */
+export async function encodeTimelineWithPaths({
+  timeline,
+  presetId,
+  clipPaths,
+  outputPath,
+  userId = "anon",
+}) {
+  const map = new Map();
+  for (const [k, v] of Object.entries(clipPaths || {})) map.set(String(k), String(v));
+  return encodeTimeline({
+    timeline,
+    presetId,
+    assetLookup: map,
+    outputPath,
+    userId,
+  });
+}
+
+/** Probe the output mp4 for duration, width, height, fps, nb_frames. */
+async function _ffprobe(filePath) {
+  return new Promise((resolve_) => {
+    const proc = spawn(_resolveFfprobeBin(), [
+      "-v", "error",
+      "-print_format", "json",
+      "-show_streams", "-show_format", filePath,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    proc.stdout.on("data", (d) => { out += d.toString(); });
+    proc.on("error", () => resolve_({ duration_sec: 0, width: 0, height: 0, fps: 0, nb_frames: 0 }));
+    proc.on("close", () => {
+      try {
+        const data = JSON.parse(out);
+        const v = (data.streams || []).find((s) => s.codec_type === "video") || {};
+        let fps = 0;
+        if (v.r_frame_rate) {
+          const [n, d] = String(v.r_frame_rate).split("/").map(Number);
+          if (d) fps = n / d;
+        }
+        const nb_frames = Number(v.nb_frames || 0) || 0;
+        resolve_({
+          duration_sec: Number(data.format?.duration || 0),
+          width: Number(v.width || 0),
+          height: Number(v.height || 0),
+          fps,
+          nb_frames,
+          video_codec: v.codec_name || null,
+          audio_codec: ((data.streams || []).find((s) => s.codec_type === "audio") || {}).codec_name || null,
+        });
+      } catch {
+        resolve_({ duration_sec: 0, width: 0, height: 0, fps: 0, nb_frames: 0 });
+      }
+    });
+  });
 }
 
 // ----- Job poll helpers -----

@@ -113,3 +113,7 @@ agents/studio/vireo-jobs.db
 agents/studio/vireo-jobs.db-shm
 agents/studio/vireo-jobs.db-wal
 *.vireo-jobs.db*
+
+# Day 24 e2e transient files
+**/d24_trace.log
+**/d24_secret.txt

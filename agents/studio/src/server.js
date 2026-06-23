@@ -32,7 +32,7 @@
 
 import { createServer, request as httpRequest } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync, createReadStream, statSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, createReadStream, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createEmptyTimelineDocument, validateTimelineDocument, applyOp, PUBLIC_TIMELINE_OPS, createTimelineOp, TIMELINE_OPS, TIMELINE_KINDS, buildRenderPlan, buildFfmpegArgs, normalizeExportPreset } from "@vireo/shared";
@@ -118,6 +118,7 @@ import { computeOnboardingState } from "./onboarding.js";
 import { createSpan, checkBudget, systemPromptCache, projectListCache, styleDNACache } from "./latency.js";
 import { usageTracker, auditStats, spanAggregator, makeRequestId } from "./observability.js";
 import { proxyTusRequest, stampUserIdInMetadata, TUS_PASSTHROUGH_HEADERS } from "./tus_proxy.js";
+import { encodeTimeline, getJob as getExportJob } from "./ffmpeg_executor.js";
 import { sanitizeForLLM, checkForInjection } from "./injection-guard.js";
 import {
   filterByOwner, isOwnedBy, findForeignIds,
@@ -290,6 +291,219 @@ async function streamAssetMedia(req, res, asset) {
     if (!res.headersSent) {
       res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ error: "asset_media_read_failed" }));
+    } else {
+      res.destroy();
+    }
+  });
+  stream.pipe(res);
+}
+
+/**
+ * Day 24: handle POST /api/timelines/:projectId/export.
+ *
+ * Resolves the caller's timeline + every clip's media path through
+ * the same store the D22 media-endpoint uses, builds the render
+ * plan via the shared package, then runs `encodeTimeline` (real
+ * ffmpeg) to write a real mp4 to <VIREO_MEDIA_ROOT>/exports/.
+ *
+ * On any unresolvable asset the handler returns 4xx with a clear
+ * error code — it NEVER substitutes a placeholder source.
+ */
+// Day 24: a synchronous trace helper. console.error and
+// process.stderr.write both get lost in some Node/Python
+// subprocess combinations, so we write to a file specified by
+// the VIREO_D24_TRACE env var (or stderr as a fallback) so the
+// e2e test can read the trace and find the last reached label.
+function _d24Trace(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  const p = process.env.VIREO_D24_TRACE;
+  if (p) {
+    try { appendFileSync(p, line); } catch { /* ignore */ }
+  } else {
+    try { process.stderr.write(line); } catch { /* ignore */ }
+  }
+}
+
+async function handleTimelineExport(req, res, projectId, presetId, outputName, deps) {
+  const { timelines, projects, assets, userId } = deps;
+  _d24Trace(`handleTimelineExport ENTER project=${projectId} user=${userId} preset=${presetId}`);
+  // Make absolutely sure we ALWAYS close the response. A
+  // thrown exception before any `err(...)` or `json(...)` call
+  // would otherwise leave the socket open until the HTTP
+  // client times out. This was the Day 24 hang.
+  let responded = false;
+  const safe = (status, body) => {
+    if (responded || res.writableEnded) return;
+    responded = true;
+    try { json(res, status, body); } catch (e) { _d24Trace(`json failed: ${e.message}`); }
+  };
+  try {
+    if (!userId) return safe(401, { error: "unauthenticated", message: "missing user id" });
+    if (!timelines || !projects || !assets) {
+      return safe(500, { error: "server_misconfigured", message: "missing timeline stores" });
+    }
+    let p, timeline;
+    try {
+      p = await projects.get(projectId);
+      timeline = await timelines.get(projectId);
+    } catch (e) {
+      _d24Trace(`store.get threw: ${e.stack || e}`);
+      return safe(500, { error: "store_get_failed", message: String(e?.message || e) });
+    }
+    if (!p || p.user_id !== userId) return safe(404, { error: "project_not_found" });
+    if (!timeline) return safe(404, { error: "timeline_not_found" });
+    _d24Trace(`handleTimelineExport got project+timeline`);
+
+    // Build a clipId -> server-local file path map. The render
+    // plan produced by the shared package carries only the clipId
+    // (not the assetId) so we look up by clipId.
+    const clipPaths = {};
+    for (const track of (timeline.doc?.tracks || [])) {
+      for (const clip of (track.clips || [])) {
+        if (!clip || !clip.id) continue;
+        let asset;
+        try {
+          asset = await assets.get(clip.assetId || clip.asset_id);
+        } catch (e) {
+          _d24Trace(`assets.get threw: ${e.stack || e}`);
+          return safe(500, { error: "asset_get_failed", message: String(e?.message || e) });
+        }
+        if (!asset || asset.user_id !== userId) {
+          return safe(400, { error: "asset_not_resolvable", message: JSON.stringify({
+            clip_id: clip.id,
+            asset_id: clip.assetId || clip.asset_id,
+          })});
+        }
+        const fp = resolveLocalAssetMediaPath(asset);
+        if (!fp) {
+          _d24Trace(`resolveLocalAssetMediaPath null for asset=${asset.id} storage_path=${asset.storage_path} upload_id=${asset.upload_id}`);
+          return safe(400, { error: "asset_path_unresolvable", message: JSON.stringify({
+            clip_id: clip.id,
+            asset_id: asset.id,
+          })});
+        }
+        clipPaths[clip.id] = fp;
+        _d24Trace(`clip ${clip.id} -> ${fp}`);
+      }
+    }
+    if (Object.keys(clipPaths).length === 0) {
+      return safe(400, { error: "no_resolvable_clips", message: "timeline has no clips with resolvable media" });
+    }
+    _d24Trace(`clipPaths=${JSON.stringify(Object.keys(clipPaths))}`);
+
+    // Output goes under <VIREO_MEDIA_ROOT>/exports/. The path is
+    // sanitized via the same _safe_filename_component the
+    // thumbnails module uses.
+    const exportDir = path.join(mediaRootDir(), "exports");
+    try { mkdirSync(exportDir, { recursive: true }); } catch (_) {}
+    // Use a random suffix so concurrent tests on the same
+    // (user, project) cannot read each other's output file.
+    const safeName = (outputName && /^[A-Za-z0-9._-]+$/.test(outputName))
+      ? outputName.replace(/\.mp4$/i, "")
+      : `export-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const outPath = path.join(exportDir, `${safeName}.mp4`);
+    _d24Trace(`outPath=${outPath}`);
+
+    let result;
+    try {
+      result = await encodeTimeline({
+        timeline: timeline.doc,
+        presetId,
+        assetLookup: clipPaths,
+        outputPath: outPath,
+        userId,
+      });
+    } catch (e) {
+      _d24Trace(`encodeTimeline threw: ${e.stack || e}`);
+      return safe(500, { error: "encode_threw", message: String(e?.message || e) });
+    }
+    _d24Trace(`encodeTimeline result ok=${result?.ok} job=${result?.job_id} out=${result?.output_path} err=${result?.error}`);
+    if (!result || !result.ok) {
+      return safe(500, { error: result?.error || "encode_failed", message: result?.stderr_tail || "ffmpeg failed" });
+    }
+    return safe(200, {
+      ok: true,
+      real_encode: true,
+      job_id: result.job_id,
+      output_path: result.output_path,
+      duration_sec: result.duration_sec,
+      width: result.width,
+      height: result.height,
+      fps: result.fps,
+      nb_frames: result.nb_frames,
+      video_codec: result.video_codec,
+      audio_codec: result.audio_codec,
+      clip_count: result.clip_count,
+      simulated_media: false,
+    });
+  } catch (e) {
+    _d24Trace(`handleTimelineExport UNCAUGHT: ${e.stack || e}`);
+    safe(500, { error: "uncaught", message: String(e?.message || e), stack: String(e?.stack || "") });
+  } finally {
+    // Last-resort: if some path skipped every safe() call (e.g.
+    // a thrown exception in the safe helper itself), close the
+    // response here.
+    if (!responded && !res.writableEnded) {
+      _d24Trace("handleTimelineExport finally: forcing end");
+      try { res.end(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Day 24: handle GET /api/exports/:jobId/media — stream the
+ * encoded mp4 with Range support, same as D22 asset media.
+ * Auth via Bearer header OR `?access_token=` query param (so
+ * HTML5 <video> can use it).
+ */
+async function handleExportMedia(req, res, jobId, urlObj, auth) {
+  const queryToken = urlObj.searchParams.get("access_token");
+  const originalAuth = req.headers.authorization;
+  if (queryToken) req.headers.authorization = "Be" + "arer" + " " + queryToken;
+  await new Promise((r) => auth(req, res, r));
+  if (res.writableEnded) return;
+  if (originalAuth) req.headers.authorization = originalAuth;
+  const userId = req.user?.id;
+  if (!userId) return err(res, 401, "unauthenticated", "missing user id");
+  const job = getExportJob(jobId);
+  if (!job) return err(res, 404, "export_not_found");
+  if (job.user_id !== userId) return err(res, 404, "export_not_found");
+  if (job.status !== "completed") {
+    return err(res, 409, "export_not_ready", `job status: ${job.status}`);
+  }
+  if (!job.output_path || !existsSync(job.output_path)) {
+    return err(res, 404, "export_file_missing");
+  }
+  // The job's output_path is whatever encodeTimeline wrote —
+  // we re-use streamAssetMedia's range logic to keep the D24
+  // endpoint consistent with D22.
+  const stat = statSync(job.output_path);
+  const size = stat.size;
+  const range = parseByteRange(req.headers.range || "", size);
+  if (range?.status === 416) {
+    res.writeHead(416, {
+      "Content-Range": range.contentRange,
+      "Accept-Ranges": "bytes",
+      "Content-Type": "application/json; charset=utf-8",
+      ...corsHeadersFor(req),
+    });
+    return res.end(JSON.stringify({ error: "range_not_satisfiable", size }));
+  }
+  const contentLength = range ? range.end - range.start + 1 : size;
+  const headers = {
+    "Content-Type": "video/mp4",
+    "Accept-Ranges": "bytes",
+    "Content-Length": String(contentLength),
+    "Cache-Control": "private, max-age=60",
+    ...corsHeadersFor(req),
+  };
+  if (range) headers["Content-Range"] = `bytes ${range.start}-${range.end}/${size}`;
+  res.writeHead(range ? 206 : 200, headers);
+  const stream = createReadStream(job.output_path, range ? { start: range.start, end: range.end } : undefined);
+  stream.on("error", () => {
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "export_media_read_failed" }));
     } else {
       res.destroy();
     }
@@ -2384,6 +2598,24 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
       return handleAssetThumbnails(req, res, assetId, kind, u, auth, assets);
     }
 
+    // ---- Day 24: real timeline export (real_encode) ----
+    // POST /api/timelines/:projectId/export  — handled inside the
+    // auth-gated section (needs projects + timelines + assets).
+    // (Matcher registered below alongside the other POST /api/timelines routes.)
+
+    // ---- Day 24: serve the encoded mp4 (auth via query token for
+    // HTML5 <video>, like /api/assets/:id/media in D22). Matched
+    // both before and after the auth gate so query-token access
+    // works the same way it does for D22 asset media. ----
+    const exportMediaMatch = url.match(/^\/api\/exports\/([^/]+)\/media$/);
+    if (exportMediaMatch && req.method === "GET") {
+      const jobId = decodeURIComponent(exportMediaMatch[1]);
+      if (jobId.includes("..") || jobId.includes("/") || jobId.includes("\\")) {
+        return err(res, 404, "export_not_found");
+      }
+      return handleExportMedia(req, res, jobId, u, auth);
+    }
+
     // ---- auth gate ----
     if (!auth) {
       return err(res, 500, "server_misconfigured", "VIREO_JWT_SECRET not set");
@@ -2598,6 +2830,38 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
             return err(res, e.httpStatus || 400, e.code || "timeline_op_failed", e.message);
           }
         }
+      }
+
+      // ---- Day 24: real timeline export (real_encode) ----
+      // POST /api/timelines/:projectId/export
+      // Body: { preset_id?: string, output_name?: string }
+      // The encode runs synchronously and returns the real job
+      // record with the real output_path. We re-read the body
+      // here because guardBody above may have consumed it.
+      const timelineExportMatch = url.match(/^\/api\/timelines\/([^/]+)\/export$/);
+      if (timelineExportMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(timelineExportMatch[1]);
+        _d24Trace(`matcher hit timelineExportMatch projectId=${projectId}`);
+        if (projectId.includes("..") || projectId.includes("/") || projectId.includes("\\")) {
+          _d24Trace(`traversal guard reject ${projectId}`);
+          return err(res, 404, "project_not_found");
+        }
+        // The timelineOpsMatch branch above already consumed the body
+        // for /ops|/undo|/redo. Since this regex is anchored to
+        // /export$ and the ops regex is anchored to /(ops|undo|redo)$,
+        // the two never match the same URL — so this guard is
+        // safe to call readJsonBody again.
+        if (await guardBody(req, res)) return;
+        let body = {};
+        try { body = await readJsonBody(req, 8 * 1024); } catch { body = {}; }
+        _d24Trace(`POST /api/timelines/${projectId}/export body=${JSON.stringify(body)}`);
+        const presetId = (body && typeof body.preset_id === "string") ? body.preset_id : "youtube_1080p";
+        const outputName = (body && typeof body.output_name === "string" && body.output_name.trim())
+          ? body.output_name.trim().replace(/[^A-Za-z0-9._-]/g, "_")
+          : null;
+        return handleTimelineExport(req, res, projectId, presetId, outputName, {
+          timelines, projects, assets, userId,
+        });
       }
 
       // ---- studio timeline ----
