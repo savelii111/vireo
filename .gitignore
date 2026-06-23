@@ -117,3 +117,14 @@ agents/studio/vireo-jobs.db-wal
 # Day 24 e2e transient files
 **/d24_trace.log
 **/d24_secret.txt
+
+# Day 25 transient files
+d25_fail.png
+d25_debug*.png
+.v25_*.txt
+
+# TS build info
+*.tsbuildinfo
+# Day 25 e2e debug screenshots
+d25_export_fail.png
+d25_*_fail*.png

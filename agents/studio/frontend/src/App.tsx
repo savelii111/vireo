@@ -178,16 +178,9 @@ export default function App() {
   // Day 24: when OnboardingGate resolves (pick / create), the
   // gate writes the id to localStorage and dispatches the
   // active-project-changed event. The listener above updates
-  // activeProjectId, so the editor below mounts with a real
-  // project id.
-  if (!activeProjectId) {
-    return <OnboardingGate onProjectReady={() => {
-      // The actual switch happens in the listener above
-      // (dispatched from setActiveProjectId). This callback
-      // exists so the gate can show a loading state and we
-      // can extend it (e.g. router push) later.
-    }} />;
-  }
+  // activeProjectId. We render the OnboardingGate as a
+  // conditional inside the main return below so all hooks
+  // run every render (Rules of Hooks).
   const chatProjectId = useMemo(() => localStorage.getItem('vireo.activeProjectId') || undefined, []);
   const chatConversationId = useMemo(() => localStorage.getItem('vireo.conversation_id') || undefined, []);
   const activeVideoClip = useMemo(() => activeVideoClipAt(editor.project, editor.playhead), [editor.project, editor.playhead]);
@@ -302,59 +295,109 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [editor, helpOpen, cmdOpen]);
 
+  // Day 25: pro docked layout. The viewport is filled with a
+  // single 3-row × 4-column grid:
+  //   row 1: TopBar (col-span-full, h-11)
+  //   row 2: SideRail (56px) | Center column (Media / Monitor) | Inspector (340px)
+  //   row 3: Timeline (col-span-full, min 320px)
+  // No absolute positioning over the timeline / monitor.
+  // NOTE: hooks must run unconditionally every render. The
+  // onboarding gate below is implemented as a conditional
+  // *return value*, not as an early `return` that would skip
+  // the rest of the hooks (which would violate Rules of
+  // Hooks and crash on the project switch re-render).
   return (
-    <div className="h-screen w-screen overflow-hidden bg-bg-0 text-ink-1">
-      <div className="grid h-full w-full grid-cols-[56px_minmax(0,1fr)_360px] grid-rows-[44px_minmax(0,1fr)_minmax(260px,38vh)]">
+    activeProjectId
+      ? (<div className="h-screen w-screen overflow-hidden bg-bg-0 text-ink-1" data-testid="app-root">
+      <div
+        className="grid h-full w-full bg-bg-0"
+        style={{
+          gridTemplateColumns: "56px minmax(260px, 1fr) minmax(280px, 360px)",
+          gridTemplateRows: "44px minmax(0, 1fr) minmax(320px, 38vh)",
+        }}
+      >
         <Suspense fallback={<Fallback label="top bar" />}>
-          <TopBar
-            projectName={editor.project.name}
-            onExport={() => setExportOpen(true)}
-            onRender={() => setExportOpen(true)}
-            onProjectChanged={() => {
-              // The TopBar / OnboardingGate already dispatched
-              // vireo:active-project-changed, which our listener
-              // (above) caught and updated activeProjectId. We
-              // additionally nudge the editor by calling its
-              // refreshTimeline so the new project's tracks show
-              // up without a full page reload.
-              void editor.refreshTimeline(getActiveProjectId() ?? undefined);
-            }}
-          />
+          <div className="col-span-full min-h-0 min-w-0 border-b border-border-1">
+            <TopBar
+              projectName={editor.project.name}
+              onExport={() => setExportOpen(true)}
+              onRender={() => setExportOpen(true)}
+              onProjectChanged={() => {
+                void editor.refreshTimeline(getActiveProjectId() ?? undefined);
+              }}
+            />
+          </div>
         </Suspense>
 
         <Suspense fallback={<Fallback label="rail" />}>
-          <SideRail active="media" onChange={() => {}} />
+          <div className="min-h-0 min-w-0 border-r border-border-1 bg-bg-1">
+            <SideRail active="media" onChange={() => {}} />
+          </div>
         </Suspense>
 
-        <div className="grid min-h-0 min-w-0 grid-rows-[minmax(220px,34vh)_minmax(0,1fr)] overflow-hidden border border-border-1 bg-bg-1">
-          <Suspense fallback={<Fallback label="media panel" />}>
-            <MediaPanel projectId={editor.projectId} />
-          </Suspense>
-          <Suspense fallback={<Fallback label="workspace" />}>
-            <Preview
-              tab={previewTab}
-              onTabChange={setPreviewTab}
-              playing={editor.playing}
-              onTogglePlay={editor.togglePlay}
-              playhead={editor.playhead}
-              duration={editor.project.duration_sec}
-              fps={editor.project.fps}
-              width={editor.project.width}
-              height={editor.project.height}
-              activeVideoClip={activeVideoClip}
-              activeTextClips={activeTextClips}
-              timeline={editor.project}
-              assetUrlResolver={assetUrlResolver}
-              onSeek={editor.seek}
-            />
-          </Suspense>
+        {/* Center column: media panel on top, monitor below */}
+        <div
+          className="grid min-h-0 min-w-0 overflow-hidden bg-bg-1"
+          style={{ gridTemplateRows: "minmax(180px, 28%) minmax(0, 1fr)" }}
+        >
+          <div
+            className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+            data-testid="media-panel-title"
+          >
+            <span>Project Media</span>
+            <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
+              {editor.projectId ? `id ${editor.projectId.slice(0, 8)}` : "no project"}
+            </span>
+          </div>
+          <div className="min-h-0 min-w-0 overflow-hidden">
+            <Suspense fallback={<Fallback label="media panel" />}>
+              <MediaPanel projectId={editor.projectId} />
+            </Suspense>
+          </div>
+          <div
+            className="flex items-center justify-between px-3 h-7 border-y border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+            data-testid="monitor-title"
+          >
+            <span>Program Monitor</span>
+            <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
+              {previewTab}
+            </span>
+          </div>
+          <div className="min-h-0 min-w-0 overflow-hidden">
+            <Suspense fallback={<Fallback label="workspace" />}>
+              <Preview
+                tab={previewTab}
+                onTabChange={setPreviewTab}
+                playing={editor.playing}
+                onTogglePlay={editor.togglePlay}
+                playhead={editor.playhead}
+                duration={editor.project.duration_sec}
+                fps={editor.project.fps}
+                width={editor.project.width}
+                height={editor.project.height}
+                activeVideoClip={activeVideoClip}
+                activeTextClips={activeTextClips}
+                timeline={editor.project}
+                assetUrlResolver={assetUrlResolver}
+                onSeek={editor.seek}
+              />
+            </Suspense>
+          </div>
         </div>
 
+        {/* Right column: Inspector / Chat */}
         <div className="min-h-0 min-w-0 overflow-hidden border-l border-border-1 bg-bg-1">
-          <div className="grid h-full grid-rows-[38px_minmax(0,1fr)]">
+          <div className="grid h-full grid-rows-[28px_28px_minmax(0,1fr)]">
+            <div
+              className="flex items-center px-3 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+              data-testid="right-panel-title"
+            >
+              <span>{rightPanel === 'inspector' ? 'Inspector' : 'Chat'}</span>
+            </div>
             <div className="flex items-center gap-1 border-b border-border-1 px-2">
               <button
                 onClick={() => setRightPanel('inspector')}
+                data-testid="right-tab-inspector"
                 className={clsx(
                   'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
                   rightPanel === 'inspector' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
@@ -364,6 +407,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => setRightPanel('chat')}
+                data-testid="right-tab-chat"
                 className={clsx(
                   'flex-1 rounded px-2 py-1 text-[11px] font-semibold tracking-wide transition-all duration-[120ms]',
                   rightPanel === 'chat' ? 'bg-bg-2 text-ink-1' : 'text-ink-3 hover:bg-bg-2 hover:text-ink-1',
@@ -428,34 +472,49 @@ export default function App() {
           </div>
         </div>
 
-        <div className="col-span-full min-h-0 min-w-0 overflow-hidden">
-          <Suspense fallback={<Fallback label="timeline" />}>
-            <Timeline
-              project={editor.project}
-              tool={editor.tool}
-              onToolChange={editor.setTool}
-              selectedClipId={editor.selectedClipId}
-              onClipSelect={editor.selectClip}
-              playhead={editor.playhead}
-              onSeek={editor.seek}
-              zoom={editor.zoom}
-              onZoomChange={editor.setZoom}
-              onClipMove={editor.moveClip}
-              onClipResize={editor.resizeClip}
-              onAssetDrop={editor.insertAsset}
-              onDragEnd={editor.onDragEnd}
-              onUndo={editor.undo}
-              onRedo={editor.redo}
-              canUndo={editor.canUndo}
-              canRedo={editor.canRedo}
-              onToggleMute={editor.toggleTrackMute}
-              onToggleSolo={editor.toggleTrackSolo}
-              onToggleLock={editor.toggleTrackLock}
-              onToggleHidden={editor.toggleTrackHidden}
-              onAddTransition={(clipId, kind, duration) => editor.addTransition(clipId, kind, duration)}
-              onAddText={(text, start, duration, position) => editor.addText(text, start, duration, position)}
-            />
-          </Suspense>
+        {/* Timeline — full width */}
+        <div
+          className="col-span-full min-h-0 min-w-0 overflow-hidden border-t border-border-1 bg-bg-1"
+          data-testid="timeline-section"
+        >
+          <div
+            className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+            data-testid="timeline-title"
+          >
+            <span>Timeline</span>
+            <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
+              {editor.project.tracks.length} tracks
+            </span>
+          </div>
+          <div className="min-h-0 min-w-0" style={{ height: "calc(100% - 28px)" }}>
+            <Suspense fallback={<Fallback label="timeline" />}>
+              <Timeline
+                project={editor.project}
+                tool={editor.tool}
+                onToolChange={editor.setTool}
+                selectedClipId={editor.selectedClipId}
+                onClipSelect={editor.selectClip}
+                playhead={editor.playhead}
+                onSeek={editor.seek}
+                zoom={editor.zoom}
+                onZoomChange={editor.setZoom}
+                onClipMove={editor.moveClip}
+                onClipResize={editor.resizeClip}
+                onAssetDrop={editor.insertAsset}
+                onDragEnd={editor.onDragEnd}
+                onUndo={editor.undo}
+                onRedo={editor.redo}
+                canUndo={editor.canUndo}
+                canRedo={editor.canRedo}
+                onToggleMute={editor.toggleTrackMute}
+                onToggleSolo={editor.toggleTrackSolo}
+                onToggleLock={editor.toggleTrackLock}
+                onToggleHidden={editor.toggleTrackHidden}
+                onAddTransition={(clipId, kind, duration) => editor.addTransition(clipId, kind, duration)}
+                onAddText={(text, start, duration, position) => editor.addText(text, start, duration, position)}
+              />
+            </Suspense>
+          </div>
         </div>
       </div>
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
@@ -463,6 +522,12 @@ export default function App() {
       <Suspense fallback={<Fallback label="export dialog" />}>
         <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
       </Suspense>
-    </div>
+    </div>)
+      : (<OnboardingGate onProjectReady={() => {
+          // The actual switch happens in the listener above
+          // (dispatched from setActiveProjectId). This callback
+          // exists so the gate can show a loading state and we
+          // can extend it (e.g. router push) later.
+        }} />)
   );
 }

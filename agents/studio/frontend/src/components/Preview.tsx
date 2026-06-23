@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   SkipBack, Rewind, Play, FastForward, SkipForward, ChevronsLeft, ChevronsRight, Maximize2,
 } from 'lucide-react';
@@ -22,14 +22,6 @@ interface Props {
   activeTextClips?: Clip[];
   assetUrlResolver?: (clip: Clip) => string;
   onSeek?: (t: number) => void;
-}
-
-function SourceBadge({ children }: { children: ReactNode }) {
-  return (
-    <div className="bg-black/60 backdrop-blur-md border border-border-2 rounded px-2 py-1 text-[11px] text-ink-1 font-mono">
-      {children}
-    </div>
-  );
 }
 
 export function Preview({
@@ -128,7 +120,12 @@ export function Preview({
   }, [activeVideoClip, onSeek, playbackFrame]);
 
   return (
-    <section className="flex flex-col bg-bg-0 border-b border-border-1 min-h-0">
+    // Day 25: pro docked layout. The wrapper is a vertical
+    // column with three docked strips: top info bar, the
+    // canvas (which is the only area showing video), and
+    // bottom transport bar. Nothing is absolutely positioned
+    // over the video — overlays moved into the docked bars.
+    <section className="flex flex-col bg-bg-0 border-b border-border-1 min-h-0" data-testid="preview-section">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-4 h-9 border-b border-border-1 bg-bg-1">
         <div className="flex items-center gap-0.5">
@@ -263,69 +260,88 @@ export function Preview({
             );
           })}
 
-          {/* Overlays */}
-          <div className="absolute top-3 left-3 flex gap-2 z-[4]">
-            <SourceBadge>
-              <span className="w-1.5 h-1.5 rounded-full bg-rec animate-pulse-rec" />
-              <span className="font-mono">REC {formatTimecode(playhead, fps)}</span>
-            </SourceBadge>
-            <SourceBadge>{width}×{height} · {fps}fps</SourceBadge>
-            <SourceBadge>{activeVideoClip ? activeVideoClip.track_id : '—'} · A1</SourceBadge>
-          </div>
-
-          <div className="absolute top-3 right-3 z-[4]">
-            <SourceBadge>{activeMode === 'real' ? 'real media' : activeMode === 'placeholder' ? 'poster card' : 'empty'}</SourceBadge>
-            {activeVideoClip?.color ? <SourceBadge>approx preview</SourceBadge> : null}
-          </div>
-
-          {/* Video controls */}
-          <div
-            className="absolute bottom-0 left-0 right-0 z-[4] flex items-center gap-3 px-4 py-3"
-            style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.8))' }}
-          >
-            <button data-tip="Previous edit (←)" className="vc-btn">
-              <SkipBack size={16} strokeWidth={1.8} />
-            </button>
-            <button data-tip="Step back (J)" className="vc-btn">
-              <ChevronsLeft size={16} strokeWidth={1.8} />
-            </button>
-            <button
-              onClick={onTogglePlay}
-              data-tip="Play / Pause (Space)"
-              className="w-[38px] h-[38px] rounded-full bg-ink-1 text-bg-0 flex items-center justify-center hover:scale-105 transition-transform"
-            >
-              {playing ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="4" width="4" height="16" />
-                  <rect x="14" y="4" width="4" height="16" />
-                </svg>
-              ) : (
-                <Play size={16} strokeWidth={1.8} fill="currentColor" />
-              )}
-            </button>
-            <button data-tip="Step forward (K)" className="vc-btn">
-              <ChevronsRight size={16} strokeWidth={1.8} />
-            </button>
-            <button data-tip="Next edit (→)" className="vc-btn">
-              <SkipForward size={16} strokeWidth={1.8} />
-            </button>
-            <div className="flex-1" />
-            <span className="font-mono text-[12px] text-ink-1 tabular-nums tracking-wider">
-              <span className="text-ink-3">00:00:</span>{formatTimecode(playhead, fps).split(':').pop()}
-            </span>
-            <span className="font-mono text-[12px] text-ink-3 tabular-nums">/ {formatShortTime(duration)}</span>
-            <div className="flex-1" />
-            <button data-tip="Set In (I)" className="vc-btn">
-              <Rewind size={16} strokeWidth={1.8} />
-            </button>
-            <button data-tip="Set Out (O)" className="vc-btn">
-              <FastForward size={16} strokeWidth={1.8} />
-            </button>
-            <button data-tip="Fullscreen (F)" className="vc-btn">
-              <Maximize2 size={16} strokeWidth={1.8} />
-            </button>
-          </div>
+          {/* Day 25: previously absolute overlays for REC badge,
+              resolution/fps, source mode, and the full video
+              controls bar. All of them are now docked strips
+              outside the canvas (above and below), so nothing
+              covers the video frame. The two docked bars are
+              rendered as siblings of the canvas in the return
+              tree, right above the </section> close. */}
         </div>
+      </div>
+
+      {/* Docked info bar (top) — REC, resolution, fps, source, mode */}
+      <div
+        data-testid="preview-info-bar"
+        className="flex items-center justify-between gap-2 px-3 h-7 bg-bg-1 border-t border-border-1 text-[11px] text-ink-2 font-mono shrink-0"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="flex items-center gap-1 text-ink-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-rec animate-pulse-rec" />
+            <span>REC {formatTimecode(playhead, fps)}</span>
+          </span>
+          <span className="text-ink-3">·</span>
+          <span>{width}×{height} · {fps}fps</span>
+          <span className="text-ink-3">·</span>
+          <span className="truncate">{activeVideoClip ? activeVideoClip.track_id : '—'} · A1</span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-ink-3">
+            {activeMode === 'real' ? 'real media'
+              : activeMode === 'placeholder' ? 'poster card'
+              : 'empty'}
+          </span>
+          {activeVideoClip?.color ? <span className="text-ink-3">· approx preview</span> : null}
+        </div>
+      </div>
+
+      {/* Docked transport bar (bottom) — playback controls + timecode */}
+      <div
+        data-testid="preview-transport-bar"
+        className="flex items-center gap-3 px-3 h-10 bg-bg-1 border-t border-border-1 shrink-0"
+      >
+        <button data-tip="Previous edit (←)" className="vc-btn">
+          <SkipBack size={16} strokeWidth={1.8} />
+        </button>
+        <button data-tip="Step back (J)" className="vc-btn">
+          <ChevronsLeft size={16} strokeWidth={1.8} />
+        </button>
+        <button
+          onClick={onTogglePlay}
+          data-testid="preview-play"
+          data-tip="Play / Pause (Space)"
+          className="w-[30px] h-[30px] rounded-full bg-ink-1 text-bg-0 flex items-center justify-center hover:scale-105 transition-transform"
+        >
+          {playing ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16" />
+              <rect x="14" y="4" width="4" height="16" />
+            </svg>
+          ) : (
+            <Play size={14} strokeWidth={1.8} fill="currentColor" />
+          )}
+        </button>
+        <button data-tip="Step forward (K)" className="vc-btn">
+          <ChevronsRight size={16} strokeWidth={1.8} />
+        </button>
+        <button data-tip="Next edit (→)" className="vc-btn">
+          <SkipForward size={16} strokeWidth={1.8} />
+        </button>
+        <div className="flex-1" />
+        <span className="font-mono text-[12px] text-ink-1 tabular-nums tracking-wider">
+          <span className="text-ink-3">00:00:</span>{formatTimecode(playhead, fps).split(':').pop()}
+        </span>
+        <span className="font-mono text-[12px] text-ink-3 tabular-nums">/ {formatShortTime(duration)}</span>
+        <div className="flex-1" />
+        <button data-tip="Set In (I)" className="vc-btn">
+          <Rewind size={16} strokeWidth={1.8} />
+        </button>
+        <button data-tip="Set Out (O)" className="vc-btn">
+          <FastForward size={16} strokeWidth={1.8} />
+        </button>
+        <button data-tip="Fullscreen (F)" className="vc-btn">
+          <Maximize2 size={16} strokeWidth={1.8} />
+        </button>
       </div>
     </section>
   );

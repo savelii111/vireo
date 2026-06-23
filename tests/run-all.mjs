@@ -29,6 +29,7 @@ const SUITES = [
   { name: "Studio E2E (Node)", cmd: "node", args: ["--test", "tests/test_studio_e2e.mjs", "tests/test_studio_tus_proxy_e2e.mjs", "tests/test_studio_media_e2e.mjs", "tests/test_studio_persistence_e2e.mjs"] },
   { name: "Studio Day 23 thumbnails+waveform e2e (Node)", cmd: "node", args: ["--test", "tests/test_studio_thumbnails_waveform_e2e.mjs"] },
   { name: "Studio Day 22 Playwright C (gated)", cmd: "node", args: ["--test", "tests/test_studio_media_playwright_gated.mjs"] },
+  { name: "Studio Day 25 full UI e2e (Playwright, gated)", cmd: "node", args: ["--test", "tests/test_studio_full_ui_e2e_gated.mjs"] },
   { name: "Phase 4 CI JUnit writer (Node)", cmd: "node", args: ["--test", "tests/test_junit_writer.mjs"] },
   { name: "Studio Day 24 export e2e (Python)", cmd: "python", args: ["-m", "pytest", "agents/video/tests/test_studio_export_e2e.py", "-v", "--tb=short"] },
   { name: "JWT Auth (Python)", cmd: "python", args: ["-m", "pytest", "packages/shared/python/tests/test_jwt_auth.py", "-v", "--tb=no", "-q"] },
