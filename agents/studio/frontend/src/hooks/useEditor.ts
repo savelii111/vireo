@@ -9,6 +9,7 @@ import {
   timelineToProject,
 } from '../timelineContract';
 import { advancePlayhead, seekToFrame } from '../timelinePlayback';
+import { setActiveProjectId as setActiveProjectIdLocal } from '../projectOnboarding';
 
 export type { Tool };
 
@@ -626,6 +627,43 @@ export function useEditor() {
     fetchTimeline(projectId);
   }, [fetchTimeline]);
 
+  // Day 24: respond to vireo:active-project-changed events
+  // (dispatched by OnboardingGate / TopBar when the user
+  // picks or creates a project). The useEffect above only runs
+  // on mount; this listener keeps the editor in sync without
+  // a full page reload.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onChange = (e: Event) => {
+      const ce = e as CustomEvent<{ id: string | null }>;
+      const id = ce.detail?.id ?? getActiveProjectId();
+      if (id) {
+        void fetchTimeline(id);
+      } else {
+        serverRef.current = null;
+        setProject(createEmptyProjectState());
+      }
+    };
+    window.addEventListener("vireo:active-project-changed", onChange as EventListener);
+    return () => window.removeEventListener("vireo:active-project-changed", onChange as EventListener);
+  }, [fetchTimeline]);
+
+  // Day 24: setActiveProjectId writes the project id to
+  // localStorage and re-fetches the timeline for that project.
+  // The useEffect above re-runs when vireo:active-project-changed
+  // is dispatched (which OnboardingGate does after a successful
+  // pick / create), so the editor reloads its timeline
+  // without a page reload.
+  const setActiveProjectIdFromEditor = useCallback(async (id: string | null) => {
+    setActiveProjectIdLocal(id);
+    if (id) {
+      await fetchTimeline(id);
+    } else {
+      serverRef.current = null;
+      setProject(createEmptyProjectState());
+    }
+  }, [fetchTimeline]);
+
   useEffect(() => {
     if (!playing) {
       if (rafRef.current !== null && typeof window !== 'undefined') {
@@ -1054,5 +1092,9 @@ export function useEditor() {
     exportError,
     enqueueExport,
     pollExport,
+    // Day 24: project onboarding helpers exposed for the
+    // OnboardingGate / TopBar picker.
+    setActiveProjectId: setActiveProjectIdFromEditor,
+    refreshTimeline: (id?: string) => fetchTimeline(id),
   };
 }

@@ -3,6 +3,14 @@ import clsx from 'clsx';
 import type { PreviewTab, Clip } from './types';
 import { useEditor } from './hooks/useEditor';
 import { activeTextClipsAt, activeVideoClipAt } from './timelinePlayback';
+import { OnboardingGate } from './components/OnboardingGate';
+import { getActiveProjectId } from './projectOnboarding';
+// Day 24: window-level event the OnboardingGate dispatches
+// when the user picks / creates a project. useEditor
+// subscribes to it (so the timeline re-fetches without a
+// page reload) and App uses it to drop the gate and render
+// the editor below.
+export const ACTIVE_PROJECT_CHANGED = "vireo:active-project-changed";
 
 // Lazy-load heavy components — splits initial bundle
 const TopBar = lazy(() => import('./components/TopBar').then(m => ({ default: m.TopBar })));
@@ -146,11 +154,40 @@ function CommandPalette({ onClose, commands }: { onClose: () => void; commands: 
 // ---------- Main App ----------
 export default function App() {
   const editor = useEditor();
+  // Day 24: gate the editor behind a real active project. If
+  // localStorage has no vireo_active_project_id, show
+  // OnboardingGate. When the user picks or creates a project
+  // the gate writes the id, dispatches `vireo:active-project-changed`,
+  // and we re-render the editor without a page reload.
+  const [activeProjectId, setActiveProjectIdState] = useState<string | null>(
+    () => getActiveProjectId(),
+  );
+  useEffect(() => {
+    const onChange = (e: Event) => {
+      const ce = e as CustomEvent<{ id: string | null }>;
+      setActiveProjectIdState(ce.detail?.id ?? getActiveProjectId());
+    };
+    window.addEventListener("vireo:active-project-changed", onChange as EventListener);
+    return () => window.removeEventListener("vireo:active-project-changed", onChange as EventListener);
+  }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>('program');
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector');
+  // Day 24: when OnboardingGate resolves (pick / create), the
+  // gate writes the id to localStorage and dispatches the
+  // active-project-changed event. The listener above updates
+  // activeProjectId, so the editor below mounts with a real
+  // project id.
+  if (!activeProjectId) {
+    return <OnboardingGate onProjectReady={() => {
+      // The actual switch happens in the listener above
+      // (dispatched from setActiveProjectId). This callback
+      // exists so the gate can show a loading state and we
+      // can extend it (e.g. router push) later.
+    }} />;
+  }
   const chatProjectId = useMemo(() => localStorage.getItem('vireo.activeProjectId') || undefined, []);
   const chatConversationId = useMemo(() => localStorage.getItem('vireo.conversation_id') || undefined, []);
   const activeVideoClip = useMemo(() => activeVideoClipAt(editor.project, editor.playhead), [editor.project, editor.playhead]);
@@ -273,6 +310,15 @@ export default function App() {
             projectName={editor.project.name}
             onExport={() => setExportOpen(true)}
             onRender={() => setExportOpen(true)}
+            onProjectChanged={() => {
+              // The TopBar / OnboardingGate already dispatched
+              // vireo:active-project-changed, which our listener
+              // (above) caught and updated activeProjectId. We
+              // additionally nudge the editor by calling its
+              // refreshTimeline so the new project's tracks show
+              // up without a full page reload.
+              void editor.refreshTimeline(getActiveProjectId() ?? undefined);
+            }}
           />
         </Suspense>
 
