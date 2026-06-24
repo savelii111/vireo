@@ -184,7 +184,9 @@ const JWT_SECRET = process.env.VIREO_JWT_SECRET || "";
 const STYLE_LEARNER_URL = process.env.VIREO_STYLE_URL || "http://127.0.0.1:8001";
 const EDITOR_URL = process.env.VIREO_EDITOR_URL || "http://127.0.0.1:8002";
 const DISTRIBUTOR_URL = process.env.VIREO_DISTRIBUTOR_URL || "http://127.0.0.1:8003";
-const VIDEO_URL = process.env.VIREO_VIDEO_URL || "http://127.0.0.1:8004";
+// videoAgentBaseUrl() is defined above; it reads VIREO_VIDEO_URL
+// at call time so tests can swap it between cases without
+// re-importing this module.
 // Allow-list of distribution platforms. The set is intentionally small —
 // every new platform is a real engineering cost (OAuth app, upload limits,
 // aspect-ratio handling, caption timing). Adding a platform should be a
@@ -1230,7 +1232,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       // Step 1: transcribe
       let transcript;
       try {
-        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const tr = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1243,7 +1245,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       // Step 2: get LLM prompt from video agent
       let prompt;
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments }),
@@ -1263,7 +1265,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       }
       // Step 4: parse moments
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments, llm_response: llmResponse }),
@@ -1277,7 +1279,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
     generate_chapters: async ({ userId, file_path, max_chapters = 15 }) => {
       let transcript;
       try {
-        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const tr = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1289,7 +1291,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       if (!transcript?.text) return { ok: false, error: "empty_transcript" };
       let prompt;
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/chapters`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/chapters`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, max_chapters }),
@@ -1307,7 +1309,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
         return { ok: false, error: `llm_failed: ${e.message}` };
       }
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/chapters`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/chapters`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, max_chapters, llm_response: llmResponse }),
@@ -1327,7 +1329,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
         // field and `_build_edit_request` filtered it out. Now the
         // video agent branches on `operation: "add_broll"` and
         // dispatches to the BrollInserter.
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ source_path: file_path, operation: "add_broll", operation_params: { style, count } }),
@@ -1340,7 +1342,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
     apply_hook_style: async ({ userId, file_path, style = "auto" }) => {
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ source_path: file_path, operation: "apply_hook_style", operation_params: { style } }),
@@ -1353,7 +1355,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
     generate_thumbnail: async ({ userId, file_path, style = "auto", title }) => {
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ source_path: file_path, operation: "generate_thumbnail", operation_params: { style, title } }),
@@ -1366,7 +1368,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
     analyze_audio: async ({ userId, file_path }) => {
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ source_path: file_path, operation: "analyze_audio", operation_params: {} }),
@@ -1383,7 +1385,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       // Step 1: transcribe once
       let transcript;
       try {
-        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const tr = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1400,14 +1402,14 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
         const maxMoments = platform === "youtube" ? 5 : (platform.includes("shorts") || platform === "tiktok") ? 1 : 3;
         let moments = [];
         try {
-          const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          const resp = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
             method: "POST",
             headers: authHeaders({ "X-Vireo-User-Id": userId }),
             body: JSON.stringify({ transcript, platform, max_moments: maxMoments }),
           });
           // LLM call with the prompt
           const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 2048 });
-          const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+          const parsed = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
             method: "POST",
             headers: authHeaders({ "X-Vireo-User-Id": userId }),
             body: JSON.stringify({ transcript, platform, max_moments: maxMoments, llm_response: chatResult.content }),
@@ -1420,7 +1422,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
         // Step 3: create version via video agent
         try {
           const styleOverrides = styles[platform] || {};
-          const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+          const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
             method: "POST",
             headers: authHeaders({ "X-Vireo-User-Id": userId }),
             body: JSON.stringify({
@@ -1446,7 +1448,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       // Find best moment
       let transcript;
       try {
-        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const tr = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1457,13 +1459,13 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       }
       let moments = [];
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments: 1 }),
         });
         const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 1024 });
-        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const parsed = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments: 1, llm_response: chatResult.content }),
@@ -1476,7 +1478,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
       // Render short
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
@@ -1490,7 +1492,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
     create_compilation: async ({ userId, file_path, target_duration = 600, max_moments = 10, platform = "youtube" }) => {
       let transcript;
       try {
-        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const tr = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1501,13 +1503,13 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       }
       let moments = [];
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments }),
         });
         const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 2048 });
-        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const parsed = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments, llm_response: chatResult.content }),
@@ -1517,7 +1519,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
         return { ok: false, error: `moments_failed: ${e.message}` };
       }
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
@@ -1531,7 +1533,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
     create_summary: async ({ userId, file_path, target_duration = 180, platform = "youtube" }) => {
       let transcript;
       try {
-        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const tr = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1542,13 +1544,13 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       }
       let moments = [];
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments: 5 }),
         });
         const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 1024 });
-        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const parsed = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments: 5, llm_response: chatResult.content }),
@@ -1558,7 +1560,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
         return { ok: false, error: `moments_failed: ${e.message}` };
       }
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
@@ -1572,7 +1574,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
     create_trailer: async ({ userId, file_path, target_duration = 30, platform = "tiktok" }) => {
       let transcript;
       try {
-        const tr = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const tr = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1583,13 +1585,13 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
       }
       let moments = [];
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments: 1 }),
         });
         const chatResult = await llm.chat({ messages: [{ role: "user", content: resp.prompt }], maxTokens: 512 });
-        const parsed = await _fetchJSON(`${VIDEO_URL}/moments`, {
+        const parsed = await _fetchJSON(`${videoAgentBaseUrl()}/moments`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ transcript, platform, max_moments: 1, llm_response: chatResult.content }),
@@ -1599,7 +1601,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
         return { ok: false, error: `moments_failed: ${e.message}` };
       }
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/edit`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/edit`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, operation: "render_montage", operation_params: { moments, platform, target_duration } }),
@@ -1612,7 +1614,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
     search_transcript: async ({ userId, file_path, query, context_seconds = 30 }) => {
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1636,7 +1638,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
     get_transcript_section: async ({ userId, file_path, start_sec, end_sec, format = "text" }) => {
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/transcribe`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/transcribe`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
           body: JSON.stringify({ file_path, language: "en" }),
@@ -1661,7 +1663,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
     get_job_status: async ({ userId, job_id }) => {
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/jobs/${job_id}`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/jobs/${job_id}`, {
           method: "GET",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
         });
@@ -1673,7 +1675,7 @@ function buildToolDeps({ pool, projects, timelines, pieces, conversations, messa
 
     cancel_job: async ({ userId, job_id }) => {
       try {
-        const resp = await _fetchJSON(`${VIDEO_URL}/jobs/${job_id}/cancel`, {
+        const resp = await _fetchJSON(`${videoAgentBaseUrl()}/jobs/${job_id}/cancel`, {
           method: "POST",
           headers: authHeaders({ "X-Vireo-User-Id": userId }),
         });
@@ -3236,6 +3238,17 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         if (!["POST", "HEAD", "PATCH", "DELETE"].includes(req.method)) {
           return err(res, 405, "method_not_allowed");
         }
+        // Phase 0: every TUS request must be authenticated on our
+        // side too, otherwise the upstream video-agent rejects
+        // unauthenticated uploads. The auth middleware sets
+        // req.user; we forward the bearer to the upstream so
+        // its own auth check (if any) accepts it, and we keep
+        // stamping ownership in the TUS metadata as a
+        // back-up signal.
+        await new Promise((r) => auth(req, res, r));
+        if (res.writableEnded) return;
+        const tusUserId = req.user?.id;
+        if (!tusUserId) return err(res, 401, "unauthenticated", "missing user id for upload");
         // Auth: every upload is per-user; if we have a user, forward it as
         // a TUS metadata key so the video agent can attribute ownership.
         // (The chat-agent's authMiddleware already verified the Bearer token
@@ -3244,14 +3257,15 @@ export function buildServer({ port = DEFAULT_PORT, host = DEFAULT_HOST, secret =
         for (const k of TUS_PASSTHROUGH_HEADERS) {
           if (req.headers[k]) passthroughHeaders[k] = req.headers[k];
         }
+        // Authorization is forwarded below (mock accepts any).
         // Stamp ownership into TUS metadata (base64-keyed per TUS spec).
-        if (userId && req.method === "POST" && passthroughHeaders["upload-metadata"]) {
+        if (tusUserId && req.method === "POST" && passthroughHeaders["upload-metadata"]) {
           passthroughHeaders["upload-metadata"] = stampUserIdInMetadata(
-            passthroughHeaders["upload-metadata"], userId
+            passthroughHeaders["upload-metadata"], tusUserId
           );
         }
         const upstreamPath = `/upload/resumable${tusPath[1] ? "/" + encodeURIComponent(decodeURIComponent(tusPath[1])) : ""}`;
-        return proxyTusRequest(req, res, passthroughHeaders, tusPath[1] ? decodeURIComponent(tusPath[1]) : null, userId);
+        return proxyTusRequest(req, res, passthroughHeaders, tusPath[1] ? decodeURIComponent(tusPath[1]) : null, tusUserId);
       }
 
       // ---- chat (the main endpoint) ----

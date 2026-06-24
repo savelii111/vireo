@@ -378,7 +378,24 @@ export default function App() {
                       </div>
                       <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                         <Suspense fallback={<Fallback label="media panel" />}>
-                          <MediaPanel projectId={editor.projectId} />
+                          <MediaPanel
+                            projectId={editor.projectId}
+                            onAddToTimeline={(asset) => {
+                              // Phase 0: real insert via the
+                              // useEditor path. Track 1 in the
+                              // doc is named "Video 1" with id
+                              // "trk_v1" in fresh projects; the
+                              // real clip length is the asset's
+                              // reported duration in seconds.
+                              const tracks = editor.project.tracks;
+                              const video = tracks.find((t) => t.kind === "video") || tracks[0];
+                              if (!video) return;
+                              // insertAsset uses the real
+                              // asset.duration_sec internally;
+                              // no fallback to 5s in this call.
+                              editor.insertAsset(asset, video.id, editor.playhead);
+                            }}
+                          />
                         </Suspense>
                       </div>
                     </div>

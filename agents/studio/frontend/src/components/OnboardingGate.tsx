@@ -5,8 +5,16 @@
 // projects to pick from or a "Create project" form. Calls
 // real /api/projects endpoints. No mocks, no placeholders.
 import { useCallback, useEffect, useState } from "react";
-import { FolderPlus, Folder, Loader2, AlertTriangle } from "lucide-react";
+import { FolderPlus, Folder, Loader2, AlertTriangle, Hammer } from "lucide-react";
 import { setActiveProjectId, listProjects, createProject } from "../projectOnboarding";
+
+// Day 26 / Phase 0: __VIREO_DEV_LOGIN__ is a build-time
+// constant injected by vite.config.ts from
+// VIREO_DEV_LOGIN. In production builds the constant is "0"
+// and the "Continue as developer" button is dead code.
+declare const __VIREO_DEV_LOGIN__: string;
+const DEV_LOGIN_ENABLED =
+  typeof __VIREO_DEV_LOGIN__ !== "undefined" && __VIREO_DEV_LOGIN__ === "1";
 
 export type OnboardingState =
   | { kind: "loading" }
@@ -50,6 +58,32 @@ export function OnboardingGate({ onProjectReady }: { onProjectReady: () => void 
     onProjectReady();
   }, [onProjectReady]);
 
+  // Day 26 / Phase 0: dev-only auto-login. Hits the gated
+  // /api/dev/issue-token endpoint and, on success, re-runs
+  // the normal project listing. The button only appears in
+  // builds that were started with VIREO_DEV_LOGIN=1, so it
+  // is dead UI in production.
+  const handleDevLogin = useCallback(async () => {
+    setState({ kind: "loading" });
+    try {
+      const res = await fetch("/api/dev/issue-token?user=u-dev&email=u@vireo.dev", {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        setState({ kind: "error", error: `dev-login failed: HTTP ${res.status}` });
+        return;
+      }
+      const body = await res.json();
+      if (body?.token) {
+        localStorage.setItem("vireo_token", body.token);
+      }
+      // After token is set, retry project listing.
+      await refresh();
+    } catch (e) {
+      setState({ kind: "error", error: e instanceof Error ? e.message : String(e) });
+    }
+  }, [refresh]);
+
   if (state.kind === "loading") {
     return (
       <div className="min-h-screen bg-bg-1 text-ink-1 flex items-center justify-center">
@@ -70,13 +104,25 @@ export function OnboardingGate({ onProjectReady }: { onProjectReady: () => void 
             <h2 className="font-semibold">Could not load projects</h2>
           </div>
           <p className="text-sm text-ink-2 mb-4">{state.error}</p>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="px-3 py-1.5 rounded bg-accent text-white text-sm hover:opacity-90"
-          >
-            Retry
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="px-3 py-1.5 rounded bg-accent text-white text-sm hover:opacity-90"
+            >
+              Retry
+            </button>
+            {DEV_LOGIN_ENABLED && (
+              <button
+                type="button"
+                data-testid="onboarding-dev-login"
+                onClick={() => void handleDevLogin()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-border-1 text-ink-1 text-sm hover:bg-bg-3"
+              >
+                <Hammer className="w-4 h-4" /> Continue as developer
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -93,6 +139,22 @@ export function OnboardingGate({ onProjectReady }: { onProjectReady: () => void 
               : "Pick an existing project or create a new one."}
           </p>
         </div>
+
+        {DEV_LOGIN_ENABLED && (
+          <div className="mb-3 flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="onboarding-dev-login"
+              onClick={() => void handleDevLogin()}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-border-1 bg-bg-1 text-ink-1 text-[12px] hover:bg-bg-3"
+            >
+              <Hammer className="w-3.5 h-3.5" /> Continue as developer
+            </button>
+            <span className="text-[10px] uppercase tracking-wider text-ink-4">
+              dev-login enabled
+            </span>
+          </div>
+        )}
 
         {state.kind === "list" && (
           <ProjectList

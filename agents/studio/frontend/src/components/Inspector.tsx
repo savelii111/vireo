@@ -112,6 +112,7 @@ export function Inspector({
 }: Props) {
   const [tab, setTab] = useState<Tab>('clip');
   const [effectKind, setEffectKind] = useState('colorGrade');
+  const [qaOpen, setQaOpen] = useState(true);
   const [effectIndex, setEffectIndex] = useState(0);
 
   const effects = clip?.effects ?? [];
@@ -858,24 +859,47 @@ export function Inspector({
             </div>
           </>
         )}
-      </div>
 
-      {/* Quick actions column */}
-      <div className="p-3 px-4 border-l border-border-1 bg-bg-0 flex flex-col gap-1.5">
-        <div className="text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-1">Quick actions</div>
-        {QUICK_ACTIONS.map((qa) => (
+        {/* Day 26 / Phase 0: Quick actions used to live in a
+            separate flex sibling column with a border-l, which
+            in a narrow resizable Inspector panel overflowed the
+            panel and visually crashed into the monitor. The
+            whole inspector is now a single vertical scroll
+            region; Quick actions is a collapsible section at
+            the very bottom, strictly inside the panel width. */}
+        <div
+          className="border-t border-border-1 px-3 py-2 bg-bg-0 flex-shrink-0"
+          data-testid="inspector-quick-actions"
+        >
           <button
-            key={qa.id}
-            onClick={() => onQuickAction(qa.id)}
-            className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] text-ink-2 hover:bg-bg-2 hover:text-ink-1 transition-all duration-[120ms] group"
+            type="button"
+            data-testid="inspector-quick-actions-toggle"
+            onClick={() => setQaOpen((v) => !v)}
+            className="w-full flex items-center justify-between text-[10px] text-ink-3 uppercase tracking-widest font-bold mb-1"
           >
-            <qa.Icon size={14} strokeWidth={1.6} className="text-ink-3 group-hover:text-ink-1" />
-            <span className="flex-1 text-left">{qa.label}</span>
-            {qa.kbd && (
-              <span className="font-mono text-[10px] text-ink-4">{qa.kbd}</span>
-            )}
+            <span>Quick actions</span>
+            <span className="text-ink-4 normal-case tracking-normal">
+              {qaOpen ? '▾' : '▸'}
+            </span>
           </button>
-        ))}
+          {qaOpen && (
+            <div className="flex flex-col gap-1">
+              {QUICK_ACTIONS.map((qa) => (
+                <button
+                  key={qa.id}
+                  onClick={() => onQuickAction(qa.id)}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] text-ink-2 hover:bg-bg-2 hover:text-ink-1 transition-all duration-[120ms] group"
+                >
+                  <qa.Icon size={14} strokeWidth={1.6} className="text-ink-3 group-hover:text-ink-1" />
+                  <span className="flex-1 text-left">{qa.label}</span>
+                  {qa.kbd && (
+                    <span className="font-mono text-[10px] text-ink-4">{qa.kbd}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );

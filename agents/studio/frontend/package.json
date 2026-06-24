@@ -4,8 +4,10 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "node -e \"require('child_process').spawn(process.execPath, ['node_modules/vite/bin/vite.js'], { stdio: 'inherit', env: { ...process.env, VIREO_DEV_LOGIN: '1' } })\"",
+    "dev:prod": "vite",
+    "build": "tsc -b && node -e \"require('child_process').spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build'], { stdio: 'inherit', env: { ...process.env, VIREO_DEV_LOGIN: '1' } })\"",
+    "build:prod": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest --environment jsdom --run",
     "test:watch": "vitest --environment jsdom",

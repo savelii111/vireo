@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { FileAudio, FileVideo, FolderOpen, Image as ImageIcon, Search, Upload } from 'lucide-react';
+import { FileAudio, FileVideo, FolderOpen, Image as ImageIcon, Plus, Search, Upload } from 'lucide-react';
 import clsx from 'clsx';
 import type { ProjectAsset, ProjectAssetKind } from '../types';
 import { getTusIngest, uploadMediaFile } from '../utils/tus_proxy';
@@ -8,6 +8,10 @@ type BinFilter = 'all' | ProjectAssetKind;
 
 export interface MediaPanelProps {
   projectId?: string;
+  // Phase 0: real "Add to timeline" button on each card.
+  // The parent (App.tsx) wires this to useEditor.insertAsset.
+  // Kept as a callback so the panel stays presentation-only.
+  onAddToTimeline?: (asset: ProjectAsset) => void;
 }
 
 const BINS: Array<{ id: BinFilter; label: string; Icon: typeof FileVideo }> = [
@@ -94,7 +98,7 @@ async function registerAssetFromIngest(projectId: string, ingest: Record<string,
   return body.asset as ProjectAsset;
 }
 
-export function MediaPanel({ projectId }: MediaPanelProps) {
+export function MediaPanel({ projectId, onAddToTimeline }: MediaPanelProps) {
   const [assets, setAssets] = useState<ProjectAsset[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -267,7 +271,11 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
           )}
           <div className="space-y-2">
             {filtered.map((asset) => (
-              <AssetCard key={asset.id} asset={asset} />
+              <AssetCard
+                key={asset.id}
+                asset={asset}
+                onAddToTimeline={onAddToTimeline ? () => onAddToTimeline(asset) : undefined}
+              />
             ))}
           </div>
         </div>
@@ -276,7 +284,10 @@ export function MediaPanel({ projectId }: MediaPanelProps) {
   );
 }
 
-function AssetCard({ asset }: { asset: ProjectAsset }) {
+function AssetCard({ asset, onAddToTimeline }: {
+  asset: ProjectAsset;
+  onAddToTimeline?: () => void;
+}) {
   const Icon = asset.kind === 'audio' ? FileAudio : asset.kind === 'image' ? ImageIcon : FileVideo;
   const realDecode = asset.real_decode === true || asset.metadata?.real_decode === true;
   return (
@@ -307,7 +318,20 @@ function AssetCard({ asset }: { asset: ProjectAsset }) {
             {asset.container ? <span>{asset.container}</span> : null}
             <span>{asset.status || 'ready'}</span>
           </div>
-          <p className="mt-1 truncate text-[10px] text-ink-4">Drag to any timeline track → insertClip</p>
+          <div className="mt-1.5 flex items-center gap-2">
+            {onAddToTimeline && (
+              <button
+                type="button"
+                data-testid={`add-to-timeline-${asset.id}`}
+                onClick={(e) => { e.stopPropagation(); onAddToTimeline(); }}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-accent text-white text-[11px] font-semibold hover:opacity-90"
+                title="Добавить клип на Video 1 в позиции плейхеда"
+              >
+                <Plus size={12} strokeWidth={2} /> Добавить на таймлайн
+              </button>
+            )}
+            <p className="truncate text-[10px] text-ink-4">или перетащите на дорожку</p>
+          </div>
         </div>
       </div>
     </article>
@@ -383,13 +407,18 @@ function ImportZone({
           type="file"
           accept="video/*,audio/*,image/*"
           data-testid="media-import-file-input"
+          // Make the input clickable in tests even though it's
+          // visually hidden by the parent. We dispatch the
+          // click on it through a Playwright `setInputFiles`
+          // call. The CSS class "hidden" is OK for human users
+          // because the parent button is the entry point.
+          style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
           onChange={(e) => {
             const f = e.target.files?.[0] || null;
             onPickFile(f);
             if (f) onFile(f);
             e.target.value = '';
           }}
-          className="hidden"
         />
       </div>
       <div
