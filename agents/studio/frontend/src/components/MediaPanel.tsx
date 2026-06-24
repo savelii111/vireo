@@ -250,7 +250,10 @@ export function MediaPanel({ projectId, onAddToTimeline }: MediaPanelProps) {
 
   return (
     <aside data-testid="media-panel" className="min-h-0 min-w-0 overflow-hidden border border-border-1 bg-bg-1">
-      <div className="h-10 flex items-center justify-between gap-2 border-b border-border-1 px-3">
+      <div
+        className="h-10 flex items-center justify-between gap-2 border-b border-border-1 px-3"
+        data-testid="media-panel-title"
+      >
         <div className="flex items-center gap-2">
           <FolderOpen size={14} strokeWidth={1.6} className="text-accent" />
           <span className="text-[12px] font-semibold tracking-wide">Project / Media</span>

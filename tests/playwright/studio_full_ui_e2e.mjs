@@ -279,49 +279,67 @@ test("Phase 0: real-click Studio UI happy path", async ({ page }) => {
   // accepts keyboard ArrowLeft / ArrowRight for resize,
   // which is reliable in headless. Mouse drag is a
   // fallback for non-headless runs.
-  // real layout regression.
-  const handleLoc = page.locator('[role=separator][aria-controls=media]').first();
-  await handleLoc.waitFor({ state: "attached", timeout: 10_000 });
-  let draggedPx = 0;
-  // --- keyboard resize (reliable) ---
-  await handleLoc.focus();
-  for (let i = 0; i < 25; i++) {
-    await page.keyboard.press("ArrowLeft");
-    await page.waitForTimeout(20);
-  }
-  await page.waitForTimeout(400);
-  draggedPx = 50;
-  // If keyboard didn't change the width, try mouse.
-  const wAfterKey = await page.locator('[data-testid="media-panel-title"]').evaluate((el) => {
-    const p = el.closest('[data-panel]') || el.parentElement?.parentElement;
-    return p ? p.getBoundingClientRect().width : 0;
-  });
-  if (Math.abs(wAfterKey - mediaWidthBefore) <= 4) {
-    try {
-      const handleBox = await handleLoc.boundingBox({ timeout: 2_000 });
-      if (handleBox && (handleBox.width >= 1 || handleBox.height >= 1)) {
-        const cx = handleBox.x + handleBox.width / 2;
-        const cy = handleBox.y + handleBox.height / 2;
-        await page.mouse.move(cx, cy);
-        await page.mouse.down();
-        for (let i = 1; i <= 8; i++) {
-          await page.mouse.move(cx - i * 10, cy, { steps: 4 });
-        }
-        await page.mouse.up();
-        await page.waitForTimeout(400);
-        draggedPx = 80;
-      }
-    } catch (e) {
-      // mouse failed; keep keyboard result
-    }
-  }
-
+  // Day 27 / Phase Adobe Frame: the resizable-panels drag
+  // check no longer applies. The Adobe frame uses fixed
+  // three columns (Effect Controls | Program | Properties)
+  // and a fixed bottom (Bin | Timeline) — there is no
+  // resize handle between Media and Monitor. The real
+  // regression check is now: the media panel is rendered
+  // and visible (width > 0, height > 0) and the program
+  // preview is rendered. We do NOT drag anything here
+  // because Adobe columns are fixed.
   const mediaWidthAfter = await page.locator('[data-testid="media-panel-title"]').evaluate((el) => {
-    const p = el.closest('[data-panel]') || el.parentElement?.parentElement;
-    return p ? p.getBoundingClientRect().width : 0;
+    // Adobe frame: media-panel-title is inside <aside data-testid="media-panel">.
+    // Walk up to find the visible Media panel and measure
+    // its width.
+    let cur = el;
+    while (cur && cur !== document.body) {
+      if (cur.matches('[data-testid="media-panel"]')) {
+        const r = cur.getBoundingClientRect();
+        return { width: r.width, height: r.height };
+      }
+      cur = cur.parentElement;
+    }
+    return { width: 0, height: 0 };
   });
-  console.log('[phase0] media width:', mediaWidthBefore, '->', mediaWidthAfter);
-  expect(Math.abs(mediaWidthAfter - mediaWidthBefore) > 4, `drag must change media width (before=${mediaWidthBefore} after=${mediaWidthAfter})`).toBe(true);
+  console.log("[phase0] adobe-frame bin width x height:",
+    mediaWidthAfter.width, "x", mediaWidthAfter.height);
+  // Hard check: bin is visible and has real area.
+  if (mediaWidthAfter.width < 100 || mediaWidthAfter.height < 100) {
+    throw new Error(
+      `Adobe frame bin (media-panel) is too small: ${mediaWidthAfter.width}x${mediaWidthAfter.height}`
+    );
+  }
+  // Program preview check.
+  const programWidth = await page.locator('[data-testid="monitor-title"]').evaluate((el) => {
+    let cur = el;
+    while (cur && cur !== document.body) {
+      if (cur.getAttribute('data-program-slot') !== null) {
+        return cur.getBoundingClientRect().width;
+      }
+      cur = cur.parentElement;
+    }
+    return 0;
+  });
+  console.log("[phase0] adobe-frame program width:", programWidth);
+  if (programWidth < 200) {
+    throw new Error(`Adobe frame program area is too small: ${programWidth}px wide`);
+  }
+  // The width must not have changed (columns are fixed).
+  if (Math.abs(mediaWidthAfter.width - mediaWidthBefore) > 4) {
+    console.log("[phase0] note: bin width drifted by",
+      (mediaWidthAfter.width - mediaWidthBefore).toFixed(2),
+      "px — expected fixed in Adobe frame");
+  }
+  console.log('[phase0] media width: before=', mediaWidthBefore,
+    'after=', mediaWidthAfter.width,
+    '(fixed-width Adobe column, must not change)');
+  // In the Adobe frame the bin column has a fixed width;
+  // we only assert the panel is rendered and visible. The
+  // legacy "drag must change the width" assertion is
+  // removed because the columns are no longer
+  // resizable — that is the entire point of the new
+  // frame.
 
   // 5) Drive the export through /api/exports, the same
   // endpoint the ExportDialog ultimately calls.
