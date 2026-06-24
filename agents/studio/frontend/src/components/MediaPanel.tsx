@@ -173,6 +173,75 @@ export function MediaPanel({ projectId, onAddToTimeline }: MediaPanelProps) {
     }
   }
 
+  // Day 27 / Electron desktop: import a file directly from
+  // disk without TUS. The native dialog (in main) gave us
+  // a local path. We ffprobe it in main, register the
+  // asset on the server with storage_path = the local
+  // path, and the <video> in the preview uses
+  // file:///<path> directly — no upload, no transcoding.
+  // Falls back to the TUS path when window.vireo is not
+  // present (browser mode without Electron).
+  async function runImportFromDisk(localPath: string) {
+    if (!projectId || !localPath) return;
+    setUploading(true);
+    setError(null);
+    setSelectedFile(new File([new Uint8Array(0)], localPath.split(/[/\\]/).pop() || "file"));
+    try {
+      const vireo = (window as unknown as { vireo?: { ffprobe: (p: string) => Promise<unknown> } }).vireo;
+      if (!vireo) throw new Error("desktop bridge not available");
+      const probe = (await vireo.ffprobe(localPath)) as {
+        ok: boolean;
+        duration_sec?: number;
+        width?: number;
+        height?: number;
+        fps?: number;
+        video_codec?: string | null;
+        audio_codec?: string | null;
+        container?: string | null;
+        size?: number;
+        error?: string;
+      };
+      if (!probe.ok) throw new Error(probe.error || "ffprobe failed");
+      const tokenVal = token();
+      // POST /api/assets with storage_path = localPath.
+      // The server's existing handler reads storage_path
+      // and creates an asset row. streamAssetMedia already
+      // serves the file from disk via the media root.
+      const res = await fetch("/api/assets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer" + " " + tokenVal,
+        },
+        body: JSON.stringify({
+          project_id: projectId,
+          filename: localPath.split(/[/\\]/).pop(),
+          storage_path: localPath,
+          media_origin: "file",
+          duration_sec: probe.duration_sec || 0,
+          width: probe.width || 0,
+          height: probe.height || 0,
+          fps: probe.fps || 0,
+          video_codec: probe.video_codec || null,
+          audio_codec: probe.audio_codec || null,
+          container: probe.container || null,
+          size_bytes: probe.size || 0,
+          source: "desktop",
+          real_decode: true,
+        }),
+      });
+      if (!res.ok) throw new Error("/api/assets " + res.status + " " + (await res.text()).slice(0, 200));
+      const json = await res.json();
+      const asset = json.asset || json;
+      setAssets((prev) => [asset, ...prev]);
+      setSelectedFile(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function submitRealUpload(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedFile) return;
@@ -199,6 +268,7 @@ export function MediaPanel({ projectId, onAddToTimeline }: MediaPanelProps) {
           <ImportZone
             disabled={uploading}
             onFile={runImport}
+            onPickLocalPath={(p) => void runImportFromDisk(p)}
             progress={uploadProgress}
             file={selectedFile}
             onPickFile={(f) => setSelectedFile(f)}
@@ -356,12 +426,14 @@ function ImportZone({
   disabled,
   onFile,
   onPickFile,
+  onPickLocalPath,
   progress,
   file,
 }: {
   disabled: boolean;
   onFile: (f: File) => void | Promise<void>;
   onPickFile: (f: File | null) => void;
+  onPickLocalPath?: (path: string) => void | Promise<void>;
   progress: number;
   file: File | null;
 }) {
@@ -402,6 +474,31 @@ function ImportZone({
           <Upload size={13} />
           {disabled ? 'Загрузка…' : 'Импортировать медиа'}
         </button>
+        {/* Day 27 / Electron desktop: "Open file…" button
+            that uses the native dialog and a direct disk
+            path. The button is rendered only when the
+            preload bridge (window.vireo) is available. */}
+        {typeof window !== "undefined" &&
+        (window as unknown as { vireo?: { isDesktop?: boolean } }).vireo?.isDesktop ? (
+          <button
+            type="button"
+            data-testid="media-import-desktop-button"
+            disabled={disabled}
+            onClick={async () => {
+              const w = window as unknown as {
+                vireo?: { importFile: () => Promise<Array<{ path: string; name: string }> | null> };
+              };
+              const picked = await w.vireo?.importFile();
+              if (picked && picked[0]?.path) {
+                await onPickLocalPath?.(picked[0].path);
+              }
+            }}
+            title="Открыть файл с диска (Electron)"
+            className="rounded border border-border-1 bg-bg-2 px-2 py-1.5 text-[12px] font-semibold text-ink-1 hover:bg-bg-3 disabled:opacity-60"
+          >
+            <FolderOpen size={13} />
+          </button>
+        ) : null}
         <input
           ref={inputEl}
           type="file"

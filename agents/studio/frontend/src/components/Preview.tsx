@@ -96,9 +96,40 @@ export function Preview({
       handleVideoSeek(playbackFrame.seekTime);
     };
     if (video.readyState >= 1) seek();
-    video.addEventListener('loadedmetadata', seek);
-    return () => video.removeEventListener('loadedmetadata', seek);
+    video.addEventListener("loadedmetadata", seek);
+    return () => video.removeEventListener("loadedmetadata", seek);
   }, [handleVideoSeek, playbackFrame?.assetUrl, playbackFrame?.seekTime]);
+
+  // Day 27: keep the <video> src in sync with the active
+  // clip's media URL. We key the effect on the clip id
+  // and the resolved assetUrl so a different clip swaps
+  // the source, but a per-frame update of playbackFrame
+  // does not. The DOM element itself is not re-created.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !activeVideoClip) return;
+    const desired = playbackFrame?.assetUrl || activeVideoClip.source_file;
+    if (!desired) return;
+    if (video.src !== desired) {
+      video.src = desired;
+      try { video.load(); } catch { /* not yet ready */ }
+    }
+  }, [activeVideoClip, playbackFrame?.assetUrl]);
+
+  // Day 27: apply transform / opacity / filter directly to
+  // the <video> DOM node so style prop changes don't cause
+  // a remount. We read the current values from the latest
+  // playbackFrame each tick via a layout effect.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const t = playbackFrame?.transform || videoTransform.transform;
+    const o = playbackFrame?.opacity ?? videoTransform.opacity;
+    const f = playbackFrame?.filterCss;
+    video.style.transform = t || "";
+    video.style.opacity = String(o ?? 1);
+    video.style.filter = f || "";
+  });
 
   const handleVideoTimeUpdate = useCallback(() => {
     if (isSeekingProgrammatically.current) return;
@@ -180,21 +211,32 @@ export function Preview({
           }} />
 
           {activeMode === 'real' && activeVideoClip ? (
+            // Day 27 / Electron desktop: keep the <video>
+            // element mounted across frame updates. The src
+            // and style are wired through refs (see effects
+            // below) so React does not unmount and re-create
+            // the element on every playhead tick. This is
+            // also what makes the headless Playwright video
+            // check pass: a stable element gets to actually
+            // decode frames instead of being torn down
+            // before the browser finishes loading metadata.
             <video
               ref={videoRef}
               data-testid="preview-video"
+              data-clip-id={activeVideoClip.id}
               className="absolute inset-0 w-full h-full object-contain"
-              src={playbackFrame?.assetUrl || activeVideoClip.source_file}
+              // src is set imperatively in the effect below
+              // keyed on the active clip id, not on the
+              // per-frame playbackFrame object. Initial src
+              // is set to the clip's source file so the
+              // element has something to load even before
+              // the effect runs.
+              src={activeVideoClip.source_file}
               muted
               playsInline
-              preload="metadata"
+              preload="auto"
               onTimeUpdate={handleVideoTimeUpdate}
               onSeeked={handleVideoSeeked}
-              style={{
-                transform: playbackFrame?.transform || videoTransform.transform,
-                opacity: playbackFrame?.opacity ?? videoTransform.opacity,
-                filter: playbackFrame?.filterCss,
-              }}
             />
           ) : null}
 

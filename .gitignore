@@ -133,3 +133,5 @@ d25_*_fail*.png
 .vireo_login_url.txt
 # Frontend node_modules (Day 26)
 agents/studio/frontend/node_modules
+# Electron build output
+dist-electron/

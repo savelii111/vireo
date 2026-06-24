@@ -340,7 +340,7 @@ export default function App() {
             className="min-h-0 min-w-0"
           >
             <PanelGroup orientation="horizontal" autoSave="vireo-workspace-horizontal">
-              {/* SideRail — fixed 56px */}
+              {/* SideRail — fixed 56px, always visible */}
               <Panel
                 id="rail"
                 defaultSize={2}
@@ -356,56 +356,57 @@ export default function App() {
                 disabled
               />
 
-              {/* Media column (optional) */}
-              {ws.layout.visibility.media && (
-                <>
-                  <Panel
-                    id="media"
-                    minSize={16}
-                    defaultSize={ws.layout.mediaSize}
-                    onResize={(p) => ws.setMediaSize(p.asPercentage)}
-                    className="min-h-0 min-w-0"
+              {/* Day 27: the Media/Monitor/Inspector panels and
+                  their separators are ALWAYS rendered as direct
+                  children of the PanelGroup. Visibility is
+                  toggled via a CSS class on the Panel itself
+                  (display:none / hidden), not by adding or
+                  removing the panel from the tree. react-
+                  resizable-panels requires a stable, fully
+                  declared group of panels with handles between
+                  every adjacent pair; the previous Fragment-
+                  guarded version produced a panel/handle that
+                  floated at the end with no right neighbour and
+                  was silently dropped from the DOM. */}
+
+              {/* Media panel (optional visibility) */}
+              <Panel
+                id="media"
+                minSize={16}
+                defaultSize={ws.layout.mediaSize}
+                onResize={(p) => ws.setMediaSize(p.asPercentage)}
+                className="min-h-0 min-w-0"
+                style={ws.layout.visibility.media ? undefined : { display: "none" }}
+              >
+                <div className="flex flex-col h-full min-h-0 bg-bg-1">
+                  <div
+                    className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
+                    data-testid="media-panel-title"
                   >
-                    <div className="flex flex-col h-full min-h-0 bg-bg-1">
-                      <div
-                        className="flex items-center justify-between px-3 h-7 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
-                        data-testid="media-panel-title"
-                      >
-                        <span>Project Media</span>
-                        <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
-                          {editor.projectId ? `id ${editor.projectId.slice(0, 8)}` : "no project"}
-                        </span>
-                      </div>
-                      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-                        <Suspense fallback={<Fallback label="media panel" />}>
-                          <MediaPanel
-                            projectId={editor.projectId}
-                            onAddToTimeline={(asset) => {
-                              // Phase 0: real insert via the
-                              // useEditor path. Track 1 in the
-                              // doc is named "Video 1" with id
-                              // "trk_v1" in fresh projects; the
-                              // real clip length is the asset's
-                              // reported duration in seconds.
-                              const tracks = editor.project.tracks;
-                              const video = tracks.find((t) => t.kind === "video") || tracks[0];
-                              if (!video) return;
-                              // insertAsset uses the real
-                              // asset.duration_sec internally;
-                              // no fallback to 5s in this call.
-                              editor.insertAsset(asset, video.id, editor.playhead);
-                            }}
-                          />
-                        </Suspense>
-                      </div>
-                    </div>
-                  </Panel>
-                  <PanelResizeHandle
-                    className="w-1 bg-border-1 hover:bg-accent transition-colors cursor-col-resize"
-                    data-testid="resize-media-monitor"
-                  />
-                </>
-              )}
+                    <span>Project Media</span>
+                    <span className="text-ink-4 normal-case font-normal tracking-normal text-[10px]">
+                      {editor.projectId ? `id ${editor.projectId.slice(0, 8)}` : "no project"}
+                    </span>
+                  </div>
+                  <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+                    <Suspense fallback={<Fallback label="media panel" />}>
+                      <MediaPanel
+                        projectId={editor.projectId}
+                        onAddToTimeline={(asset) => {
+                          const tracks = editor.project.tracks;
+                          const video = tracks.find((t) => t.kind === "video") || tracks[0];
+                          if (!video) return;
+                          editor.insertAsset(asset, video.id, editor.playhead);
+                        }}
+                      />
+                    </Suspense>
+                  </div>
+                </div>
+              </Panel>
+              <PanelResizeHandle
+                className="w-1 bg-border-1 hover:bg-accent transition-colors cursor-col-resize"
+                data-testid="resize-media-monitor"
+              />
 
               {/* Program Monitor — always visible, never collapsed */}
               <Panel
@@ -446,22 +447,21 @@ export default function App() {
                   </div>
                 </div>
               </Panel>
+              <PanelResizeHandle
+                className="w-1 bg-border-1 hover:bg-accent transition-colors cursor-col-resize"
+                data-testid="resize-monitor-inspector"
+              />
 
-              {/* Inspector / Chat column (optional) */}
-              {ws.layout.visibility.inspector && (
-                <>
-                  <PanelResizeHandle
-                    className="w-1 bg-border-1 hover:bg-accent transition-colors cursor-col-resize"
-                    data-testid="resize-monitor-inspector"
-                  />
-                  <Panel
-                    id="inspector"
-                    minSize={16}
-                    defaultSize={ws.layout.inspectorSize}
-                    onResize={(p) => ws.setInspectorSize(p.asPercentage)}
-                    className="min-h-0 min-w-0"
-                  >
-                    <div className="min-h-0 min-w-0 h-full border-l border-border-1 bg-bg-1 grid grid-rows-[28px_28px_minmax(0,1fr)]">
+              {/* Inspector / Chat column (optional visibility) */}
+              <Panel
+                id="inspector"
+                minSize={16}
+                defaultSize={ws.layout.inspectorSize}
+                onResize={(p) => ws.setInspectorSize(p.asPercentage)}
+                className="min-h-0 min-w-0"
+                style={ws.layout.visibility.inspector ? undefined : { display: "none" }}
+              >
+                <div className="min-h-0 min-w-0 h-full border-l border-border-1 bg-bg-1 grid grid-rows-[28px_28px_minmax(0,1fr)]">
                       <div
                         className="flex items-center px-3 border-b border-border-1 bg-bg-1 text-[11px] uppercase tracking-wider text-ink-3 font-semibold"
                         data-testid="right-panel-title"
@@ -545,8 +545,6 @@ export default function App() {
                       </div>
                     </div>
                   </Panel>
-                </>
-              )}
             </PanelGroup>
           </Panel>
 
@@ -555,15 +553,15 @@ export default function App() {
             data-testid="resize-editor-timeline"
           />
 
-          {/* Timeline — full width */}
-          {ws.layout.visibility.timeline && (
-            <Panel
-              id="timeline"
-              minSize={20}
-              defaultSize={ws.layout.timelineSize}
-              onResize={(p) => ws.setTimelineSize(p.asPercentage)}
-              className="min-h-0 min-w-0"
-            >
+          {/* Timeline — full width (optional visibility) */}
+          <Panel
+            id="timeline"
+            minSize={20}
+            defaultSize={ws.layout.timelineSize}
+            onResize={(p) => ws.setTimelineSize(p.asPercentage)}
+            className="min-h-0 min-w-0"
+            style={ws.layout.visibility.timeline ? undefined : { display: "none" }}
+          >
               <div
                 className="min-h-0 min-w-0 overflow-hidden border-t border-border-1 bg-bg-1 h-full"
                 data-testid="timeline-section"
@@ -608,7 +606,6 @@ export default function App() {
                 </div>
               </div>
             </Panel>
-          )}
         </PanelGroup>
       </div>
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}

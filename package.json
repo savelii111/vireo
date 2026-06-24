@@ -14,13 +14,50 @@
     "test:infra": "cd packages/infra && node --test tests/",
     "test:e2e": "node tests/e2e.mjs",
     "agent:studio": "cd agents/studio && node src/server.js",
-    "agents": "concurrently \"npm:agent:*\""
+    "agents": "concurrently \"npm:agent:*\"",
+    "electron:dev": "electron agents/studio/electron/main.mjs",
+    "electron:build": "npm run build:frontend && electron-builder --win --x64",
+    "build:frontend": "cd agents/studio/frontend && npm run build"
   },
+  "main": "agents/studio/electron/main.mjs",
   "devDependencies": {
     "@playwright/test": "^1.56.0",
-    "concurrently": "^9.2.1"
+    "concurrently": "^9.2.1",
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8"
   },
   "dependencies": {
     "pg": "^8.21.0"
+  },
+  "build": {
+    "appId": "io.vireo.studio",
+    "productName": "Vireo Studio",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "agents/studio/electron/**/*",
+      "agents/studio/src/**/*",
+      "agents/studio/frontend/dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "agents/studio/electron/main.mjs"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Vireo Studio"
+    },
+    "asar": true
   }
 }
